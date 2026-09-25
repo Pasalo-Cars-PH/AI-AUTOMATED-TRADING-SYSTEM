@@ -3,17 +3,17 @@ import time
 import requests
 
 # Kunin ang Telegram Credentials mula sa Render Environment Variables
-TELEGRAM_BOT_TOKEN = os.getenv("AAHXdcHfx-ttRTw9MzSNPn13B06w8HGgHkI")
-TELEGRAM_CHAT_ID = os.getenv("8981586714")
+TELEGRAM_BOT_TOKEN = os.getenv("8981586714:AAHXdcHfx-ttRTw9MzSNPn13B06w8HGgHkI")
+TELEGRAM_CHAT_ID = os.getenv("6759636129")
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Error: Missing Telegram Environment Variables.")
         return
     
-    url = f"https://api.telegram.org/bot{AAHXdcHfx-ttRTw9MzSNPn13B06w8HGgHkI}/sendMessage"
+    url = f"https://api.telegram.org/bot{8981586714:AAHXdcHfx-ttRTw9MzSNPn13B06w8HGgHkI}/sendMessage"
     payload = {
-        "chat_id": 8981586714,
+        "chat_id": 6759636129,
         "text": message
     }
     try:
