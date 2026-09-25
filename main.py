@@ -3,17 +3,17 @@ import time
 import requests
 
 # Kunin ang Telegram Credentials mula sa Render Environment Variables
-TELEGRAM_BOT_TOKEN = os.getenv("8981586714:AAHXdcHfx-ttRTw9MzSNPn13B06w8HGgHkI")
-TELEGRAM_CHAT_ID = os.getenv("6759636129")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Error: Missing Telegram Environment Variables.")
         return
     
-    url = f"https://api.telegram.org/bot{8981586714:AAHXdcHfx-ttRTw9MzSNPn13B06w8HGgHkI}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": 6759636129,
+        "chat_id": TELEGRAM_CHAT_ID,
         "text": message
     }
     try:
@@ -29,7 +29,6 @@ def start_trading_bot():
     # Simple Continuous Loop
     while True:
         print(" Analyzing market conditions...")
-        # Dito lalagay ang trading strategy/paper-trading logic
         time.sleep(60) # Maghihintay ng 1 minuto bago ang susunod na check
 
 if __name__ == "__main__":
