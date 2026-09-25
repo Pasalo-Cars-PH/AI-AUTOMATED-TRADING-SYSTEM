@@ -1,14 +1,26 @@
-services:
-  - type: web
-    name: quant-trading-engine
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.server:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
-    envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
-      - key: PYTHON_VERSION
-        value: 3.11.8
+version: "1"
+projects:
+  - name: My project
+    environments:
+      - name: Production
+        services:
+          - type: web
+            name: ai-trading-bot-v2
+            runtime: python
+            repo: https://github.com/Pasalo-Cars-PH/AI-AUTOMATED-TRADING-SYSTEM
+            plan: free
+            region: singapore
+            buildCommand: pip install -r requirements.txt
+            startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+            autoDeployTrigger: commit
+            envVars:
+              - key: TELEGRAM_CHAT_ID
+                sync: false
+              - key: TELEGRAM_BOT_TOKEN
+                sync: false
+              - key: MASTER_ENABLE
+                value: "false"
+              - key: KILL_SWITCH
+                value: "true"
+              - key: TRADING_MODE
+                value: "PAPER"
