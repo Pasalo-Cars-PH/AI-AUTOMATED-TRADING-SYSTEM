@@ -1,10 +1,8 @@
 fastapi
 uvicorn
-requests
-pandas
-numpy
-ta
-yfinance
 pydantic
-python-dotenv
+pydantic-settings
+requests
 sqlalchemy
+binance-connector
+python-dotenv
