@@ -6,3 +6,6 @@ requests
 sqlalchemy
 binance-connector
 python-dotenv
+pandas
+numpy
+ta
