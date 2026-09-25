@@ -1,10 +1,13 @@
 import logging
 import datetime
+from typing import Optional
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings, ApplicationStatus
 from app.safety_gate import safety_gate
+from app.paper.account import paper_account
+from app.paper.analytics import PaperAnalytics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("trading_bot")
@@ -43,6 +46,7 @@ async def startup_event():
     diag = safety_gate.evaluate(telegram_status=telegram_status)
     print_startup_diagnostics(diag)
 
+# Base Health & Status Endpoints
 @app.get("/", status_code=status.HTTP_200_OK)
 @app.head("/", status_code=status.HTTP_200_OK)
 async def root():
@@ -98,3 +102,53 @@ async def get_status():
 async def get_safety():
     telegram_status = "CONFIGURED" if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID else "MISCONFIGURED"
     return safety_gate.evaluate(telegram_status=telegram_status)
+
+# Paper Trading Pipeline Endpoints
+@app.get("/paper/status", status_code=status.HTTP_200_OK)
+async def get_paper_status():
+    summary = PaperAnalytics.get_performance_summary()
+    daily_pnl = paper_account.equity - paper_account.daily_start_balance
+    
+    return {
+        "mode": settings.TRADING_MODE,
+        "real_order_submission": False,
+        "balance": paper_account.balance,
+        "equity": paper_account.equity,
+        "daily_pnl": round(daily_pnl, 2),
+        "open_positions": len(paper_account.open_positions),
+        "open_risk": round(len(paper_account.open_positions) * paper_account.risk_per_trade * 100, 2),
+        "trades_today": summary["total_trades"],
+        "win_rate": summary["win_rate"],
+        "profit_factor": summary["profit_factor"]
+    }
+
+@app.get("/paper/positions", status_code=status.HTTP_200_OK)
+async def get_paper_positions():
+    return {
+        "count": len(paper_account.open_positions),
+        "positions": list(paper_account.open_positions.values())
+    }
+
+@app.get("/paper/trades", status_code=status.HTTP_200_OK)
+async def get_paper_trades(symbol: Optional[str] = Query(None), strategy: Optional[str] = Query(None)):
+    trades = paper_account.closed_positions
+    if symbol:
+        trades = [t for t in trades if t.symbol.upper() == symbol.upper()]
+    if strategy:
+        trades = [t for t in trades if t.strategy.upper() == strategy.upper()]
+        
+    return {
+        "count": len(trades),
+        "trades": trades
+    }
+
+@app.get("/paper/no-trades", status_code=status.HTTP_200_OK)
+async def get_no_trade_logs():
+    return {
+        "count": len(paper_account.no_trade_logs),
+        "rejected_setups": paper_account.no_trade_logs
+    }
+
+@app.get("/paper/performance", status_code=status.HTTP_200_OK)
+async def get_paper_performance():
+    return PaperAnalytics.get_performance_summary()
