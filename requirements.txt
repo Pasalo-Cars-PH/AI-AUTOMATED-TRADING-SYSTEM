@@ -1,4 +1,10 @@
+fastapi
+uvicorn
 requests
-yfinance
 pandas
+numpy
 ta
+yfinance
+pydantic
+python-dotenv
+sqlalchemy
