@@ -1,125 +1,100 @@
-import os
-import threading
-import time
-import uuid
-from datetime import datetime, timezone
-import uvicorn
-from fastapi import FastAPI
+import logging
+import datetime
 
-from app.config import settings
-from app.database.models import init_db
-from app.data.providers.binance_adapter import BinanceDataProvider
-from app.data.validator import DataValidator
-from app.data.normalizer import DataQualityState
-from app.indicators.ema import EMAIndicator
-from app.indicators.rsi import RSIIndicator
-from app.indicators.atr import ATRIndicator
-from app.structure.market_structure import MarketStructureEngine
-from app.strategies.setup_engine import SetupEngine
-from app.scoring.confluence import ConfluenceEngine
-from app.execution.paper import PaperExecutionProvider
-from app.execution.schemas import OrderRequest
-from app.execution.order_validator import PreTradeValidator
-from app.notifications.telegram import TelegramDispatcher
+from fastapi import FastAPI, status
+from fastapi.middleware.cors import CORSMiddleware
+from app.config import settings, ApplicationStatus
+from app.safety_gate import safety_gate
 
-app = FastAPI(title="Quant Automated Trading Engine", version="2.0.0")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("trading_bot")
 
-init_db()
+app = FastAPI(title=settings.APP_NAME, version="2.0.0")
 
-execution_provider = PaperExecutionProvider(initial_balance=10000.0)
-telegram_dispatcher = TelegramDispatcher()
-market_data_provider = BinanceDataProvider()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-SYMBOLS_TO_SCAN = ["BTCUSD", "ETHUSD"]
+def print_startup_diagnostics(diag: dict):
+    logger.info("========================================")
+    logger.info("AI TRADING ENGINE STARTUP DIAGNOSTIC")
+    logger.info("========================================")
+    logger.info(f"Application:    {diag['application_status']}")
+    logger.info(f"Trading Mode:   {diag['mode']}")
+    logger.info(f"Master Enable:  {diag['checks']['MASTER_ENABLE']['value']}")
+    logger.info(f"Kill Switch:    {diag['checks']['KILL_SWITCH']['value']}")
+    logger.info(f"Market Data:    {diag['checks']['MARKET_DATA']['value']}")
+    logger.info(f"Database:       {diag['checks']['DATABASE']['value']}")
+    logger.info(f"Telegram:       {diag['checks']['TELEGRAM']['value']}")
+    logger.info(f"News Verification: {diag['checks']['NEWS']['value']}")
+    logger.info(f"MT5 Execution:  {diag['checks']['EXECUTION']['status']}")
+    logger.info(f"Safety Gate:    {diag['trading_status']}")
+    logger.info(f"Blocking Reasons: {diag['blocking_reasons']}")
+    logger.info(f"Warnings:       {diag['warnings']}")
+    logger.info("========================================")
 
-@app.get("/")
-def root():
-    return {"status": "ONLINE", "engine": "Quant Automated Trading Engine v2.0"}
+@app.on_event("startup")
+async def startup_event():
+    telegram_status = "CONFIGURED" if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID else "MISCONFIGURED"
+    diag = safety_gate.evaluate(telegram_status=telegram_status)
+    print_startup_diagnostics(diag)
 
-@app.get("/health")
-def health_check():
+@app.get("/", status_code=status.HTTP_200_OK)
+@app.head("/", status_code=status.HTTP_200_OK)
+async def root():
+    telegram_status = "CONFIGURED" if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID else "MISCONFIGURED"
+    diag = safety_gate.evaluate(telegram_status=telegram_status)
     return {
-        "status": "ok" if not settings.KILL_SWITCH and settings.MASTER_ENABLE else "degraded",
-        "master_enable": settings.MASTER_ENABLE,
-        "kill_switch": settings.KILL_SWITCH,
-        "trading_mode": settings.TRADING_MODE,
-        "database": "sqlite_connected",
-        "telegram": telegram_dispatcher.inspect_health(),
-        "timestamp": time.time()
+        "service": settings.APP_NAME,
+        "application_status": ApplicationStatus.HEALTHY.value,
+        "trading_status": diag["trading_status"],
+        "mode": settings.TRADING_MODE
     }
 
-def process_market_scan(symbol: str):
-    signal_id = f"SIG_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:4].upper()}"
+@app.get("/health", status_code=status.HTTP_200_OK)
+@app.head("/health", status_code=status.HTTP_200_OK)
+async def health():
+    return {
+        "status": "ok",
+        "application_status": ApplicationStatus.HEALTHY.value,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+    }
 
-    candles = market_data_provider.fetch_ohlcv(symbol, timeframe="M15", limit=200)
-    if DataValidator.validate_candles(candles) != DataQualityState.CONFIRMED_DATA:
-        return
+@app.get("/status", status_code=status.HTTP_200_OK)
+async def get_status():
+    telegram_status = "CONFIGURED" if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID else "MISCONFIGURED"
+    diag = safety_gate.evaluate(telegram_status=telegram_status)
+    return {
+        "engine": {
+            "application_status": diag["application_status"],
+            "trading_status": diag["trading_status"],
+            "mode": diag["mode"]
+        },
+        "safety_gate": {
+            "allowed": diag["overall_allowed"],
+            "blocking_reasons": diag["blocking_reasons"],
+            "warnings": diag["warnings"]
+        },
+        "market_data": {
+            "provider": "binance",
+            "status": diag["checks"]["MARKET_DATA"]["value"],
+            "symbols_available": ["BTCUSD", "ETHUSD"]
+        },
+        "database": {
+            "status": diag["checks"]["DATABASE"]["value"]
+        },
+        "telegram": {
+            "status": diag["checks"]["TELEGRAM"]["value"]
+        },
+        "execution": diag["checks"]["EXECUTION"],
+        "timestamp": diag["timestamp"]
+    }
 
-    ema_results = EMAIndicator.calculate(candles, [20, 50, 100, 200])
-    rsi_result = RSIIndicator.calculate(candles, window=14)
-    atr_result = ATRIndicator.calculate(candles, window=14)
-    indicators = {**ema_results}
-    if rsi_result: indicators["RSI_14"] = rsi_result
-    if atr_result: indicators["ATR_14"] = atr_result
-
-    structure = MarketStructureEngine.analyze(candles)
-    candidate = SetupEngine.evaluate_setups(candles, indicators, structure)
-    if not candidate:
-        return
-
-    score = ConfluenceEngine.calculate_score(
-        setup=candidate, indicators=indicators, structure=structure,
-        mtf_score=9, rr_ratio=2.0, data_quality=DataQualityState.CONFIRMED_DATA
-    )
-
-    if not score.is_actionable:
-        return
-
-    req = OrderRequest(
-        signal_id=signal_id,
-        symbol=symbol,
-        direction=candidate.direction.value,
-        volume=0.01,
-        entry_price=candidate.trigger_level,
-        stop_loss=candidate.invalidation_level,
-        take_profit=candidate.trigger_level + 2.0 * (atr_result.value if atr_result else 10.0)
-    )
-
-    acc = execution_provider.get_account()
-    validation = PreTradeValidator.pre_trade_check(req, acc.equity, current_spread=0.0002)
-
-    if not validation["approved"]:
-        print(f"[{symbol}] ⛔ Pre-Trade Rejection: {validation['rejection_reasons']}")
-        return
-
-    exec_result = execution_provider.place_market_order(req)
-    telegram_dispatcher.dispatch_actionable_signal({
-        "signal_id": signal_id,
-        "symbol": symbol,
-        "direction": req.direction,
-        "entry": req.entry_price,
-        "stop_loss": req.stop_loss,
-        "take_profit": req.take_profit,
-        "score": score.total_score
-    })
-    print(f"[{symbol}] 🚀 Order Executed: {exec_result.order_id}")
-
-def trading_engine_loop():
-    print("🚀 Background Quantitative Trading Engine Thread Started...")
-    while True:
-        if settings.KILL_SWITCH or not settings.MASTER_ENABLE:
-            print("🛑 Engine Paused by Safety Gate")
-        else:
-            print("🔍 Scanning Markets...")
-            for symbol in SYMBOLS_TO_SCAN:
-                try:
-                    process_market_scan(symbol)
-                except Exception as e:
-                    print(f"[Engine Error] {e}")
-        time.sleep(60)
-
-threading.Thread(target=trading_engine_loop, daemon=True).start()
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port)
+@app.get("/safety", status_code=status.HTTP_200_OK)
+async def get_safety():
+    telegram_status = "CONFIGURED" if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID else "MISCONFIGURED"
+    return safety_gate.evaluate(telegram_status=telegram_status)
