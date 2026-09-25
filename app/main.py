@@ -8,6 +8,8 @@ from app.config import settings, ApplicationStatus
 from app.safety_gate import safety_gate
 from app.paper.account import paper_account
 from app.paper.analytics import PaperAnalytics
+from app.market.router import router as market_router
+from app.market.scheduler import market_scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("trading_bot")
@@ -21,6 +23,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include Market Data Router (/market/status, /market/quote, /market/candles)
+app.include_router(market_router)
 
 def print_startup_diagnostics(diag: dict):
     logger.info("========================================")
@@ -45,6 +50,8 @@ async def startup_event():
     telegram_status = "CONFIGURED" if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID else "MISCONFIGURED"
     diag = safety_gate.evaluate(telegram_status=telegram_status)
     print_startup_diagnostics(diag)
+    # Start Live Market Data Background Loop
+    await market_scheduler.start()
 
 # Base Health & Status Endpoints
 @app.get("/", status_code=status.HTTP_200_OK)
@@ -86,7 +93,7 @@ async def get_status():
         "market_data": {
             "provider": "binance",
             "status": diag["checks"]["MARKET_DATA"]["value"],
-            "symbols_available": ["BTCUSD", "ETHUSD"]
+            "symbols_available": ["BTCUSD", "ETHUSD", "SOLUSD"]
         },
         "database": {
             "status": diag["checks"]["DATABASE"]["value"]
