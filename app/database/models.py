@@ -1,33 +1,23 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Float, DateTime, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import datetime
-from app.config import settings
+from datetime import datetime, timezone
 
 Base = declarative_base()
 
-class SignalJournal(Base):
-    __tablename__ = "signals"
-
+class ExecutionRecord(Base):
+    __tablename__ = "execution_requests"
+    
     id = Column(Integer, primary_key=True, index=True)
-    signal_id = Column(String, unique=True, index=True)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    signal_id = Column(String, index=True)
     symbol = Column(String)
     direction = Column(String)
-    state = Column(String)
-    score = Column(Integer)
-    entry = Column(Float)
-    stop_loss = Column(Float)
-    take_profit = Column(Float)
-    risk_reward = Column(Float)
-    position_size = Column(Float)
-    strategy = Column(String)
-    m5_confirmation = Column(Boolean)
-    news_status = Column(String)
-    data_quality = Column(String)
-    correlation_status = Column(String)
+    volume = Column(Float)
+    entry_price = Column(Float)
+    status = Column(String)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-engine = create_engine(settings.DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {})
+engine = create_engine("sqlite:///./quant_engine.db", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
