@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: quant-trading-engine
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.8
