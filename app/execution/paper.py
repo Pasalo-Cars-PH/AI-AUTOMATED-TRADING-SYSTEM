@@ -1,14 +1,20 @@
 import uuid
-from typing import Dict, List
-from app.execution.base import ExecutionProvider, AccountState, OrderResult
+from typing import List
+from app.execution.base import ExecutionProvider
+from app.execution.schemas import OrderRequest, OrderResult, AccountState, PositionState, ExecutionState
+from app.config import settings
 
 class PaperExecutionProvider(ExecutionProvider):
     def __init__(self, initial_balance: float = 10000.0):
         self.balance = initial_balance
         self.equity = initial_balance
-        self.positions: List[Dict] = []
+        self.positions: List[PositionState] = []
 
-    def get_account_state(self) -> AccountState:
+    def connect(self) -> bool: return True
+    def disconnect(self) -> None: pass
+    def health_check(self) -> bool: return True
+
+    def get_account(self) -> AccountState:
         return AccountState(
             equity=self.equity,
             balance=self.balance,
@@ -16,49 +22,60 @@ class PaperExecutionProvider(ExecutionProvider):
             open_positions_count=len(self.positions)
         )
 
-    def validate_order(self, signal: Dict) -> bool:
-        # Check required fields
-        required = ["symbol", "direction", "entry", "stop_loss", "take_profit", "position_size"]
-        return all(k in signal and signal[k] is not None for k in required)
+    def get_open_positions(self) -> List[PositionState]: return self.positions
 
-    def place_order(self, signal: Dict) -> OrderResult:
-        if not self.validate_order(signal):
-            return OrderResult(
-                success=False, order_id="", symbol=signal.get("symbol", ""),
-                direction=signal.get("direction", ""), fill_price=0.0, volume=0.0,
-                message="Order validation failed: Missing required fields"
-            )
+    def validate_order(self, request: OrderRequest) -> bool:
+        return request.volume > 0 and request.stop_loss > 0
 
-        order_id = f"PAPER_{uuid.uuid4().hex[:8].upper()}"
-        pos = {
-            "order_id": order_id,
-            "symbol": signal["symbol"],
-            "direction": signal["direction"],
-            "entry_price": signal["entry"],
-            "stop_loss": signal["stop_loss"],
-            "take_profit": signal["take_profit"],
-            "volume": signal["position_size"],
-            "status": "OPEN"
-        }
+    def calculate_position_size(self, symbol: str, entry: float, sl: float, risk_pct: float) -> float:
+        risk_amount = self.equity * (risk_pct / 100.0)
+        sl_distance = abs(entry - sl)
+        if sl_distance == 0: return 0.01
+        return round(risk_amount / sl_distance / 100.0, 2)
+
+    def place_market_order(self, request: OrderRequest) -> OrderResult:
+        slippage = getattr(settings, "PAPER_SLIPPAGE", 0.0001)
+        exec_price = request.entry_price + slippage if request.direction == "BUY" else request.entry_price - slippage
+        pos_id = f"PAPER_POS_{uuid.uuid4().hex[:6].upper()}"
+
+        pos = PositionState(
+            position_id=pos_id,
+            symbol=request.symbol,
+            direction=request.direction,
+            volume=request.volume,
+            entry_price=exec_price,
+            current_price=exec_price,
+            stop_loss=request.stop_loss,
+            take_profit=request.take_profit,
+            unrealized_pnl=0.0
+        )
         self.positions.append(pos)
 
         return OrderResult(
             success=True,
-            order_id=order_id,
-            symbol=signal["symbol"],
-            direction=signal["direction"],
-            fill_price=signal["entry"],
-            volume=signal["position_size"],
-            message="Paper Order Executed Successfully"
+            execution_id=f"EXEC_{uuid.uuid4().hex[:6].upper()}",
+            order_id=pos_id,
+            symbol=request.symbol,
+            direction=request.direction,
+            requested_price=request.entry_price,
+            executed_price=exec_price,
+            volume=request.volume,
+            slippage=slippage,
+            state=ExecutionState.FILLED,
+            message="Paper order filled successfully"
         )
 
-    def close_order(self, order_id: str) -> bool:
+    def close_position(self, position_id: str) -> OrderResult:
         for p in self.positions:
-            if p["order_id"] == order_id:
-                p["status"] = "CLOSED"
+            if p.position_id == position_id:
                 self.positions.remove(p)
-                return True
-        return False
-
-    def get_open_positions(self) -> List[Dict]:
-        return [p for p in self.positions if p["status"] == "OPEN"]
+                return OrderResult(
+                    success=True, execution_id="CLOSE_1", order_id=position_id,
+                    symbol=p.symbol, direction=p.direction, requested_price=p.current_price,
+                    executed_price=p.current_price, volume=p.volume, slippage=0.0,
+                    state=ExecutionState.CLOSED, message="Position closed"
+                )
+        return OrderResult(
+            success=False, execution_id="", symbol="", direction="", requested_price=0,
+            executed_price=0, volume=0, state=ExecutionState.FAILED, message="Position not found"
+        )
