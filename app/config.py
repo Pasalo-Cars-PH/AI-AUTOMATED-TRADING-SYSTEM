@@ -1,23 +1,23 @@
 import os
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    # System Status
-    MASTER_ENABLE: bool = os.getenv("MASTER_ENABLE", "True").lower() == "true"
-    KILL_SWITCH: bool = os.getenv("KILL_SWITCH", "False").lower() == "true"
-    TRADING_MODE: str = os.getenv("TRADING_MODE", "PAPER") # PAPER or LIVE
+    PROJECT_NAME: str = "Quant Engine"
+    MASTER_ENABLE: bool = False
+    KILL_SWITCH: bool = True
+    TRADING_MODE: str = "PAPER"  # PAPER or LIVE
     
-    # Telegram Credentials
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
     
-    # Risk Parameters
-    RISK_PER_TRADE: float = float(os.getenv("RISK_PER_TRADE", "0.005")) # 0.5% default
-    MAX_DAILY_LOSS: float = float(os.getenv("MAX_DAILY_LOSS", "0.02"))   # 2.0% max daily loss
-    MAX_OPEN_POSITIONS: int = int(os.getenv("MAX_OPEN_POSITIONS", "6"))
-    MIN_CONFLUENCE_SCORE: int = 75
+    PAPER_SLIPPAGE: float = 0.0001
+    PAPER_SPREAD: float = 0.0002
+    MAX_SPREAD_PIPS: float = 3.0
     
-    # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./trading_engine.db")
+    MT5_BRIDGE_URL: str = os.getenv("MT5_BRIDGE_URL", "http://localhost:8000")
+    MT5_BRIDGE_API_KEY: str = os.getenv("MT5_BRIDGE_API_KEY", "")
+
+    class Config:
+        env_file = ".env"
 
 settings = Settings()
