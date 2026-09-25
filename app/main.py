@@ -33,11 +33,12 @@ app = FastAPI(title="Quant Automated Trading Engine", version="2.0.0")
 # Initialize Database Engine
 init_db()
 
-# Initialize Execution and Notification Services
+# Initialize Services
 execution_provider = PaperExecutionProvider(initial_balance=10000.0)
 telegram_dispatcher = TelegramDispatcher()
 market_data_provider = BinanceDataProvider()
 
+# Set crypto symbols for Binance Data Provider (No YFinance dependency)
 SYMBOLS_TO_SCAN = ["BTCUSD", "ETHUSD"]
 
 @app.get("/")
@@ -57,7 +58,6 @@ def health_check():
     }
 
 def process_market_scan(symbol: str):
-    """Executes the full 13-phase quantitative evaluation pipeline for a symbol."""
     signal_id = f"SIG_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:4].upper()}"
 
     # Step 1: Fetch & Validate Normalized Data
@@ -86,7 +86,7 @@ def process_market_scan(symbol: str):
     # Step 4: Evaluate Candidate Setups
     candidate = SetupEngine.evaluate_setups(m15_candles, indicators, structure)
     if not candidate:
-        print(f"[{symbol}] ℹ️ No actionable candidate setups detected.")
+        print(f"[{symbol}] ℹ️ No candidate setup found.")
         return
 
     # Step 5: Duplicate Protection Check
@@ -95,10 +95,10 @@ def process_market_scan(symbol: str):
         symbol, candidate.direction.value, candidate.strategy_name, candidate.trigger_level, ts_bucket
     )
     if DuplicateDetector.is_duplicate(sig_hash):
-        print(f"[{symbol}] ⚠️ Duplicate signal hash detected. Suppressing dispatch.")
+        print(f"[{symbol}] ⚠️ Duplicate signal detected. Skipping.")
         return
 
-    # Step 6: Confluence Scoring Matrix (Threshold >= 75)
+    # Step 6: Confluence Scoring Matrix (75+)
     score_breakdown = ConfluenceEngine.calculate_score(
         setup=candidate,
         indicators=indicators,
@@ -109,7 +109,7 @@ def process_market_scan(symbol: str):
     )
 
     if not score_breakdown.is_actionable:
-        print(f"[{symbol}] ⏸️ Score: {score_breakdown.total_score}/100 ({score_breakdown.score_band}). Below 75 threshold.")
+        print(f"[{symbol}] ⏸️ Score: {score_breakdown.total_score}/100. Below threshold.")
         return
 
     # Step 7: Risk Management & Position Sizing
@@ -137,7 +137,7 @@ def process_market_scan(symbol: str):
         print(f"[{symbol}] ❌ News Gate Rejection: {news_check.reasoning}")
         return
 
-    # Step 9: M5 Closed Candle Confirmation Gate
+    # Step 9: M5 Confirmation Gate
     m5_candles = market_data_provider.fetch_ohlcv(symbol, timeframe="M5", limit=20)
     m5_confirm = M5ConfirmationEngine.validate_m5_close(
         m5_candles=m5_candles,
@@ -150,7 +150,7 @@ def process_market_scan(symbol: str):
         print(f"[{symbol}] ❌ M5 Gate Rejection: {m5_confirm.reason}")
         return
 
-    # Final Signal Payload Creation
+    # Signal Payload
     signal_payload = {
         "signal_id": signal_id,
         "state": "ACTIONABLE",
@@ -169,11 +169,11 @@ def process_market_scan(symbol: str):
         "news_status": news_check.status.value
     }
 
-    # Step 10: Order Execution & Telegram Dispatch
+    # Step 10: Execution & Dispatch
     order_res = execution_provider.place_order(signal_payload)
     telegram_dispatcher.dispatch_actionable_signal(signal_payload)
 
-    print(f"[{symbol}] 🚀 ACTIONABLE SIGNAL EXECUTED -> Order ID: {order_res.order_id} | Score: {score_breakdown.total_score}")
+    print(f"[{symbol}] 🚀 ACTIONABLE SIGNAL EXECUTED -> Order ID: {order_res.order_id}")
 
 def trading_engine_loop():
     print("🚀 Background Quantitative Trading Engine Thread Started...")
@@ -186,10 +186,10 @@ def trading_engine_loop():
                 try:
                     process_market_scan(symbol)
                 except Exception as e:
-                    print(f"[Engine Error] Exception during scan for {symbol}: {e}")
+                    print(f"[Engine Error] Scan Exception for {symbol}: {e}")
         time.sleep(60)
 
-# Start background strategy engine thread alongside FastAPI server
+# Start background strategy thread
 threading.Thread(target=trading_engine_loop, daemon=True).start()
 
 if __name__ == "__main__":
