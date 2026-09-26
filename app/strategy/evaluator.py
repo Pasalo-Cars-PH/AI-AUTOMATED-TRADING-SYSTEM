@@ -1,149 +1,86 @@
-import pandas as pd
-import numpy as np
-from datetime import datetime, timezone
 import logging
+import pandas as pd
+import ta
 
 logger = logging.getLogger("trading_bot")
 
-class InstitutionalBoostedEvaluator:
-    def __init__(self):
-        self.min_confluence_score = 75  # Canonical 0-100 scoring threshold
-        self.boosters = {
-            "news_filter": True,
-            "kill_zones": True,
-            "dxy_correlation": True,
-            "retest_confirm": True,
-            "premium_discount": True,
-            "rsi_divergence": True,
-            "spread_guard": True,
-            "ai_confidence": False  # Disabled until real AI inference is available
+class StrategyEvaluator:
+    def __init__(self, min_confluence_score: float = 65.0):
+        self.min_confluence_score = min_confluence_score
+
+    def evaluate(self, df: pd.DataFrame, symbol: str, timeframe: str) -> dict:
+        """
+        Evaluates technical indicators and generates a confluence score (0-100).
+        """
+        if df.empty or len(df) < 30:
+            return {"signal": "NEUTRAL", "score": 0, "reason": "Insufficient data"}
+
+        # Calculate Technical Indicators using 'ta' library
+        close = df['close']
+        high = df['high']
+        low = df['low']
+
+        # 1. Momentum: RSI (14)
+        rsi_series = ta.momentum.rsi(close, window=14)
+        current_rsi = rsi_series.iloc[-1]
+
+        # 2. Trend: EMA 20 & EMA 50
+        ema20 = ta.trend.ema_indicator(close, window=20).iloc[-1]
+        ema50 = ta.trend.ema_indicator(close, window=50).iloc[-1]
+
+        # 3. Volatility: Bollinger Bands
+        bb = ta.volatility.BollingerBands(close, window=20, window_dev=2)
+        bb_upper = bb.bollinger_hband().iloc[-1]
+        bb_lower = bb.bollinger_lband().iloc[-1]
+
+        current_price = close.iloc[-1]
+
+        # Confluence Scoring Logic
+        buy_score = 0
+        sell_score = 0
+
+        # RSI Checks
+        if current_rsi < 30:
+            buy_score += 35  # Oversold condition
+        elif current_rsi > 70:
+            sell_score += 35 # Overbought condition
+
+        # Trend Checks (EMA Crossover / Alignment)
+        if ema20 > ema50:
+            buy_score += 35  # Bullish trend
+        elif ema20 < ema50:
+            sell_score += 35 # Bearish trend
+
+        # Bollinger Band Breakout/Bounce
+        if current_price <= bb_lower:
+            buy_score += 30  # Bounce off lower band
+        elif current_price >= bb_upper:
+            sell_score += 30 # Rejection off upper band
+
+        # Determine Final Signal & Score
+        if buy_score >= self.min_confluence_score and buy_score > sell_score:
+            signal = "BUY"
+            final_score = buy_score
+        elif sell_score >= self.min_confluence_score and sell_score > buy_score:
+            signal = "SELL"
+            final_score = sell_score
+        else:
+            signal = "NEUTRAL"
+            final_score = max(buy_score, sell_score)
+
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "signal": signal,
+            "score": final_score,
+            "price": current_price,
+            "metrics": {
+                "rsi": round(current_rsi, 2),
+                "ema20": round(ema20, 2),
+                "ema50": round(ema50, 2),
+                "bb_upper": round(bb_upper, 2),
+                "bb_lower": round(bb_lower, 2)
+            }
         }
 
-    def _is_kill_zone(self) -> bool:
-        now_utc = datetime.now(timezone.utc)
-        hour = now_utc.hour
-        return (7 <= hour < 16) or (12 <= hour < 21)
-
-    def _check_premium_discount(self, df: pd.DataFrame) -> str:
-        if len(df) < 50:
-            return "NEUTRAL"
-        high_max = df['high'].tail(50).max()
-        low_min = df['low'].tail(50).min()
-        mid = (high_max + low_min) / 2
-        curr_price = df['close'].iloc[-1]
-        return "DISCOUNT" if curr_price < mid else "PREMIUM"
-
-    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
-        df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
-        df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
-        df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
-
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / (loss + 1e-10)
-        df['rsi'] = 100 - (100 / (1 + rs))
-
-        exp1 = df['close'].ewm(span=12, adjust=False).mean()
-        exp2 = df['close'].ewm(span=26, adjust=False).mean()
-        df['macd'] = exp1 - exp2
-        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-        df['macd_hist'] = df['macd'] - df['macd_signal']
-
-        high_low = df['high'] - df['low']
-        high_close = (df['high'] - df['close'].shift()).abs()
-        low_close = (df['low'] - df['close'].shift()).abs()
-        true_range = np.max(pd.concat([high_low, high_close, low_close], axis=1), axis=1)
-        df['atr'] = true_range.rolling(14).mean()
-        df['vol_ma'] = df['volume'].rolling(20).mean()
-
-        return df
-
-    def evaluate_signal(self, df_m5: pd.DataFrame, df_h1: pd.DataFrame = None, is_crypto: bool = False) -> dict:
-        if self.boosters["kill_zones"] and not is_crypto and not self._is_kill_zone():
-            return {"signal": "NEUTRAL", "reason": "Blocked: Outside Session Kill Zones"}
-
-        if len(df_m5) < 200:
-            return {"signal": "NEUTRAL", "reason": "Insufficient candle data"}
-
-        df = self.calculate_indicators(df_m5)
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-        zone = self._check_premium_discount(df)
-
-        # Canonical 100-Point Weighted System
-        score_buy = 0
-        score_sell = 0
-        reasons_buy = []
-        reasons_sell = []
-
-        # 1. Trend (15 pts)
-        if df_h1 is not None and len(df_h1) >= 50:
-            df_h1_calc = self.calculate_indicators(df_h1)
-            h1_curr = df_h1_calc.iloc[-1]
-            if h1_curr['close'] > h1_curr['ema_50']:
-                score_buy += 15; reasons_buy.append("H1 Bullish Trend (+15)")
-            elif h1_curr['close'] < h1_curr['ema_50']:
-                score_sell += 15; reasons_sell.append("H1 Bearish Trend (+15)")
-
-        # 2. Structure (15 pts)
-        if zone == "DISCOUNT":
-            score_buy += 15; reasons_buy.append("Discount Zone (<50% range) (+15)")
-        elif zone == "PREMIUM":
-            score_sell += 15; reasons_sell.append("Premium Zone (>50% range) (+15)")
-
-        # 3. Momentum (15 pts)
-        if curr['ema_9'] > curr['ema_21'] > curr['ema_50']:
-            score_buy += 15; reasons_buy.append("Triple EMA Bullish Cross (+15)")
-        elif curr['ema_9'] < curr['ema_21'] < curr['ema_50']:
-            score_sell += 15; reasons_sell.append("Triple EMA Bearish Cross (+15)")
-
-        # 4. Volatility / Volume (15 pts)
-        if curr['volume'] > (1.2 * curr['vol_ma']):
-            score_buy += 15; score_sell += 15
-            reasons_buy.append("Volume Surge (+15)")
-            reasons_sell.append("Volume Surge (+15)")
-
-        # 5. MACD / RSI Confluence (20 pts)
-        if 45 <= curr['rsi'] <= 68 and curr['macd'] > curr['macd_signal']:
-            score_buy += 20; reasons_buy.append("RSI & MACD Momentum Alignment (+20)")
-        elif 32 <= curr['rsi'] <= 55 and curr['macd'] < curr['macd_signal']:
-            score_sell += 20; reasons_sell.append("RSI & MACD Bearish Alignment (+20)")
-
-        # 6. Data Quality State (20 pts)
-        score_buy += 20; score_sell += 20
-        reasons_buy.append("Confirmed Candle Data (+20)")
-        reasons_sell.append("Confirmed Candle Data (+20)")
-
-        # AI Confidence Check: Strict REAL or UNAVAILABLE
-        ai_status = "AI_CONFIDENCE_UNAVAILABLE"
-
-        sl_dist = 1.5 * curr['atr']
-        tp_dist = 3.0 * curr['atr']
-
-        if score_buy >= self.min_confluence_score:
-            return {
-                "signal": "BUY",
-                "score": f"{score_buy}/100",
-                "ai_status": ai_status,
-                "price": curr['close'],
-                "stop_loss": round(curr['close'] - sl_dist, 5),
-                "take_profit": round(curr['close'] + tp_dist, 5),
-                "reasons": reasons_buy
-            }
-        elif score_sell >= self.min_confluence_score:
-            return {
-                "signal": "SELL",
-                "score": f"{score_sell}/100",
-                "ai_status": ai_status,
-                "price": curr['close'],
-                "stop_loss": round(curr['close'] + sl_dist, 5),
-                "take_profit": round(curr['close'] - tp_dist, 5),
-                "reasons": reasons_sell
-            }
-
-        return {"signal": "NEUTRAL", "reason": f"Score below {self.min_confluence_score}/100 threshold", "ai_status": ai_status}
-
-strategy_evaluator = InstitutionalBoostedEvaluator()
+strategy_evaluator = StrategyEvaluator()
