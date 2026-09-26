@@ -1,8 +1,11 @@
 import datetime
+import logging
 from typing import Dict, List, Optional, Any
 from app.market.models import Candle, Quote, DataQuality, ProviderStatus
 from app.market.binance_provider import BinanceProvider
 from app.market.twelvedata_provider import TwelveDataProvider
+
+logger = logging.getLogger("trading_bot")
 
 FRESHNESS_THRESHOLDS = {
     "M1": 90, "M5": 420, "M15": 1200,
@@ -28,21 +31,24 @@ class MarketDataService:
 
     async def update_symbol_data(self, symbol: str, timeframe: str = "M5"):
         provider = self.get_provider_for_symbol(symbol)
-        quote = await provider.get_quote(symbol)
-        if quote:
-            self.quotes_cache[symbol.upper()] = quote
+        try:
+            quote = await provider.get_quote(symbol)
+            if quote:
+                self.quotes_cache[symbol.upper()] = quote
 
-        candles = await provider.get_candles(symbol, timeframe, limit=50)
-        if candles:
-            if symbol.upper() not in self.candles_cache:
-                self.candles_cache[symbol.upper()] = {}
-            
-            existing = {c.timestamp: c for c in self.candles_cache[symbol.upper()].get(timeframe.upper(), [])}
-            for c in candles:
-                existing[c.timestamp] = c
-            
-            sorted_candles = sorted(existing.values(), key=lambda x: x.timestamp)
-            self.candles_cache[symbol.upper()][timeframe.upper()] = sorted_candles
+            candles = await provider.get_candles(symbol, timeframe, limit=50)
+            if candles:
+                if symbol.upper() not in self.candles_cache:
+                    self.candles_cache[symbol.upper()] = {}
+                
+                existing = {c.timestamp: c for c in self.candles_cache[symbol.upper()].get(timeframe.upper(), [])}
+                for c in candles:
+                    existing[c.timestamp] = c
+                
+                sorted_candles = sorted(existing.values(), key=lambda x: x.timestamp)
+                self.candles_cache[symbol.upper()][timeframe.upper()] = sorted_candles
+        except Exception as e:
+            logger.error(f"Error updating symbol data for {symbol}: {e}")
 
     def is_data_fresh(self, symbol: str, timeframe: str) -> bool:
         sym = symbol.upper()
@@ -73,11 +79,28 @@ class MarketDataService:
                 return candles[-1].is_closed
         return False
 
-    def get_quote(self, symbol: str) -> Optional[Quote]:
-        return self.quotes_cache.get(symbol.upper())
+    async def get_quote_async(self, symbol: str) -> Optional[Quote]:
+        sym = symbol.upper()
+        if sym in self.quotes_cache:
+            return self.quotes_cache[sym]
+        provider = self.get_provider_for_symbol(sym)
+        quote = await provider.get_quote(sym)
+        if quote:
+            self.quotes_cache[sym] = quote
+        return quote
 
-    def get_candles(self, symbol: str, timeframe: str) -> List[Candle]:
-        return self.candles_cache.get(symbol.upper(), {}).get(timeframe.upper(), [])
+    async def get_candles_async(self, symbol: str, timeframe: str) -> List[Candle]:
+        sym = symbol.upper()
+        tf = timeframe.upper()
+        if sym in self.candles_cache and tf in self.candles_cache[sym]:
+            return self.candles_cache[sym][tf]
+        provider = self.get_provider_for_symbol(sym)
+        candles = await provider.get_candles(sym, tf, limit=50)
+        if candles:
+            if sym not in self.candles_cache:
+                self.candles_cache[sym] = {}
+            self.candles_cache[sym][tf] = candles
+        return candles
 
     def get_status(self) -> Dict[str, Any]:
         stale_symbols = []
