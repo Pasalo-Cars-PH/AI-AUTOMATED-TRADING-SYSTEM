@@ -7,6 +7,17 @@ class CandleDataState(str, Enum):
     STALE_DATA = "STALE_DATA"
     UNAVAILABLE_DATA = "UNAVAILABLE_DATA"
 
+class MarketDataState(str, Enum):
+    CONFIRMED_DATA = "CONFIRMED_DATA"
+    STALE_DATA = "STALE_DATA"
+    UNAVAILABLE_DATA = "UNAVAILABLE_DATA"
+
+class DataQuality(str, Enum):
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    CORRUPTED = "CORRUPTED"
+
 class ProviderStatus(str, Enum):
     HEALTHY = "HEALTHY"
     DEGRADED = "DEGRADED"
