@@ -22,7 +22,7 @@ class MarketDataService:
         await self.twelvedata.connect()
 
     def get_provider_for_symbol(self, symbol: str):
-        if symbol in ["BTCUSD", "ETHUSD", "SOLUSD"]:
+        if symbol.upper() in ["BTCUSD", "ETHUSD", "SOLUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT"]:
             return self.binance
         return self.twelvedata
 
@@ -30,25 +30,26 @@ class MarketDataService:
         provider = self.get_provider_for_symbol(symbol)
         quote = await provider.get_quote(symbol)
         if quote:
-            self.quotes_cache[symbol] = quote
+            self.quotes_cache[symbol.upper()] = quote
 
         candles = await provider.get_candles(symbol, timeframe, limit=50)
         if candles:
-            if symbol not in self.candles_cache:
-                self.candles_cache[symbol] = {}
+            if symbol.upper() not in self.candles_cache:
+                self.candles_cache[symbol.upper()] = {}
             
-            # Deduplication & Storage
-            existing = {c.timestamp: c for c in self.candles_cache[symbol].get(timeframe, [])}
+            existing = {c.timestamp: c for c in self.candles_cache[symbol.upper()].get(timeframe.upper(), [])}
             for c in candles:
                 existing[c.timestamp] = c
             
             sorted_candles = sorted(existing.values(), key=lambda x: x.timestamp)
-            self.candles_cache[symbol][timeframe] = sorted_candles
+            self.candles_cache[symbol.upper()][timeframe.upper()] = sorted_candles
 
     def is_data_fresh(self, symbol: str, timeframe: str) -> bool:
-        if symbol not in self.candles_cache or timeframe not in self.candles_cache[symbol]:
+        sym = symbol.upper()
+        tf = timeframe.upper()
+        if sym not in self.candles_cache or tf not in self.candles_cache[sym]:
             return False
-        candles = self.candles_cache[symbol][timeframe]
+        candles = self.candles_cache[sym][tf]
         if not candles:
             return False
 
@@ -58,25 +59,27 @@ class MarketDataService:
             candle_time = datetime.datetime.fromisoformat(ts_str)
             now = datetime.datetime.utcnow()
             diff_sec = (now - candle_time).total_seconds()
-            threshold = FRESHNESS_THRESHOLDS.get(timeframe, 600)
+            threshold = FRESHNESS_THRESHOLDS.get(tf, 600)
             return diff_sec <= threshold
         except Exception:
             return False
 
     def is_candle_closed(self, symbol: str, timeframe: str) -> bool:
-        if symbol in self.candles_cache and timeframe in self.candles_cache[symbol]:
-            candles = self.candles_cache[symbol][timeframe]
+        sym = symbol.upper()
+        tf = timeframe.upper()
+        if sym in self.candles_cache and tf in self.candles_cache[sym]:
+            candles = self.candles_cache[sym][tf]
             if candles:
                 return candles[-1].is_closed
         return False
 
     def get_quote(self, symbol: str) -> Optional[Quote]:
-        return self.quotes_cache.get(symbol)
+        return self.quotes_cache.get(symbol.upper())
 
     def get_candles(self, symbol: str, timeframe: str) -> List[Candle]:
-        return self.candles_cache.get(symbol, {}).get(timeframe, [])
+        return self.candles_cache.get(symbol.upper(), {}).get(timeframe.upper(), [])
 
-    def get_status() -> Dict[str, Any]:
+    def get_status(self) -> Dict[str, Any]:
         stale_symbols = []
         for sym in ["BTCUSD", "ETHUSD", "SOLUSD", "XAUUSD", "EURUSD", "GBPUSD"]:
             if not self.is_data_fresh(sym, "M5"):
