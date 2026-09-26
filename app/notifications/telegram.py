@@ -1,35 +1,28 @@
-import requests
 import os
+import httpx
+import logging
 
-class TelegramDispatcher:
-    def __init__(self):
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+logger = logging.getLogger("trading_bot")
 
-    def inspect_health(self) -> str:
-        if self.token and self.chat_id:
-            return "configured"
-        return "misconfigured"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-    def dispatch_actionable_signal(self, signal: dict) -> bool:
-        if self.inspect_health() != "configured":
-            return False
+async def send_telegram_message(message: str):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Telegram credentials not configured. Skipping alert.")
+        return
 
-        msg = (
-            f"🚀 *ORDER SUBMITTED*\n\n"
-            f"Signal ID: `{signal.get('signal_id', 'N/A')}`\n"
-            f"Symbol: `{signal.get('symbol')}`\n"
-            f"Direction: *{signal.get('direction')}*\n"
-            f"Entry: `{signal.get('entry'):.4f}`\n"
-            f"SL: `{signal.get('stop_loss'):.4f}`\n"
-            f"TP: `{signal.get('take_profit'):.4f}`\n"
-            f"Score: `{signal.get('score')}/100`\n"
-            f"State: *ACTIONABLE*"
-        )
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
 
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        try:
-            res = requests.post(url, json={"chat_id": self.chat_id, "text": msg, "parse_mode": "Markdown"}, timeout=5)
-            return res.status_code == 200
-        except Exception:
-            return False
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, timeout=10.0)
+            if response.status_code != 200:
+                logger.error(f"Failed to send Telegram alert: {response.text}")
+    except Exception as e:
+        logger.error(f"Error sending Telegram notification: {e}")
