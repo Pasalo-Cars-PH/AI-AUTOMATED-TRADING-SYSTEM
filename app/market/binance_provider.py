@@ -1,8 +1,11 @@
 import httpx
 import datetime
+import logging
 from typing import List, Optional
 from app.market.base_provider import MarketDataProvider
 from app.market.models import Candle, Quote, ProviderStatus, DataQuality
+
+logger = logging.getLogger("trading_bot")
 
 BINANCE_SYMBOL_MAP = {
     "BTCUSD": "BTCUSDT",
@@ -18,7 +21,6 @@ TIMEFRAME_MAP = {
     "H1": "1h", "H4": "4h", "D1": "1d"
 }
 
-# Standard browser headers to prevent WAF / 418 Blocking
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
@@ -44,7 +46,8 @@ class BinanceProvider(MarketDataProvider):
                     self.rate_limit_events += 1
                 else:
                     self.status = ProviderStatus.DEGRADED
-        except Exception:
+        except Exception as e:
+            logger.error(f"Binance health_check error: {e}")
             self.status = ProviderStatus.UNAVAILABLE
             self.last_failure = datetime.datetime.utcnow().isoformat() + "Z"
             self.error_count += 1
@@ -66,12 +69,13 @@ class BinanceProvider(MarketDataProvider):
                         bid=bid,
                         ask=ask,
                         mid=mid,
-                        spread=ask - bid,
+                        spread=round(ask - bid, 8),
                         source=self.name,
                         provider_symbol=p_symbol,
                         quality=DataQuality.CONFIRMED_DATA
                     )
-        except Exception:
+        except Exception as e:
+            logger.error(f"Binance get_quote error for {symbol}: {e}")
             self.error_count += 1
         return None
 
@@ -105,6 +109,7 @@ class BinanceProvider(MarketDataProvider):
                             quality=DataQuality.CONFIRMED_DATA
                         )
                         candles.append(candle)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Binance get_candles error for {symbol}: {e}")
             self.error_count += 1
         return candles
