@@ -8,7 +8,7 @@ from app.notifications.telegram import send_telegram_message, IS_ENGINE_PAUSED
 
 logger = logging.getLogger("trading_bot")
 
-SYMBOLS_TO_MONITOR = ["BTCUSD", "XAUUSD=X", "EURUSD=X", "ETHUSD", "SOLUSD"]
+SYMBOLS_TO_MONITOR = ["BTCUSD", "XAUUSD", "EURUSD", "ETHUSD", "SOLUSD"]
 
 class MarketScheduler:
     def __init__(self):
@@ -35,9 +35,9 @@ class MarketScheduler:
             # 1. Update Open Position Trailing & SL/TP Hit Detection
             for pos_id, pos in list(paper_account.open_positions.items()):
                 try:
-                    candles = market_service.get_candles(pos.symbol, timeframe="M5")
+                    candles = await market_service.get_candles(pos.symbol, timeframe="M5")
                     if candles:
-                        current_price = candles[-1]["close"]
+                        current_price = candles[-1].close if hasattr(candles[-1], 'close') else candles[-1]["close"]
                         closed_trade = paper_account.update_position_price(pos_id, current_price)
                         if closed_trade:
                             res_emoji = "🎯 TAKE PROFIT HIT" if closed_trade.realized_pnl > 0 else "🛑 STOP LOSS HIT"
@@ -62,7 +62,7 @@ class MarketScheduler:
                         logger.warning(f"MARKET_SYMBOL_FAILED | Could not update data for {symbol}, isolating and continuing...")
                         continue
 
-                    candles = market_service.get_candles(symbol, timeframe="M5")
+                    candles = await market_service.get_candles(symbol, timeframe="M5")
                     if not candles:
                         logger.warning(f"MARKET_DATA_UNAVAILABLE | No cached candles for {symbol}")
                         continue
@@ -72,9 +72,13 @@ class MarketScheduler:
                     score = analysis.get("score", 0)
 
                     if action in ["BUY", "SELL"] and score >= 70:
-                        latest_price = analysis["latest_price"]
-                        sl = analysis["trade_parameters"]["stop_loss"]
-                        tp = analysis["trade_parameters"]["take_profit"]
+                        # FIX: Kunin ang latest_price mula sa huling saradong candle nang ligtas
+                        latest_candle = candles[-1]
+                        latest_price = latest_candle.close if hasattr(latest_candle, 'close') else latest_candle["close"]
+                        
+                        trade_params = analysis.get("trade_parameters", {})
+                        sl = trade_params.get("stop_loss", 0.0)
+                        tp = trade_params.get("take_profit", 0.0)
                         reasons_list = analysis.get("reasons", [])
                         reasons_text = "\n".join([f"• {r}" for r in reasons_list])
 
