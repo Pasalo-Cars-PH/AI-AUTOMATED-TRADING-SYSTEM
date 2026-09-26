@@ -24,17 +24,17 @@ class MarketScheduler:
         while self.is_running:
             try:
                 for symbol in SYMBOLS_TO_MONITOR:
-                    # 1. Update Market Candles
+                    # 1. Fetch & Update Candle Data
                     await market_service.update_symbol_data(symbol, timeframe="M5")
                     
-                    # 2. Fetch Fresh Candles & Evaluate
+                    # 2. Analyze Strategy Setup
                     candles = market_service.get_candles(symbol, timeframe="M5")
                     if candles:
                         analysis = strategy_evaluator.evaluate_m5_setup(symbol, candles)
                         action = analysis.get("action")
                         score = analysis.get("score", 0)
                         
-                        # 3. Auto-Trigger Paper Position if High Confluence
+                        # 3. Auto-Execute Trade on High Confluence (>= 70)
                         if action in ["BUY", "SELL"] and score >= 70:
                             pos_type = PositionType.BUY if action == "BUY" else PositionType.SELL
                             latest_price = analysis["latest_price"]
@@ -43,7 +43,7 @@ class MarketScheduler:
                             
                             trade, reason = paper_account.open_position(
                                 symbol=symbol,
-                                pos_type=pos_type,
+                                position_type=pos_type,
                                 entry_price=latest_price,
                                 stop_loss=sl,
                                 take_profit=tp,
@@ -60,6 +60,6 @@ class MarketScheduler:
             except Exception as e:
                 logger.error(f"Error in market scheduler loop: {e}")
                 
-            await asyncio.sleep(60) # Runs every 60 seconds
+            await asyncio.sleep(60)
 
 market_scheduler = MarketScheduler()
