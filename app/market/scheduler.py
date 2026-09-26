@@ -4,11 +4,32 @@ from datetime import datetime, timezone
 from app.market.service import market_service
 from app.strategy.evaluator import strategy_evaluator
 from app.paper.account import paper_account
-from app.notifications.telegram import send_telegram_message, IS_ENGINE_PAUSED
+
+# Safe Import Protocol para sa Telegram Notifications & Pause State
+try:
+    from app.notifications.telegram import send_telegram_alert as send_telegram_message
+    from app.notifications.telegram import IS_ENGINE_PAUSED
+except ImportError:
+    try:
+        from app.notifications.telegram import send_telegram_message, IS_ENGINE_PAUSED
+    except ImportError:
+        async def send_telegram_message(msg: str):
+            logger.warning(f"TELEGRAM_MOCK_DISPATCH | {msg}")
+        IS_ENGINE_PAUSED = False
 
 logger = logging.getLogger("trading_bot")
 
-SYMBOLS_TO_MONITOR = ["BTCUSD", "XAUUSD", "EURUSD", "ETHUSD", "SOLUSD"]
+# Complete 11-Symbol Institutional Universe
+SYMBOLS_TO_MONITOR = [
+    "BTCUSD", "ETHUSD", "SOLUSD",
+    "XAUUSD", "EURUSD", "GBPUSD", "USDJPY",
+    "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"
+]
+
+def is_forex_market_open() -> bool:
+    """Sinisiyasat kung bukas ang Forex/Metals market (Lunes - Biyernes UTC)"""
+    weekday = datetime.now(timezone.utc).weekday()
+    return weekday < 5
 
 class MarketScheduler:
     def __init__(self):
@@ -53,8 +74,13 @@ class MarketScheduler:
                 except Exception as e:
                     logger.error(f"MARKET_SYMBOL_FAILED | Position Check Failed for {pos.symbol}: {e}")
 
-            # 2. Per-Symbol Isolated Market Data Update & Strategy Evaluation
-            for symbol in SYMBOLS_TO_MONITOR:
+            # 2. Filter Active Symbols Base sa Market Schedule
+            active_symbols = ["BTCUSD", "ETHUSD", "SOLUSD"]
+            if is_forex_market_open():
+                active_symbols.extend(["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"])
+
+            # 3. Per-Symbol Isolated Market Data Update & Strategy Evaluation
+            for symbol in active_symbols:
                 try:
                     # Isolated update per symbol
                     success = await market_service.update_symbol_data(symbol, timeframe="M5")
@@ -67,12 +93,29 @@ class MarketScheduler:
                         logger.warning(f"MARKET_DATA_UNAVAILABLE | No cached candles for {symbol}")
                         continue
 
-                    analysis = strategy_evaluator.evaluate_m5_setup(symbol, candles)
+                    # Safe execution ng strategy evaluator
+                    if hasattr(strategy_evaluator, "evaluate_m5_setup"):
+                        analysis = strategy_evaluator.evaluate_m5_setup(symbol, candles)
+                    elif hasattr(strategy_evaluator, "evaluate_signal"):
+                        h1_candles = await market_service.get_candles(symbol, timeframe="H1")
+                        is_crypto = symbol in ["BTCUSD", "ETHUSD", "SOLUSD"]
+                        eval_res = strategy_evaluator.evaluate_signal(candles, h1_candles, is_crypto=is_crypto)
+                        analysis = {
+                            "action": eval_res.get("signal"),
+                            "score": int(str(eval_res.get("score", "0")).split("/")[0]),
+                            "trade_parameters": {
+                                "stop_loss": eval_res.get("stop_loss", 0.0),
+                                "take_profit": eval_res.get("take_profit", 0.0)
+                            },
+                            "reasons": eval_res.get("reasons", [])
+                        }
+                    else:
+                        analysis = {}
+
                     action = analysis.get("action")
                     score = analysis.get("score", 0)
 
-                    if action in ["BUY", "SELL"] and score >= 70:
-                        # FIX: Kunin ang latest_price mula sa huling saradong candle nang ligtas
+                    if action in ["BUY", "SELL"] and score >= 75:
                         latest_candle = candles[-1]
                         latest_price = latest_candle.close if hasattr(latest_candle, 'close') else latest_candle["close"]
                         
@@ -110,7 +153,7 @@ class MarketScheduler:
                             logger.info(f"PAPER_TRADE_REJECTED | {symbol} - {reason}")
 
                 except Exception as symbol_err:
-                    # PER-SYMBOL ISOLATION: Error in one symbol does NOT crash scheduler loop
+                    # PER-SYMBOL ISOLATION: Hindi mag-i-crash ang buong loop dahil sa isang simbolo
                     logger.error(f"MARKET_SYMBOL_FAILED | Error processing {symbol}: {symbol_err}", exc_info=True)
 
             await asyncio.sleep(60)
