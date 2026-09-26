@@ -7,7 +7,6 @@ from app.notifications.telegram import send_telegram_message, IS_ENGINE_PAUSED
 
 logger = logging.getLogger("trading_bot")
 
-# Kasama na ang Gold (XAUUSD=X) at EUR/USD (EURUSD=X)
 SYMBOLS_TO_MONITOR = ["BTCUSD", "XAUUSD=X", "EURUSD=X", "ETHUSD", "SOLUSD"]
 
 class MarketScheduler:
@@ -30,11 +29,28 @@ class MarketScheduler:
                     await asyncio.sleep(60)
                     continue
 
+                # 1. Check & Auto-Close Existing Positions hit by SL/TP
+                for pos_id, pos in list(paper_account.open_positions.items()):
+                    latest_candles = market_service.get_candles(pos.symbol, timeframe="M5")
+                    if latest_candles:
+                        current_price = latest_candles[-1]["close"]
+                        closed_trade = paper_account.update_position_price(pos_id, current_price)
+                        if closed_trade:
+                            res_emoji = "🎯 TAKE PROFIT HIT" if closed_trade.realized_pnl > 0 else "🛑 STOP LOSS HIT"
+                            close_msg = (
+                                f"<b>{res_emoji}</b>\n\n"
+                                f"<b>Symbol:</b> {closed_trade.symbol}\n"
+                                f"<b>Direction:</b> {closed_trade.direction}\n"
+                                f"<b>PnL:</b> ${closed_trade.realized_pnl:,.2f}\n"
+                                f"<b>Exit Price:</b> ${closed_trade.exit_price:,.2f}\n"
+                                f"<b>Reason:</b> {closed_trade.exit_reason}"
+                            )
+                            await send_telegram_message(close_msg)
+
+                # 2. Monitor & Evaluate Market Setups
                 for symbol in SYMBOLS_TO_MONITOR:
-                    # 1. Fetch & Update Candle Data
                     await market_service.update_symbol_data(symbol, timeframe="M5")
                     
-                    # 2. Analyze Strategy Setup
                     candles = market_service.get_candles(symbol, timeframe="M5")
                     if candles:
                         analysis = strategy_evaluator.evaluate_m5_setup(symbol, candles)
