@@ -18,5 +18,12 @@ class Candle:
     is_closed: bool = True
 
     def is_stale(self, max_age_seconds: int = 600) -> bool:
-        # Pwedeng magdagdag ng custom stale logic kung kinakailangan
         return False
+
+@dataclass
+class Quote:
+    symbol: str
+    price: float
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    timestamp: Optional[int] = None
