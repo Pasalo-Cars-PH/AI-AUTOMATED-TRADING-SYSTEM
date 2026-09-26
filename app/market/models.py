@@ -7,6 +7,11 @@ class CandleDataState(str, Enum):
     STALE_DATA = "STALE_DATA"
     UNAVAILABLE_DATA = "UNAVAILABLE_DATA"
 
+class ProviderStatus(str, Enum):
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    UNAVAILABLE = "UNAVAILABLE"
+
 @dataclass
 class Candle:
     timestamp: int
