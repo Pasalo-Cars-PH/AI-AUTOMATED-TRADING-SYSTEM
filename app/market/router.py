@@ -1,34 +1,40 @@
-from fastapi import APIRouter, status, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from app.market.service import market_service
 
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
-@router.get("/status", status_code=status.HTTP_200_OK)
-async def get_market_status():
-    return market_service.get_status()
-
 @router.get("/health", status_code=status.HTTP_200_OK)
 async def get_market_health():
-    return {
-        "status": "HEALTHY",
-        "binance": market_service.binance.status.value,
-        "twelvedata": market_service.twelvedata.status.value
-    }
+    return market_service.get_health()
+
+@router.get("/status", status_code=status.HTTP_200_OK)
+async def get_market_status():
+    try:
+        return market_service.get_status()
+    except Exception as e:
+        return {
+            "status": "DEGRADED",
+            "error": str(e),
+            "symbols": {}
+        }
 
 @router.get("/quote/{symbol}", status_code=status.HTTP_200_OK)
 async def get_quote(symbol: str):
-    q = market_service.get_quote(symbol.upper())
-    if not q:
-        raise HTTPException(status_code=404, detail=f"Quote unavailable for {symbol}")
-    return q
+    quote = await market_service.get_quote(symbol)
+    if not quote:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Quote unavailable for {symbol}"
+        )
+    return quote
 
 @router.get("/candles/{symbol}/{timeframe}", status_code=status.HTTP_200_OK)
-async def get_candles(symbol: str, timeframe: str):
-    candles = market_service.get_candles(symbol.upper(), timeframe.upper())
+async def get_candles(symbol: str, timeframe: str, count: int = 100):
+    candles = await market_service.get_candles(symbol, timeframe, count)
     return {
         "symbol": symbol.upper(),
         "timeframe": timeframe.upper(),
         "count": len(candles),
-        "fresh": market_service.is_data_fresh(symbol.upper(), timeframe.upper()),
+        "fresh": len(candles) > 0,
         "candles": candles
     }
