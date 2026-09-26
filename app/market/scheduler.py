@@ -3,6 +3,7 @@ import logging
 from app.market.service import market_service
 from app.strategy.evaluator import strategy_evaluator
 from app.paper.account import paper_account
+from app.notifications.telegram import send_telegram_message
 
 logger = logging.getLogger("trading_bot")
 
@@ -38,6 +39,8 @@ class MarketScheduler:
                             latest_price = analysis["latest_price"]
                             sl = analysis["trade_parameters"]["stop_loss"]
                             tp = analysis["trade_parameters"]["take_profit"]
+                            reasons_list = analysis.get("reasons", [])
+                            reasons_text = "\n".join([f"• {r}" for r in reasons_list])
                             
                             trade, reason = paper_account.open_position(
                                 symbol=symbol,
@@ -47,11 +50,22 @@ class MarketScheduler:
                                 take_profit=tp,
                                 strategy="M5_CONFLUENCE_V1",
                                 confluence_score=score,
-                                reasons=analysis["reasons"]
+                                reasons=reasons_list
                             )
                             
                             if trade:
-                                logger.info(f"PAPER TRADE EXECUTED: {action} {symbol} @ {latest_price} (Score: {score})")
+                                alert_msg = (
+                                    f"🚀 <b>PAPER TRADE EXECUTED</b>\n\n"
+                                    f"<b>Symbol:</b> {symbol}\n"
+                                    f"<b>Action:</b> {action}\n"
+                                    f"<b>Entry Price:</b> ${latest_price:,.2f}\n"
+                                    f"<b>Stop Loss:</b> ${sl:,.2f}\n"
+                                    f"<b>Take Profit:</b> ${tp:,.2f}\n"
+                                    f"<b>Confluence Score:</b> {score}/100\n\n"
+                                    f"<b>Reasons:</b>\n{reasons_text}"
+                                )
+                                await send_telegram_message(alert_msg)
+                                logger.info(f"PAPER TRADE EXECUTED: {action} {symbol} @ {latest_price}")
                             else:
                                 logger.info(f"PAPER TRADE REJECTED: {symbol} - {reason}")
                 
