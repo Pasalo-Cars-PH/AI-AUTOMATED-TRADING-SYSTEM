@@ -18,6 +18,11 @@ TIMEFRAME_MAP = {
     "H1": "1h", "H4": "4h", "D1": "1d"
 }
 
+# Standard browser headers to prevent WAF / 418 Blocking
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 class BinanceProvider(MarketDataProvider):
     def __init__(self):
         super().__init__(name="BINANCE")
@@ -29,12 +34,12 @@ class BinanceProvider(MarketDataProvider):
 
     async def health_check(self) -> ProviderStatus:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=5.0, headers=HEADERS) as client:
                 res = await client.get(f"{self.base_url}/ping")
                 if res.status_code == 200:
                     self.status = ProviderStatus.CONNECTED
                     self.last_success = datetime.datetime.utcnow().isoformat() + "Z"
-                elif res.status_code == 429:
+                elif res.status_code in [429, 418]:
                     self.status = ProviderStatus.RATE_LIMITED
                     self.rate_limit_events += 1
                 else:
@@ -48,7 +53,7 @@ class BinanceProvider(MarketDataProvider):
     async def get_quote(self, symbol: str) -> Optional[Quote]:
         p_symbol = BINANCE_SYMBOL_MAP.get(symbol.upper(), symbol.upper())
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=5.0, headers=HEADERS) as client:
                 res = await client.get(f"{self.base_url}/ticker/bookTicker", params={"symbol": p_symbol})
                 if res.status_code == 200:
                     data = res.json()
@@ -75,7 +80,7 @@ class BinanceProvider(MarketDataProvider):
         interval = TIMEFRAME_MAP.get(timeframe.upper(), "5m")
         candles = []
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=5.0, headers=HEADERS) as client:
                 res = await client.get(
                     f"{self.base_url}/klines",
                     params={"symbol": p_symbol, "interval": interval, "limit": limit}
