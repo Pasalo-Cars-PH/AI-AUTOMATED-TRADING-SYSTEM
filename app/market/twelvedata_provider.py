@@ -1,108 +1,71 @@
 import os
-import httpx
-import datetime
-from typing import List, Optional
-from app.market.base_provider import MarketDataProvider
-from app.market.models import Candle, Quote, ProviderStatus, DataQuality
+import aiohttp
+import logging
+from typing import List
+from app.market.models import Candle
 
-FX_SYMBOL_MAP = {
-    "XAUUSD": "XAU/USD", "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD",
-    "USDJPY": "USD/JPY", "AUDUSD": "AUD/USD", "USDCAD": "USD/CAD",
-    "USDCHF": "USD/CHF", "NZDUSD": "NZD/USD"
-}
+logger = logging.getLogger("trading_bot")
 
-TIMEFRAME_MAP = {
-    "M1": "1min", "M5": "5min", "M15": "15min", "M30": "30min",
-    "H1": "1h", "H4": "4h", "D1": "1day"
-}
-
-class TwelveDataProvider(MarketDataProvider):
+class TwelveDataProvider:
     def __init__(self):
-        super().__init__(name="TWELVEDATA")
         self.api_key = os.getenv("TWELVEDATA_API_KEY", "")
-        self.base_url = "https://api.twelvedata.com"
-        self.client = httpx.AsyncClient(timeout=10.0)
+        self.base_url = "https://api.twelvedata.com/time_series"
 
-    async def connect(self) -> bool:
+    def _format_symbol(self, symbol: str) -> str:
+        clean = symbol.upper().replace("=X", "").replace("-USD", "USD")
+        # I-convert ang XAUUSD -> XAU/USD at EURUSD -> EUR/USD para sa TwelveData API
+        if "/" not in clean and len(clean) == 6:
+            return f"{clean[:3]}/{clean[3:]}"
+        return clean
+
+    async def get_candles(self, symbol: str, timeframe: str = "M5", limit: int = 50) -> List[Candle]:
         if not self.api_key:
-            self.status = ProviderStatus.MISCONFIGURED
-            return False
-        status = await self.health_check()
-        return status in [ProviderStatus.CONNECTED, ProviderStatus.DEGRADED]
+            logger.warning(f"TWELVEDATA_NO_API_KEY | Missing key for symbol {symbol}")
+            return []
 
-    async def health_check(self) -> ProviderStatus:
-        if not self.api_key:
-            self.status = ProviderStatus.MISCONFIGURED
-            return self.status
-        try:
-            res = await self.client.get(f"{self.base_url}/api_usage", params={"apikey": self.api_key})
-            if res.status_code == 200:
-                self.status = ProviderStatus.CONNECTED
-                self.last_success = datetime.datetime.utcnow().isoformat() + "Z"
-            else:
-                self.status = ProviderStatus.DEGRADED
-        except Exception:
-            self.status = ProviderStatus.UNAVAILABLE
-            self.last_failure = datetime.datetime.utcnow().isoformat() + "Z"
-            self.error_count += 1
-        return self.status
+        formatted_symbol = self._format_symbol(symbol)
+        # Mapping timeframe: M5 -> 5min
+        interval = "5min" if timeframe.upper() in ["M5", "5M"] else timeframe.lower()
 
-    async def get_quote(self, symbol: str) -> Optional[Quote]:
-        p_symbol = FX_SYMBOL_MAP.get(symbol, symbol)
-        if not self.api_key: return None
-        try:
-            res = await self.client.get(
-                f"{self.base_url}/quote",
-                params={"symbol": p_symbol, "apikey": self.api_key}
-            )
-            if res.status_code == 200:
-                data = res.json()
-                if "close" in data:
-                    close_price = float(data["close"])
-                    return Quote(
-                        symbol=symbol,
-                        timestamp=datetime.datetime.utcnow().isoformat() + "Z",
-                        bid=None,
-                        ask=None,
-                        mid=close_price,
-                        spread=None,
-                        source=self.name,
-                        provider_symbol=p_symbol,
-                        quality=DataQuality.CONFIRMED_DATA
-                    )
-        except Exception:
-            self.error_count += 1
-        return None
+        params = {
+            "symbol": formatted_symbol,
+            "interval": interval,
+            "outputsize": limit,
+            "apikey": self.api_key
+        }
 
-    async def get_candles(self, symbol: str, timeframe: str, limit: int = 50) -> List[Candle]:
-        p_symbol = FX_SYMBOL_MAP.get(symbol, symbol)
-        interval = TIMEFRAME_MAP.get(timeframe, "5min")
-        if not self.api_key: return []
-        candles = []
         try:
-            res = await self.client.get(
-                f"{self.base_url}/time_series",
-                params={"symbol": p_symbol, "interval": interval, "outputsize": limit, "apikey": self.api_key}
-            )
-            if res.status_code == 200:
-                data = res.json()
-                if "values" in data:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(self.base_url, params=params) as resp:
+                    data = await resp.json()
+
+                    if resp.status != 200 or "values" not in data:
+                        logger.warning(f"TWELVEDATA_FETCH_FAILED | Symbol: {symbol} ({formatted_symbol}) | Response: {data.get('message', 'No data')}")
+                        return []
+
+                    candles = []
                     for item in reversed(data["values"]):
-                        candle = Candle(
-                            symbol=symbol,
-                            timestamp=item["datetime"] + "Z",
-                            timeframe=timeframe,
+                        # Convert datetime string to timestamp
+                        dt_str = item["datetime"]
+                        import datetime
+                        dt = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S" if len(dt_str) > 10 else "%Y-%m-%d")
+                        ts = int(dt.timestamp())
+
+                        candles.append(Candle(
+                            timestamp=ts,
                             open=float(item["open"]),
                             high=float(item["high"]),
                             low=float(item["low"]),
                             close=float(item["close"]),
-                            volume=float(item.get("volume", 0)),
-                            source=self.name,
-                            provider_symbol=p_symbol,
-                            is_closed=True,
-                            quality=DataQuality.CONFIRMED_DATA
-                        )
-                        candles.append(candle)
-        except Exception:
-            self.error_count += 1
-        return candles
+                            volume=float(item.get("volume", 0.0)),
+                            symbol=symbol,
+                            provider_symbol=formatted_symbol,
+                            timeframe=timeframe,
+                            source="twelvedata",
+                            provider="twelvedata"
+                        ))
+                    return candles
+
+        except Exception as e:
+            logger.error(f"TWELVEDATA_EXCEPTION | Symbol: {symbol} | Error: {e}")
+            return []
