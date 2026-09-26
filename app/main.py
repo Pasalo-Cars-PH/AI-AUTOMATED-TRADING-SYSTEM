@@ -17,7 +17,7 @@ evaluator = InstitutionalBoostedEvaluator()
 def is_forex_market_open() -> bool:
     """Sinisiyasat kung bukas ang Forex/Metals market (Lunes - Biyernes)"""
     weekday = datetime.now(timezone.utc).weekday()
-    return weekday < 5  # 0 to 4 ay Monday to Friday (5 = Sabado, 6 = Linggo)
+    return weekday < 5
 
 @app.on_event("startup")
 async def startup_event():
@@ -44,14 +44,29 @@ async def run_market_scheduler():
     forex_symbols = ["XAUUSD", "EURUSD"]
     timeframes = ["M5", "M15"]
     
+    # Counter para sa Heartbeat Status Ping sa Telegram
+    cycles_counter = 0
+
     while True:
         try:
+            cycles_counter += 1
+            
+            # Magpadala ng Heartbeat Alert sa Telegram bawat ~6 Hours (360 cycles if 60s sleep)
+            if cycles_counter % 360 == 1:
+                market_type = "Crypto + Forex/Metals" if is_forex_market_open() else "Crypto Only (Weekend)"
+                await send_telegram_alert(
+                    f"💓 **BOT HEARTBEAT STATUS** 💓\n\n"
+                    f"🟢 **System:** Online & Healthy\n"
+                    f"📊 **Active Markets:** `{market_type}`\n"
+                    f"⏱ **Timeframes:** `M5, M15`\n"
+                    f"⚙️ **Mode:** `PAPER TRADING`\n\n"
+                    f"_Patuloy na nagse-scan bawat 60s para sa 8/10 confluence signals..._"
+                )
+
             # Pagsasamahin ang Symbols batay sa Market Schedule
             active_symbols = crypto_symbols.copy()
             if is_forex_market_open():
                 active_symbols.extend(forex_symbols)
-            else:
-                logger.debug("WEEKEND_MODE | Forex/Metals markets closed. Scanning Crypto 24/7 only.")
 
             for symbol in active_symbols:
                 try:
