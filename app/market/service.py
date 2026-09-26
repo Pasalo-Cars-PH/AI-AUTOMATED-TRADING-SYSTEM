@@ -1,121 +1,120 @@
-import datetime
 import logging
-from typing import Dict, List, Optional, Any
-from app.market.models import Candle, Quote, DataQuality, ProviderStatus
-from app.market.binance_provider import BinanceProvider
-from app.market.twelvedata_provider import TwelveDataProvider
+from typing import List, Dict, Optional, Any
+from datetime import datetime, timezone
+from app.market.providers.binance import BinanceProvider
+from app.market.providers.yahoo import YahooFXProvider
 
 logger = logging.getLogger("trading_bot")
 
-FRESHNESS_THRESHOLDS = {
-    "M1": 90, "M5": 420, "M15": 1200,
-    "M30": 2400, "H1": 5400, "H4": 18000, "D1": 93600
+SYMBOL_MAP = {
+    "BTCUSD": "BTCUSDT",
+    "ETHUSD": "ETHUSDT",
+    "SOLUSD": "SOLUSDT",
+    "XAUUSD=X": "GC=F",
+    "EURUSD=X": "EURUSD=X"
 }
+
+TIMEFRAME_MAP = {
+    "M1": "1m",
+    "M5": "5m",
+    "M15": "15m",
+    "H1": "1h",
+    "D1": "1d"
+}
+
+def normalize_symbol(symbol: str) -> str:
+    return symbol.upper().strip()
+
+def normalize_timeframe(tf: str) -> str:
+    return tf.upper().strip()
 
 class MarketDataService:
     def __init__(self):
-        self.binance = BinanceProvider()
-        self.twelvedata = TwelveDataProvider()
-        self.quotes_cache: Dict[str, Quote] = {}
-        self.candles_cache: Dict[str, Dict[str, List[Candle]]] = {}
-        self.data_gaps: List[Dict[str, Any]] = []
+        self.binance_provider = BinanceProvider()
+        self.yahoo_provider = YahooFXProvider()
+        self._store: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+        self._health_status: Dict[str, Dict[str, Any]] = {}
 
-    async def initialize(self):
-        await self.binance.connect()
-        await self.twelvedata.connect()
+    def _get_provider_for_symbol(self, symbol: str):
+        norm_sym = normalize_symbol(symbol)
+        if norm_sym in ["XAUUSD=X", "EURUSD=X"]:
+            return self.yahoo_provider
+        return self.binance_provider
 
-    def get_provider_for_symbol(self, symbol: str):
-        if symbol.upper() in ["BTCUSD", "ETHUSD", "SOLUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT"]:
-            return self.binance
-        return self.twelvedata
-
-    async def update_symbol_data(self, symbol: str, timeframe: str = "M5"):
-        provider = self.get_provider_for_symbol(symbol)
+    async def update_symbol_data(self, symbol: str, timeframe: str = "M5") -> bool:
+        norm_sym = normalize_symbol(symbol)
+        norm_tf = normalize_timeframe(timeframe)
+        
         try:
-            quote = await provider.get_quote(symbol)
-            if quote:
-                self.quotes_cache[symbol.upper()] = quote
+            provider = self._get_provider_for_symbol(norm_sym)
+            provider_sym = SYMBOL_MAP.get(norm_sym, norm_sym)
+            provider_tf = TIMEFRAME_MAP.get(norm_tf, "5m")
 
-            candles = await provider.get_candles(symbol, timeframe, limit=50)
-            if candles:
-                if symbol.upper() not in self.candles_cache:
-                    self.candles_cache[symbol.upper()] = {}
-                
-                existing = {c.timestamp: c for c in self.candles_cache[symbol.upper()].get(timeframe.upper(), [])}
-                for c in candles:
-                    existing[c.timestamp] = c
-                
-                sorted_candles = sorted(existing.values(), key=lambda x: x.timestamp)
-                self.candles_cache[symbol.upper()][timeframe.upper()] = sorted_candles
+            raw_candles = await provider.fetch_klines(provider_sym, interval=provider_tf, limit=50)
+            
+            if not raw_candles:
+                logger.warning(f"MARKET_DATA_EMPTY | Symbol: {norm_sym} | TF: {norm_tf}")
+                self._update_health(norm_sym, norm_tf, status="UNAVAILABLE", error="Empty candle response")
+                return False
+
+            # Normalize & Validate Candles
+            normalized_candles = []
+            for c in raw_candles:
+                normalized_candles.append({
+                    "timestamp": c["timestamp"],
+                    "open": float(c["open"]),
+                    "high": float(c["high"]),
+                    "low": float(c["low"]),
+                    "close": float(c["close"]),
+                    "volume": float(c.get("volume", 0.0)),
+                    "is_closed": bool(c.get("is_closed", True))
+                })
+
+            if norm_sym not in self._store:
+                self._store[norm_sym] = {}
+            self._store[norm_sym][norm_tf] = normalized_candles
+
+            self._update_health(norm_sym, norm_tf, status="OK", error=None)
+            logger.info(f"MARKET_DATA_OK | Symbol: {norm_sym} | TF: {norm_tf} | Candles: {len(normalized_candles)}")
+            return True
+
         except Exception as e:
-            logger.error(f"Error updating symbol data for {symbol}: {e}")
-
-    def is_data_fresh(self, symbol: str, timeframe: str) -> bool:
-        sym = symbol.upper()
-        tf = timeframe.upper()
-        if sym not in self.candles_cache or tf not in self.candles_cache[sym]:
-            return False
-        candles = self.candles_cache[sym][tf]
-        if not candles:
+            logger.error(f"MARKET_DATA_ERROR | Symbol: {norm_sym} | Error: {str(e)}")
+            self._update_health(norm_sym, norm_tf, status="ERROR", error=str(e))
             return False
 
-        latest = candles[-1]
-        try:
-            ts_str = latest.timestamp.replace("Z", "")
-            candle_time = datetime.datetime.fromisoformat(ts_str)
-            now = datetime.datetime.utcnow()
-            diff_sec = (now - candle_time).total_seconds()
-            threshold = FRESHNESS_THRESHOLDS.get(tf, 600)
-            return diff_sec <= threshold
-        except Exception:
-            return False
+    def get_candles(self, symbol: str, timeframe: str = "M5", limit: int = 50) -> List[Dict[str, Any]]:
+        """Canonical Interface: Retreives normalized candle array."""
+        norm_sym = normalize_symbol(symbol)
+        norm_tf = normalize_timeframe(timeframe)
+        candles = self._store.get(norm_sym, {}).get(norm_tf, [])
+        return candles[-limit:]
 
-    def is_candle_closed(self, symbol: str, timeframe: str) -> bool:
-        sym = symbol.upper()
-        tf = timeframe.upper()
-        if sym in self.candles_cache and tf in self.candles_cache[sym]:
-            candles = self.candles_cache[sym][tf]
-            if candles:
-                return candles[-1].is_closed
-        return False
+    def get_latest_closed_candle(self, symbol: str, timeframe: str = "M5") -> Optional[Dict[str, Any]]:
+        """Canonical Interface: Retrieves latest closed candle."""
+        candles = self.get_candles(symbol, timeframe)
+        closed = [c for c in candles if c.get("is_closed", True)]
+        return closed[-1] if closed else None
 
-    async def get_quote_async(self, symbol: str) -> Optional[Quote]:
-        sym = symbol.upper()
-        if sym in self.quotes_cache:
-            return self.quotes_cache[sym]
-        provider = self.get_provider_for_symbol(sym)
-        quote = await provider.get_quote(sym)
-        if quote:
-            self.quotes_cache[sym] = quote
-        return quote
+    async def get_quote(self, symbol: str) -> Dict[str, Any]:
+        """Canonical Interface: Retrieves latest ticker quote."""
+        norm_sym = normalize_symbol(symbol)
+        provider = self._get_provider_for_symbol(norm_sym)
+        provider_sym = SYMBOL_MAP.get(norm_sym, norm_sym)
+        return await provider.fetch_quote(provider_sym)
 
-    async def get_candles_async(self, symbol: str, timeframe: str) -> List[Candle]:
-        sym = symbol.upper()
-        tf = timeframe.upper()
-        if sym in self.candles_cache and tf in self.candles_cache[sym]:
-            return self.candles_cache[sym][tf]
-        provider = self.get_provider_for_symbol(sym)
-        candles = await provider.get_candles(sym, tf, limit=50)
-        if candles:
-            if sym not in self.candles_cache:
-                self.candles_cache[sym] = {}
-            self.candles_cache[sym][tf] = candles
-        return candles
-
-    def get_status(self) -> Dict[str, Any]:
-        stale_symbols = []
-        for sym in ["BTCUSD", "ETHUSD", "SOLUSD", "XAUUSD", "EURUSD", "GBPUSD"]:
-            if not self.is_data_fresh(sym, "M5"):
-                stale_symbols.append(sym)
-
-        return {
-            "status": "HEALTHY" if not stale_symbols else "DEGRADED",
-            "providers": {
-                "BINANCE": self.binance.status.value,
-                "TWELVEDATA": self.twelvedata.status.value
-            },
-            "stale_symbols": stale_symbols,
-            "data_gaps": self.data_gaps
+    def _update_health(self, symbol: str, timeframe: str, status: str, error: Optional[str]):
+        key = f"{symbol}_{timeframe}"
+        self._health_status[key] = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "status": status,
+            "last_error": error,
+            "last_success": datetime.now(timezone.utc).isoformat() if status == "OK" else self._health_status.get(key, {}).get("last_success"),
+            "data_age_seconds": 0 if status == "OK" else None
         }
+
+    def get_health() -> Dict[str, Any]:
+        return self._health_status
 
 market_service = MarketDataService()
