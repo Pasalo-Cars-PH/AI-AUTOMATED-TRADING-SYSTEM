@@ -2,9 +2,10 @@ import os
 import logging
 import asyncio
 from fastapi import FastAPI, Request, Response
+
 from app.market.service import market_service
 from app.strategy.evaluator import InstitutionalBoostedEvaluator
-from app.notifications.telegram import send_telegram_alert  # O ang iyong telegram notification helper
+from app.notifications.telegram import send_telegram_alert
 
 logger = logging.getLogger("trading_bot")
 
@@ -24,7 +25,7 @@ async def startup_event():
     logger.info(f"Trading Mode:       {trading_mode}")
     logger.info(f"Master Enable:      {master_enable}")
     logger.info(f"Kill Switch:        {kill_switch}")
-    logger.info("Multi-TF Scan:      ACTIVE (M5, M15, M30)")
+    logger.info("Multi-TF Engine:    ACTIVE (M5, M15, M30)")
     logger.info("========================================")
     
     asyncio.create_task(run_market_scheduler())
@@ -37,13 +38,12 @@ async def run_market_scheduler():
     while True:
         try:
             for symbol in symbols:
-                # Kumuha muna ng H1 candles para sa Higher Timeframe Trend Alignment Filter
+                # Kunin ang H1 candles para sa Higher Timeframe Trend Alignment Filter
                 df_h1 = await market_service.get_candles(symbol=symbol, timeframe="H1", limit=100)
                 
                 for tf in timeframes:
                     df_tf = await market_service.get_candles(symbol=symbol, timeframe=tf, limit=200)
                     if df_tf is not None and not df_tf.empty:
-                        # Evaluator execution
                         analysis = evaluator.evaluate_signal(df_tf, df_h1)
                         
                         if analysis.get("signal") in ["BUY", "SELL"]:
@@ -54,7 +54,6 @@ async def run_market_scheduler():
                             tp = analysis["take_profit"]
                             reasons = "\n• " + "\n• ".join(analysis["reasons"])
 
-                            # Format ng Telegram Alert
                             msg = (
                                 f"🚨 **INSTITUTIONAL SIGNAL DETECTED** 🚨\n\n"
                                 f"📌 **Symbol:** `{symbol}`\n"
