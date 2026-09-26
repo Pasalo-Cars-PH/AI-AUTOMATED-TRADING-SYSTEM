@@ -1,6 +1,6 @@
 from enum import Enum
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any
 
 class CandleDataState(str, Enum):
     CONFIRMED_DATA = "CONFIRMED_DATA"
@@ -33,7 +33,9 @@ class Candle:
     close: float
     volume: float
     symbol: Optional[str] = None
-    timeframe: Optional[str] = None  # Fixed: Added timeframe field to accept timeframe argument
+    timeframe: Optional[str] = None
+    source: Optional[str] = None  # Fixed: Added source field
+    provider: Optional[str] = None
     is_closed: bool = True
 
     def is_stale(self, max_age_seconds: int = 600) -> bool:
