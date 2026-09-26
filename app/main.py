@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import pandas as pd
 from fastapi import FastAPI, Request, Response
 
 from app.market.service import market_service
@@ -38,37 +39,43 @@ async def run_market_scheduler():
     while True:
         try:
             for symbol in symbols:
-                # Kunin ang H1 candles para sa Higher Timeframe Trend Alignment Filter
-                df_h1 = await market_service.get_candles(symbol=symbol, timeframe="H1", limit=100)
-                
-                for tf in timeframes:
-                    df_tf = await market_service.get_candles(symbol=symbol, timeframe=tf, limit=200)
-                    if df_tf is not None and not df_tf.empty:
-                        analysis = evaluator.evaluate_signal(df_tf, df_h1)
-                        
-                        if analysis.get("signal") in ["BUY", "SELL"]:
-                            signal_type = analysis["signal"]
-                            score = analysis["score"]
-                            price = analysis["price"]
-                            sl = analysis["stop_loss"]
-                            tp = analysis["take_profit"]
-                            reasons = "\n• " + "\n• ".join(analysis["reasons"])
+                # Get H1 trend data
+                raw_h1 = await market_service.get_candles(symbol=symbol, timeframe="H1", limit=100)
+                df_h1 = pd.DataFrame(raw_h1) if isinstance(raw_h1, list) else raw_h1
 
-                            msg = (
-                                f"🚨 **INSTITUTIONAL SIGNAL DETECTED** 🚨\n\n"
-                                f"📌 **Symbol:** `{symbol}`\n"
-                                f"⏱ **Timeframe:** `{tf}`\n"
-                                f"🎯 **Action:** **{signal_type}**\n"
-                                f"📊 **Confluence Score:** `{score}`\n"
-                                f"💵 **Entry Price:** `{price}`\n"
-                                f"🛑 **Stop Loss:** `{sl}`\n"
-                                f"🎯 **Take Profit:** `{tp}`\n\n"
-                                f"🔍 **Confluence Reasons:**{reasons}\n\n"
-                                f"⚙️ **Mode:** `PAPER TRADING`"
-                            )
-                            logger.info(f"SIGNAL TRIGGERED | {symbol} {tf} {signal_type} | Score: {score}")
-                            await send_telegram_alert(msg)
+                for tf in timeframes:
+                    raw_tf = await market_service.get_candles(symbol=symbol, timeframe=tf, limit=200)
+                    
+                    if raw_tf:
+                        # Convert list to DataFrame safely
+                        df_tf = pd.DataFrame(raw_tf) if isinstance(raw_tf, list) else raw_tf
+
+                        if df_tf is not None and not df_tf.empty:
+                            analysis = evaluator.evaluate_signal(df_tf, df_h1)
                             
+                            if analysis.get("signal") in ["BUY", "SELL"]:
+                                signal_type = analysis["signal"]
+                                score = analysis["score"]
+                                price = analysis["price"]
+                                sl = analysis["stop_loss"]
+                                tp = analysis["take_profit"]
+                                reasons = "\n• " + "\n• ".join(analysis["reasons"])
+
+                                msg = (
+                                    f"🚨 **INSTITUTIONAL SIGNAL DETECTED** 🚨\n\n"
+                                    f"📌 **Symbol:** `{symbol}`\n"
+                                    f"⏱ **Timeframe:** `{tf}`\n"
+                                    f"🎯 **Action:** **{signal_type}**\n"
+                                    f"📊 **Confluence Score:** `{score}`\n"
+                                    f"💵 **Entry Price:** `{price}`\n"
+                                    f"🛑 **Stop Loss:** `{sl}`\n"
+                                    f"🎯 **Take Profit:** `{tp}`\n\n"
+                                    f"🔍 **Confluence Reasons:**{reasons}\n\n"
+                                    f"⚙️ **Mode:** `PAPER TRADING`"
+                                )
+                                logger.info(f"SIGNAL TRIGGERED | {symbol} {tf} {signal_type} | Score: {score}")
+                                await send_telegram_alert(msg)
+                                
         except Exception as e:
             logger.error(f"MARKET_SCHEDULER_ERROR | {e}")
         
