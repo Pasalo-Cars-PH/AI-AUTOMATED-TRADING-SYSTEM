@@ -2,7 +2,7 @@ import logging
 import datetime
 from typing import Optional
 
-from fastapi import FastAPI, status, Query
+from fastapi import FastAPI, status, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings, ApplicationStatus
 from app.safety_gate import safety_gate
@@ -10,6 +10,7 @@ from app.paper.account import paper_account
 from app.paper.analytics import PaperAnalytics
 from app.market.router import router as market_router
 from app.market.scheduler import market_scheduler
+from app.notifications.telegram import handle_telegram_command
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("trading_bot")
@@ -52,6 +53,16 @@ async def startup_event():
     print_startup_diagnostics(diag)
     # Start Live Market Data Background Loop
     await market_scheduler.start()
+
+# Telegram Interactive Webhook Endpoint
+@app.post("/telegram/webhook", status_code=status.HTTP_200_OK)
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+        await handle_telegram_command(data)
+    except Exception as e:
+        logger.error(f"Error handling webhook: {e}")
+    return {"status": "ok"}
 
 # Base Health & Status Endpoints
 @app.get("/", status_code=status.HTTP_200_OK)
