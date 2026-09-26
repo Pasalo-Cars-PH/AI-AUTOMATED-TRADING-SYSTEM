@@ -5,7 +5,13 @@ from fastapi import FastAPI, Request, Response
 
 from app.market.scheduler import market_scheduler
 
+# Siguraduhing naka-configure ang logging para mag-stream sa Render stdout/console
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger("trading_bot")
+logger.setLevel(logging.INFO)
 
 app = FastAPI(title="AI Trading Bot Engine")
 
