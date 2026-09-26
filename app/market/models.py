@@ -17,6 +17,7 @@ class DataQuality(str, Enum):
     MEDIUM = "MEDIUM"
     LOW = "LOW"
     CORRUPTED = "CORRUPTED"
+    CONFIRMED_DATA = "CONFIRMED_DATA"  # Added for Binance provider backward compatibility
 
 class ProviderStatus(str, Enum):
     HEALTHY = "HEALTHY"
