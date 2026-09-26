@@ -26,20 +26,20 @@ async def startup_event():
     logger.info(f"Trading Mode:       {trading_mode}")
     logger.info(f"Master Enable:      {master_enable}")
     logger.info(f"Kill Switch:        {kill_switch}")
-    logger.info("Multi-TF Engine:    ACTIVE (M5, M15, M30)")
+    logger.info("Multi-TF Engine:    ACTIVE (M5, M15)")
     logger.info("========================================")
     
     asyncio.create_task(run_market_scheduler())
 
 async def run_market_scheduler():
-    logger.info("MARKET_SCHEDULER_STARTING | Initializing Multi-Timeframe Loop...")
+    logger.info("MARKET_SCHEDULER_STARTING | Initializing M5 & M15 Loop...")
     symbols = ["BTCUSD", "ETHUSD", "SOLUSD", "XAUUSD", "EURUSD"]
-    timeframes = ["M5", "M15", "M30"]
+    timeframes = ["M5", "M15"]  # M5 at M15 lang ang i-e-execute
     
     while True:
         try:
             for symbol in symbols:
-                # Get H1 trend data
+                # Kunin ang H1 candles para sa Higher Timeframe Trend Alignment Filter
                 raw_h1 = await market_service.get_candles(symbol=symbol, timeframe="H1", limit=100)
                 df_h1 = pd.DataFrame(raw_h1) if isinstance(raw_h1, list) else raw_h1
 
@@ -47,7 +47,6 @@ async def run_market_scheduler():
                     raw_tf = await market_service.get_candles(symbol=symbol, timeframe=tf, limit=200)
                     
                     if raw_tf:
-                        # Convert list to DataFrame safely
                         df_tf = pd.DataFrame(raw_tf) if isinstance(raw_tf, list) else raw_tf
 
                         if df_tf is not None and not df_tf.empty:
@@ -83,7 +82,7 @@ async def run_market_scheduler():
 
 @app.get("/")
 async def root():
-    return {"status": "online", "message": "AI Trading Bot Multi-TF Engine Active"}
+    return {"status": "online", "message": "AI Trading Bot M5/M15 Engine Active"}
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
