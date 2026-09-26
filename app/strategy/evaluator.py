@@ -127,7 +127,7 @@ class InstitutionalBoostedEvaluator:
         if curr['macd'] > curr['macd_signal'] and curr['macd_hist'] > prev['macd_hist']:
             score_buy += 1; reasons_buy.append("L4: MACD Bullish Acceleration")
         elif curr['macd'] < curr['macd_signal'] and curr['macd_hist'] < prev['macd_hist']:
-            score_sell += 1; reasons_sell.append("L5: MACD Bearish Acceleration")
+            score_sell += 1; reasons_sell.append("L4: MACD Bearish Acceleration")
 
         # Layer 5: BB Middle Rebound
         if curr['close'] > curr['bb_middle'] and prev['close'] <= prev['bb_middle']:
@@ -195,3 +195,6 @@ class InstitutionalBoostedEvaluator:
             "score_sell": score_sell,
             "reason": "Score below 8/10 threshold"
         }
+
+# Aliases para maiwasan ang anumang import mismatch errors
+strategy_evaluator = InstitutionalBoostedEvaluator()
