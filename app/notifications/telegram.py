@@ -43,7 +43,7 @@ async def handle_telegram_command(data: dict):
     parts = text.split()
     command = parts[0].lower()
 
-    if command == "/start":
+    if command in ["/start", "start"]:
         msg = (
             "🤖 <b>AI Automated Trading System V2</b>\n\n"
             "Active Commands:\n"
@@ -58,8 +58,8 @@ async def handle_telegram_command(data: dict):
         )
         await send_telegram_message(msg, chat_id)
 
-    elif command == "/signals":
-        symbols = ["BTCUSD", "ETHUSD", "SOLUSD"]
+    elif command in ["/signals", "signals"]:
+        symbols = ["BTCUSD", "XAUUSD=X", "EURUSD=X", "ETHUSD", "SOLUSD"]
         response = "🤖 <b>Multi-Asset Strategy Engine Analysis</b>\n\n"
         for sym in symbols:
             candles = market_service.get_candles(sym, timeframe="M5")
@@ -70,7 +70,7 @@ async def handle_telegram_command(data: dict):
                 response += f"• <b>{sym}:</b> Fetching data...\n"
         await send_telegram_message(response, chat_id)
 
-    elif command == "/status":
+    elif command in ["/status", "status"]:
         engine_state = "PAUSED ⏸️" if IS_ENGINE_PAUSED else "RUNNING 🟢"
         status_msg = (
             f"📊 <b>Paper Account Status</b>\n\n"
@@ -82,7 +82,7 @@ async def handle_telegram_command(data: dict):
         )
         await send_telegram_message(status_msg, chat_id)
 
-    elif command == "/positions":
+    elif command in ["/positions", "positions"]:
         if not paper_account.open_positions:
             await send_telegram_message("📂 <b>No open paper positions.</b>", chat_id)
             return
@@ -98,8 +98,8 @@ async def handle_telegram_command(data: dict):
             )
         await send_telegram_message(msg, chat_id)
 
-    elif command == "/trades":
-        trades = paper_account.closed_positions[-5:]  # Get last 5 trades
+    elif command in ["/trades", "trades"]:
+        trades = paper_account.closed_positions[-5:]
         if not trades:
             await send_telegram_message("📋 <b>No trade history available yet.</b>", chat_id)
             return
@@ -143,15 +143,15 @@ async def handle_telegram_command(data: dict):
         )
         await send_telegram_message(msg, chat_id)
 
-    elif command == "/pause":
+    elif command in ["/pause", "pause"]:
         IS_ENGINE_PAUSED = True
         await send_telegram_message("⏸️ <b>Automated Trading Loop PAUSED.</b> No new trades will be opened.", chat_id)
 
-    elif command == "/resume":
+    elif command in ["/resume", "resume"]:
         IS_ENGINE_PAUSED = False
         await send_telegram_message("🟢 <b>Automated Trading Loop RESUMED.</b> Active scanning enabled.", chat_id)
 
-    elif command == "/closeall":
+    elif command in ["/closeall", "closeall"]:
         count = len(paper_account.open_positions)
         if count == 0:
             await send_telegram_message("ℹ️ No open positions to close.", chat_id)
