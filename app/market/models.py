@@ -32,7 +32,8 @@ class Candle:
     low: float
     close: float
     volume: float
-    symbol: Optional[str] = None  # Fixed: Added symbol field to accept symbol argument
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None  # Fixed: Added timeframe field to accept timeframe argument
     is_closed: bool = True
 
     def is_stale(self, max_age_seconds: int = 600) -> bool:
