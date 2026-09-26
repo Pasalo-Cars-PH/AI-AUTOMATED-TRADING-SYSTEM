@@ -1,5 +1,6 @@
 from fastapi import APIRouter, status, HTTPException
 from app.market.service import market_service
+from app.strategy.evaluator import strategy_evaluator
 
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
@@ -32,3 +33,11 @@ async def get_candles(symbol: str, timeframe: str):
         "fresh": market_service.is_data_fresh(symbol.upper(), timeframe.upper()),
         "candles": candles
     }
+
+@router.get("/analyze/{symbol}/{timeframe}", status_code=status.HTTP_200_OK)
+async def analyze_symbol(symbol: str, timeframe: str = "M5"):
+    candles = await market_service.get_candles_async(symbol.upper(), timeframe.upper())
+    if not candles:
+        raise HTTPException(status_code=404, detail=f"No candle data available for {symbol}")
+    analysis = strategy_evaluator.evaluate_m5_setup(symbol.upper(), candles)
+    return analysis
