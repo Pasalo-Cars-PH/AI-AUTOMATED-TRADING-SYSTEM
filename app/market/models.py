@@ -17,7 +17,7 @@ class DataQuality(str, Enum):
     MEDIUM = "MEDIUM"
     LOW = "LOW"
     CORRUPTED = "CORRUPTED"
-    CONFIRMED_DATA = "CONFIRMED_DATA"  # Added for Binance provider backward compatibility
+    CONFIRMED_DATA = "CONFIRMED_DATA"
 
 class ProviderStatus(str, Enum):
     HEALTHY = "HEALTHY"
@@ -32,6 +32,7 @@ class Candle:
     low: float
     close: float
     volume: float
+    symbol: Optional[str] = None  # Fixed: Added symbol field to accept symbol argument
     is_closed: bool = True
 
     def is_stale(self, max_age_seconds: int = 600) -> bool:
