@@ -3,11 +3,12 @@ import logging
 from app.market.service import market_service
 from app.strategy.evaluator import strategy_evaluator
 from app.paper.account import paper_account
-from app.notifications.telegram import send_telegram_message
+from app.notifications.telegram import send_telegram_message, IS_ENGINE_PAUSED
 
 logger = logging.getLogger("trading_bot")
 
-SYMBOLS_TO_MONITOR = ["BTCUSD", "ETHUSD", "SOLUSD"]
+# Kasama na ang Gold (XAUUSD=X) at EUR/USD (EURUSD=X)
+SYMBOLS_TO_MONITOR = ["BTCUSD", "XAUUSD=X", "EURUSD=X", "ETHUSD", "SOLUSD"]
 
 class MarketScheduler:
     def __init__(self):
@@ -23,6 +24,12 @@ class MarketScheduler:
     async def _loop(self):
         while self.is_running:
             try:
+                # 0. Check kung paused ang engine sa Telegram
+                if IS_ENGINE_PAUSED:
+                    logger.info("Market Scheduler loop is PAUSED. Skipping evaluation...")
+                    await asyncio.sleep(60)
+                    continue
+
                 for symbol in SYMBOLS_TO_MONITOR:
                     # 1. Fetch & Update Candle Data
                     await market_service.update_symbol_data(symbol, timeframe="M5")
