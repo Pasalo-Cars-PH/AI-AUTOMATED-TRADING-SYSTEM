@@ -56,7 +56,7 @@ class MarketScheduler:
                                 logger.info(f"PAPER TRADE REJECTED: {symbol} - {reason}")
                 
             except Exception as e:
-                logger.error(f"Error in market scheduler loop: {e}")
+                logger.error(f"Error in market scheduler loop: {e}", exc_info=True)
                 
             await asyncio.sleep(60)
 
