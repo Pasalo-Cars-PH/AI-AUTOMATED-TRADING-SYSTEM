@@ -1,38 +1,65 @@
 import asyncio
 import logging
 from app.market.service import market_service
+from app.strategy.evaluator import strategy_evaluator
+from app.paper.account import paper_account
+from app.paper.models import PositionType
 
-logger = logging.getLogger("market_scheduler")
+logger = logging.getLogger("trading_bot")
 
-ALL_SYMBOLS = [
-    "BTCUSD", "ETHUSD", "SOLUSD",
-    "XAUUSD", "EURUSD", "GBPUSD", "USDJPY",
-    "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"
-]
+SYMBOLS_TO_MONITOR = ["BTCUSD", "ETHUSD", "SOLUSD"]
 
 class MarketScheduler:
     def __init__(self):
-        self._running = False
-        self._lock = asyncio.Lock()
+        self.is_running = False
 
     async def start(self):
-        if self._running:
+        if self.is_running:
             return
-        self._running = True
-        await market_service.initialize()
-        asyncio.create_task(self._run_loop())
+        self.is_running = True
+        logger.info("Starting Market Data Loop & Automated Strategy Execution...")
+        asyncio.create_task(self._loop())
 
-    async def _run_loop(self):
-        while self._running:
-            async with self._lock:
-                for symbol in ALL_SYMBOLS:
-                    try:
-                        await market_service.update_symbol_data(symbol, timeframe="M5")
-                    except Exception as e:
-                        logger.error(f"Error updating market data for {symbol}: {e}")
-            await asyncio.sleep(60)
-
-    def stop(self):
-        self._running = False
+    async def _loop(self):
+        while self.is_running:
+            try:
+                for symbol in SYMBOLS_TO_MONITOR:
+                    # 1. Update Market Candles
+                    await market_service.update_symbol_data(symbol, timeframe="M5")
+                    
+                    # 2. Fetch Fresh Candles & Evaluate
+                    candles = market_service.get_candles(symbol, timeframe="M5")
+                    if candles:
+                        analysis = strategy_evaluator.evaluate_m5_setup(symbol, candles)
+                        action = analysis.get("action")
+                        score = analysis.get("score", 0)
+                        
+                        # 3. Auto-Trigger Paper Position if High Confluence
+                        if action in ["BUY", "SELL"] and score >= 70:
+                            pos_type = PositionType.BUY if action == "BUY" else PositionType.SELL
+                            latest_price = analysis["latest_price"]
+                            sl = analysis["trade_parameters"]["stop_loss"]
+                            tp = analysis["trade_parameters"]["take_profit"]
+                            
+                            trade, reason = paper_account.open_position(
+                                symbol=symbol,
+                                pos_type=pos_type,
+                                entry_price=latest_price,
+                                stop_loss=sl,
+                                take_profit=tp,
+                                strategy="M5_CONFLUENCE_V1",
+                                confluence_score=score,
+                                reasons=analysis["reasons"]
+                            )
+                            
+                            if trade:
+                                logger.info(f"PAPER TRADE EXECUTED: {action} {symbol} @ {latest_price} (Score: {score})")
+                            else:
+                                logger.info(f"PAPER TRADE REJECTED: {symbol} - {reason}")
+                
+            except Exception as e:
+                logger.error(f"Error in market scheduler loop: {e}")
+                
+            await asyncio.sleep(60) # Runs every 60 seconds
 
 market_scheduler = MarketScheduler()
