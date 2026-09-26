@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+from datetime import datetime, timezone
 import pandas as pd
 from fastapi import FastAPI, Request, Response
 
@@ -12,6 +13,11 @@ logger = logging.getLogger("trading_bot")
 
 app = FastAPI(title="AI Trading Bot")
 evaluator = InstitutionalBoostedEvaluator()
+
+def is_forex_market_open() -> bool:
+    """Sinisiyasat kung bukas ang Forex/Metals market (Lunes - Biyernes)"""
+    weekday = datetime.now(timezone.utc).weekday()
+    return weekday < 5  # 0 to 4 ay Monday to Friday (5 = Sabado, 6 = Linggo)
 
 @app.on_event("startup")
 async def startup_event():
@@ -33,12 +39,21 @@ async def startup_event():
 
 async def run_market_scheduler():
     logger.info("MARKET_SCHEDULER_STARTING | Initializing M5 & M15 Loop...")
-    symbols = ["BTCUSD", "ETHUSD", "SOLUSD", "XAUUSD", "EURUSD"]
+    
+    crypto_symbols = ["BTCUSD", "ETHUSD", "SOLUSD"]
+    forex_symbols = ["XAUUSD", "EURUSD"]
     timeframes = ["M5", "M15"]
     
     while True:
         try:
-            for symbol in symbols:
+            # Pagsasamahin ang Symbols batay sa Market Schedule
+            active_symbols = crypto_symbols.copy()
+            if is_forex_market_open():
+                active_symbols.extend(forex_symbols)
+            else:
+                logger.debug("WEEKEND_MODE | Forex/Metals markets closed. Scanning Crypto 24/7 only.")
+
+            for symbol in active_symbols:
                 try:
                     # Fetch H1 trend candles
                     raw_h1 = await market_service.get_candles(symbol=symbol, timeframe="H1", limit=100)
@@ -80,7 +95,7 @@ async def run_market_scheduler():
                                 await send_telegram_alert(msg)
 
                 except Exception as sym_err:
-                    # Pag sarado ang Forex/Gold market kapag weekend, i-skip lang nang malinis
+                    logger.warning(f"SYMBOL_SCAN_SKIPPED | {symbol} | Reason: {sym_err}")
                     continue
                                 
         except Exception as e:
