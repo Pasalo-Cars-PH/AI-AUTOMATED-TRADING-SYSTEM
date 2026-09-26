@@ -1,5 +1,6 @@
 import os
 import datetime
+import uuid
 from typing import List, Dict, Any, Optional
 from app.paper.models import PaperPosition, PositionState, NoTradeLog, SignalState
 
@@ -27,7 +28,7 @@ class PaperAccountManager:
         # Daily Stats Tracking
         self.daily_start_balance = self.initial_balance
 
-    def check_risk_limits() -> tuple[bool, Optional[str]]:
+    def check_risk_limits(self) -> tuple[bool, Optional[str]]:
         daily_pnl_pct = (self.equity - self.daily_start_balance) / self.daily_start_balance
         if daily_pnl_pct <= -self.max_daily_loss_pct:
             return False, "DAILY_LOSS_LIMIT_REACHED"
@@ -36,6 +37,34 @@ class PaperAccountManager:
             return False, "MAX_CONSECUTIVE_LOSSES_REACHED"
             
         return True, None
+
+    # Wrapper method para maging compatible sa scheduler calls
+    def open_position(
+        self,
+        symbol: str,
+        side: str = "BUY",
+        entry_price: float = 0.0,
+        stop_loss: float = 0.0,
+        take_profit: float = 0.0,
+        strategy: str = "MANUAL",
+        confluence_score: float = 0.0,
+        reasons: list = None,
+        **kwargs
+    ):
+        signal_id = f"SIG_{uuid.uuid4().hex[:8]}"
+        pos = self.execute_paper_order(
+            signal_id=signal_id,
+            symbol=symbol,
+            direction=side,
+            strategy=strategy,
+            score=confluence_score,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit
+        )
+        if pos:
+            return pos, "Success"
+        return None, "Order rejected by risk or safety guards"
 
     def execute_paper_order(
         self, 
@@ -47,12 +76,18 @@ class PaperAccountManager:
         entry_price: float, 
         stop_loss: float, 
         take_profit: float,
-        timeframe: str = "M15"
+        timeframe: str = "M5"
     ) -> Optional[PaperPosition]:
         
         # Hard Safety Guard
         if os.getenv("TRADING_MODE", "PAPER") != "PAPER":
             return None
+
+        # Check if symbol already has an open position
+        for pos in self.open_positions.values():
+            if pos.symbol == symbol:
+                self.log_no_trade(signal_id, symbol, direction, strategy, score, "POSITION_ALREADY_OPEN", timeframe)
+                return None
 
         # Risk Check
         allowed, reason = self.check_risk_limits()
@@ -64,15 +99,15 @@ class PaperAccountManager:
         slippage = self.slippage_pips
         spread = self.spread_pips
         
-        if direction == "BUY":
+        if direction.upper() == "BUY":
             simulated_entry = entry_price + spread + slippage
         else:
             simulated_entry = entry_price - spread - slippage
 
         # Calculate Lot Size based on Risk
-        sl_distance = abs(simulated_entry - stop_loss)
+        sl_distance = abs(simulated_entry - stop_loss) if stop_loss else simulated_entry * 0.01
         if sl_distance == 0:
-            return None
+            sl_distance = simulated_entry * 0.01
 
         risk_amount = self.equity * self.risk_per_trade
         volume = round(risk_amount / (sl_distance * 100000), 2)
@@ -84,7 +119,7 @@ class PaperAccountManager:
         pos = PaperPosition(
             signal_id=signal_id,
             symbol=symbol,
-            direction=direction,
+            direction=direction.upper(),
             strategy=strategy,
             score=score,
             signal_price=entry_price,
