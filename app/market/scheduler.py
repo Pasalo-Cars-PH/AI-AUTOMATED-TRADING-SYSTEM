@@ -3,7 +3,6 @@ import logging
 from app.market.service import market_service
 from app.strategy.evaluator import strategy_evaluator
 from app.paper.account import paper_account
-from app.paper.models import PositionType
 
 logger = logging.getLogger("trading_bot")
 
@@ -36,14 +35,13 @@ class MarketScheduler:
                         
                         # 3. Auto-Execute Trade on High Confluence (>= 70)
                         if action in ["BUY", "SELL"] and score >= 70:
-                            pos_type = PositionType.BUY if action == "BUY" else PositionType.SELL
                             latest_price = analysis["latest_price"]
                             sl = analysis["trade_parameters"]["stop_loss"]
                             tp = analysis["trade_parameters"]["take_profit"]
                             
                             trade, reason = paper_account.open_position(
                                 symbol=symbol,
-                                position_type=pos_type,
+                                side=action,
                                 entry_price=latest_price,
                                 stop_loss=sl,
                                 take_profit=tp,
