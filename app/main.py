@@ -23,7 +23,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # --- MULTI-ASSET CONFIGURATION ---
 SYMBOLS = {
     "BTC-USD": "Bitcoin (Crypto)",
-    "XAUUSD=X": "Gold (Commodity)",
+    "GC=F": "Gold (Commodity)",       # Binago mula XAUUSD=X para maiwasan ang 404 error
     "EURUSD=X": "EUR/USD (Forex)"
 }
 TIMEFRAME = "15m"
@@ -107,7 +107,7 @@ def run_bot():
         "🤖 *Multi-Asset Strategy Engine Activated*\n\n"
         "Currently Monitoring:\n"
         "• 🟡 `BTC-USD` (Bitcoin)\n"
-        "• 🏆 `XAUUSD=X` (Gold)\n"
+        "• 🏆 `GC=F` (Gold)\n"
         "• 💶 `EURUSD=X` (EUR/USD)\n\n"
         "⏱️ Timeframe: `15m` | Strategy: `EMA200 + RSI + ATR`"
     )
