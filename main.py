@@ -1,15 +1,32 @@
 import os
 import time
+import threading
 import requests
 import yfinance as yf
 import pandas as pd
 import ta
+import uvicorn
+from fastapi import FastAPI
 
-# Environment Variables
+# --- FASTAPI HEALTH CHECK SERVER ---
+app = FastAPI()
+
+@app.api_route("/", methods=["GET", "HEAD"])
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health_check():
+    return {"status": "ok", "message": "Trading bot is running"}
+
+def run_server():
+    # Render assigns a PORT environment variable dynamically
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+# --- ENVIRONMENT VARIABLES ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Multi-Asset Configuration
+# --- MULTI-ASSET CONFIGURATION ---
 SYMBOLS = {
     "BTC-USD": "Bitcoin (Crypto)",
     "XAUUSD=X": "Gold (Commodity)",
@@ -97,7 +114,7 @@ def analyze_symbol(symbol, name):
         )
         send_telegram_alert(msg)
 
-def main():
+def run_bot():
     send_telegram_alert(
         "🤖 *Multi-Asset Strategy Engine Activated*\n\n"
         "Currently Monitoring:\n"
@@ -117,4 +134,9 @@ def main():
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    main()
+    # Start web server thread for Render & UptimeRobot pings
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    
+    # Run the main trading bot process
+    run_bot()
