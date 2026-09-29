@@ -46,7 +46,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # Mapping YFinance Symbol -> MT5 Broker Symbol Name
 SYMBOLS = {
     "BTC-USD": {"name": "Bitcoin (Crypto)", "mt5_symbol": "BTCUSD"},
-    "GC=F": {"name": "Gold (Commodity)", "mt5_symbol": "XAUUSD"},
+    "XAUUSD=X": {"name": "Gold (Spot)", "mt5_symbol": "XAUUSD"},
     "EURUSD=X": {"name": "EUR/USD (Forex)", "mt5_symbol": "EURUSD"}
 }
 TIMEFRAME = "5m"       # Pinalitan sa 5M para sa fast scalping/day trading
@@ -158,7 +158,7 @@ def run_bot():
         "🤖 *Triple EMA Strategy Engine Activated*\n\n"
         "Currently Monitoring (5M Timeframe):\n"
         "• 🟡 `BTC-USD` (Bitcoin)\n"
-        "• 🏆 `GC=F` (Gold)\n"
+        "• 🏆 `XAUUSD=X` (Gold)\n"
         "• 💶 `EURUSD=X` (EUR/USD)\n\n"
         "⏱️ Interval: `1m check` | Strategy: `Triple EMA (9, 21, 55) + ATR`"
     )
