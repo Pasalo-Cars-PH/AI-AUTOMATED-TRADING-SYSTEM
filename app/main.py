@@ -46,10 +46,10 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # Mapping YFinance Symbol -> MT5 Broker Symbol Name
 SYMBOLS = {
     "BTC-USD": {"name": "Bitcoin (Crypto)", "mt5_symbol": "BTCUSD"},
-    "XAUUSD=X": {"name": "Gold (Spot)", "mt5_symbol": "XAUUSD"},
+    "GC=F": {"name": "Gold (Spot)", "mt5_symbol": "XAUUSD"},
     "EURUSD=X": {"name": "EUR/USD (Forex)", "mt5_symbol": "EURUSD"}
 }
-TIMEFRAME = "5m"       # Pinalitan sa 5M para sa fast scalping/day trading
+TIMEFRAME = "5m"       # 5M timeframe para sa scalping
 CHECK_INTERVAL = 60    # Chino-check ang market bawat 60 seconds (1 minute)
 
 def send_telegram_alert(message):
@@ -74,7 +74,7 @@ def analyze_symbol(symbol, info):
     mt5_symbol = info["mt5_symbol"]
 
     try:
-        # Gamitin ang Ticker history para maiwasan ang 401 Unauthorized block ng Yahoo
+        # Gamitin ang Ticker history para maiwasan ang blocking ng Yahoo
         ticker_obj = yf.Ticker(symbol)
         df = ticker_obj.history(period="5d", interval=TIMEFRAME)
     except Exception as err:
@@ -109,12 +109,12 @@ def analyze_symbol(symbol, info):
 
     print(f"[{symbol}] Price: {current_price:.4f} | EMA9: {ema_9:.4f} | EMA21: {ema_21:.4f} | EMA55: {ema_55:.4f}")
 
-    # 🟢 BUY CONDITION: EMA 9 crosses ABOVE EMA 21 WHILE Price & EMA 9 are ABOVE EMA 55
+    # 🟢 BUY CONDITION
     if prev_ema_9 < prev_ema_21 and ema_9 > ema_21 and current_price > ema_55:
         sl = current_price - (atr * 1.5)
         tp = current_price + (atr * 3.0)
         
-        # Save signal para sa MT5 EA execution
+        # Target symbol na ipapasa sa MT5 EA ay XAUUSD
         latest_trade_signal = {
             "symbol": mt5_symbol,
             "action": "BUY",
@@ -124,7 +124,7 @@ def analyze_symbol(symbol, info):
         
         msg = (
             f"🚀 *HIGH-PROBABILITY TRIPLE EMA BUY SIGNAL*\n\n"
-            f"📊 *Asset:* `{symbol}` ({name})\n"
+            f"📊 *Asset:* `{mt5_symbol}` ({name})\n"
             f"💰 *Entry Price:* `${current_price:.4f}`\n"
             f"🔴 *Stop Loss (SL):* `${sl:.4f}`\n"
             f"🟢 *Take Profit (TP):* `${tp:.4f}`\n\n"
@@ -134,12 +134,12 @@ def analyze_symbol(symbol, info):
         )
         send_telegram_alert(msg)
 
-    # 🔴 SELL CONDITION: EMA 9 crosses BELOW EMA 21 WHILE Price & EMA 9 are BELOW EMA 55
+    # 🔴 SELL CONDITION
     elif prev_ema_9 > prev_ema_21 and ema_9 < ema_21 and current_price < ema_55:
         sl = current_price + (atr * 1.5)
         tp = current_price - (atr * 3.0)
         
-        # Save signal para sa MT5 EA execution
+        # Target symbol na ipapasa sa MT5 EA ay XAUUSD
         latest_trade_signal = {
             "symbol": mt5_symbol,
             "action": "SELL",
@@ -149,7 +149,7 @@ def analyze_symbol(symbol, info):
         
         msg = (
             f"🔻 *HIGH-PROBABILITY TRIPLE EMA SELL SIGNAL*\n\n"
-            f"📊 *Asset:* `{symbol}` ({name})\n"
+            f"📊 *Asset:* `{mt5_symbol}` ({name})\n"
             f"💰 *Entry Price:* `${current_price:.4f}`\n"
             f"🔴 *Stop Loss (SL):* `${sl:.4f}`\n"
             f"🟢 *Take Profit (TP):* `${tp:.4f}`\n\n"
@@ -164,7 +164,7 @@ def run_bot():
         "🤖 *Triple EMA Strategy Engine Activated*\n\n"
         "Currently Monitoring (5M Timeframe):\n"
         "• 🟡 `BTC-USD` (Bitcoin)\n"
-        "• 🏆 `XAUUSD=X` (Gold)\n"
+        "• 🏆 `XAUUSD` (Gold)\n"
         "• 💶 `EURUSD=X` (EUR/USD)\n\n"
         "⏱️ Interval: `1m check` | Strategy: `Triple EMA (9, 21, 55) + ATR`"
     )
