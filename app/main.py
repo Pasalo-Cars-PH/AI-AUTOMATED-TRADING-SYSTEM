@@ -73,7 +73,13 @@ def analyze_symbol(symbol, info):
     name = info["name"]
     mt5_symbol = info["mt5_symbol"]
 
-    df = yf.download(tickers=symbol, period="5d", interval=TIMEFRAME, progress=False)
+    try:
+        # Gamitin ang Ticker history para maiwasan ang 401 Unauthorized block ng Yahoo
+        ticker_obj = yf.Ticker(symbol)
+        df = ticker_obj.history(period="5d", interval=TIMEFRAME)
+    except Exception as err:
+        print(f"[{symbol}] Error fetching data: {err}")
+        return
     
     if df.empty or len(df) < 55:
         print(f"[{symbol}] Insufficient market data or market closed.")
