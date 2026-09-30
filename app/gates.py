@@ -1,7 +1,7 @@
 import pandas as pd
 import yfinance as yf
 
-# DATA PROVIDER AUDIT MAP (Prevents proxy substitution)
+# DATA PROVIDER AUDIT MAP
 SYMBOL_MAP = {
     "BTC-USD": {
         "normalized_symbol": "BTCUSD",
@@ -31,7 +31,7 @@ def get_symbol_metadata(symbol: str) -> dict:
         "asset_class": "UNKNOWN"
     })
 
-# HARD SAFETY GATES (Binary PASS / FAIL)
+# HARD SAFETY GATES
 def check_data_quality_gate(df: pd.DataFrame) -> tuple[bool, str]:
     if df is None or df.empty or len(df) < 55:
         return False, "INSUFFICIENT_DATA_LENGTH"
@@ -40,7 +40,6 @@ def check_data_quality_gate(df: pd.DataFrame) -> tuple[bool, str]:
     return True, "PASS"
 
 def check_data_quality(df: pd.DataFrame) -> tuple[bool, str]:
-    """Backward compatibility wrapper."""
     return check_data_quality_gate(df)
 
 def check_rr_gate(entry: float, sl: float, tp: float, min_rr: float = 1.5) -> tuple[bool, float, str]:
@@ -53,7 +52,7 @@ def check_rr_gate(entry: float, sl: float, tp: float, min_rr: float = 1.5) -> tu
         return False, round(rr_ratio, 2), f"INSUFFICIENT_RR ({rr_ratio:.2f} < {min_rr})"
     return True, round(rr_ratio, 2), "PASS"
 
-# ANALYTICAL QUALITY SCORING ENGINE (Adds to Score, Does Not Block Independently)
+# ANALYTICAL QUALITY SCORING ENGINE
 def calculate_calibrated_confluence_score(factors: dict) -> int:
     score = 0
     score += 15 if factors.get("trend_aligned") else 0
@@ -68,7 +67,7 @@ def calculate_calibrated_confluence_score(factors: dict) -> int:
     score += 5 if factors.get("data_quality_bonus") else 0
     return score
 
-# MAIN GATED DECISION ENGINE
+# MAIN GATED DECISION ENGINE WITH HARD LIVE SECURITY BOUNDARY
 def evaluate_calibrated_candidate(
     symbol: str,
     df: pd.DataFrame,
@@ -81,20 +80,35 @@ def evaluate_calibrated_candidate(
     news_blocked: bool = False,
     risk_exceeded: bool = False,
     master_enable: bool = False,
-    kill_switch: bool = True
+    kill_switch: bool = True,
+    trading_mode: str = "PAPER",
+    is_paper_override: bool = False
 ) -> tuple[str, str, int, dict]:
     """
     Evaluates candidate signal against hard safety gates and weighted scoring.
-    Returns: (decision_state, failed_hard_gate, confluence_score, full_audit_dict)
-    Decision States: REJECTED, WATCH, ACTIONABLE_PAPER_PASS
+    SECURITY INVARIANT: paper_override CANNOT unlock LIVE execution under any circumstance.
     """
+    # STRICT LIVE GUARDRAIL
+    if trading_mode == "LIVE" and is_paper_override:
+        return "REJECTED", "SECURITY_VIOLATION_PAPER_OVERRIDE_FORBIDDEN_IN_LIVE_MODE", 0, {
+            "execution_lock": "FAIL_SECURITY_OVERRIDE"
+        }
+
+    effective_master = master_enable
+    effective_kill = kill_switch
+
+    # Paper-only request-scoped authorization
+    if is_paper_override and trading_mode == "PAPER":
+        effective_master = True
+        effective_kill = False
+
     hard_gates = {
         "data_quality": "PASS",
         "news_gate": "PASS",
         "risk_gate": "PASS",
         "rr_gate": "PASS",
         "m5_closed_gate": "PASS" if m5_candle_closed else "UNCLOSED",
-        "execution_lock": "PASS" if (master_enable and not kill_switch) else "LOCKED"
+        "execution_lock": "PASS" if (effective_master and not effective_kill) else "LOCKED"
     }
 
     # 1. EVALUATE HARD SAFETY GATES
@@ -125,11 +139,10 @@ def evaluate_calibrated_candidate(
     if not m5_candle_closed:
         return "WATCH", "M5_CANDLE_UNCLOSED", score, hard_gates
 
-    # 4. SAFETY LOCK CHECK FOR PAPER EXECUTION
-    if not master_enable or kill_switch:
+    # 4. SAFETY LOCK CHECK FOR EXECUTION
+    if not effective_master or effective_kill:
         return "REJECTED", "EXECUTION_LOCK_ACTIVE (MASTER_ENABLE=False / KILL_SWITCH=True)", score, hard_gates
 
     return "ACTIONABLE_PAPER_PASS", "NONE", score, hard_gates
 
-# BACKWARD-COMPATIBILITY ALIAS FOR MAIN.PY IMPORTS
 evaluate_trade_candidate = evaluate_calibrated_candidate
