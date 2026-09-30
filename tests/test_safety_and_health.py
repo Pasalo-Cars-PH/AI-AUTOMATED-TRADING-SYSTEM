@@ -1,20 +1,26 @@
-import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 
 client = TestClient(app)
 
 def test_root_get_and_head():
-    res_get = client.get("/")
-    assert res_get.status_code == 200
-    assert "online" in res_get.json()["status"]
+    response = client.get("/")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["mode"] == "PAPER"
+    assert data["master_enable"] is False
+    assert data["kill_switch"] is True
 
 def test_health_endpoint():
-    res = client.get("/health")
-    assert res.status_code == 200
-    assert res.json()["status"] == "healthy"
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["kill_switch"] is True
 
-def test_telegram_webhook_handling():
-    res = client.post("/telegram/webhook", json={"update_id": 12345})
-    assert res.status_code == 200
-    assert res.json()["status"] == "ok"
+def test_signal_execution_lock():
+    response = client.get("/signal")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["reason"] == "STRICT_EXECUTION_LOCK_ACTIVE"
+    assert data["mode"] == "PAPER"
