@@ -3,10 +3,13 @@ import yfinance as yf
 
 # 1. DATA QUALITY GATE
 def check_data_quality(df):
-    if df.empty or len(df) < 55:
+    if df is None or df.empty or len(df) < 55:
         return False, "INSUFFICIENT_DATA"
-    if df['Close'].isnull().any():
+    
+    # Inayos gamit ang .values.any() para maiwasan ang Series ambiguity error
+    if df['Close'].isnull().values.any():
         return False, "MISSING_OR_INVALID_PRICES"
+        
     return True, "PASS"
 
 # 2. MULTI-TIMEFRAME GATE (D1 -> H1 -> M5)
@@ -14,16 +17,22 @@ def check_mtf_alignment(symbol):
     try:
         # Fetch H1 trend
         df_h1 = yf.download(tickers=symbol, period="5d", interval="1h", progress=False)
+        
+        if df_h1.empty or len(df_h1) < 55:
+            return False, "NEUTRAL"
+
         if isinstance(df_h1.columns, pd.MultiIndex):
             df_h1.columns = df_h1.columns.get_level_values(0)
         
-        ema_55_h1 = df_h1['Close'].ewm(span=55, adjust=False).mean().iloc[-1]
-        price_h1 = df_h1['Close'].iloc[-1]
+        # Tinitiyak na scalar float value ang makukuha
+        ema_55_h1 = float(df_h1['Close'].ewm(span=55, adjust=False).mean().iloc[-1])
+        price_h1 = float(df_h1['Close'].iloc[-1])
         
         # Bullish if H1 > EMA 55, Bearish if H1 < EMA 55
         h1_trend = "BULLISH" if price_h1 > ema_55_h1 else "BEARISH"
         return True, h1_trend
     except Exception as e:
+        print(f"MTF Gate Exception for {symbol}: {e}")
         return False, "NEUTRAL"
 
 # 3. CONFLUENCE SCORE CALCULATOR (Min Score: 75)
@@ -50,8 +59,7 @@ def calculate_confluence_score(m5_signal, h1_trend, rsi_value, atr_value):
 
 # 4. STRICT EXECUTION LOCK EVALUATOR
 def evaluate_trade_candidate(symbol, m5_action, price, ema55, rsi, atr):
-    # Gate 1: Data Quality Check
-    # Gate 2: MTF Check
+    # Gate 1 & 2: MTF Check
     mtf_pass, h1_trend = check_mtf_alignment(symbol)
     if not mtf_pass:
         return "REJECTED_BY_DATA_GATE", 0
