@@ -1,7 +1,7 @@
 import os
 import requests
 from datetime import datetime, timezone
-from fastapi import FastAPI, BackgroundTasks, Query
+from fastapi import FastAPI, BackgroundTasks, Query, Request
 import pandas as pd
 import yfinance as yf
 
@@ -221,3 +221,14 @@ def trigger_manual_scan(
         "paper_test_mode": paper_test,
         "message": f"Manual scan triggered (Paper Test Mode: {paper_test}). Audit reports dispatched to Telegram."
     }
+
+# 🤖 TELEGRAM WEBHOOK ENDPOINT (Fixes 404 Error)
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+        print(f"[TELEGRAM WEBHOOK] Payload received: {data}")
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"[TELEGRAM WEBHOOK ERROR] {e}")
+        return {"status": "error", "message": str(e)}
