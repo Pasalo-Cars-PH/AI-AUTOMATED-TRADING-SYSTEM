@@ -9,15 +9,13 @@ logger.setLevel(logging.INFO)
 
 # Configured Authorized IDs (Comma-separated string of chat/user IDs)
 ALLOWED_CHAT_IDS = set(
-    [cid.strip() for cid.strip() in os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",") if cid.strip()]
+    [cid.strip() for cid in os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",") if cid.strip()]
 )
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 def is_authorized(chat_id: int | str) -> bool:
     if not ALLOWED_CHAT_IDS:
-        # Defaults to True only if no whitelist is explicitly set (for dev/testing), 
-        # but in production TELEGRAM_ALLOWED_CHAT_IDS should be set.
         return True
     return str(chat_id) in ALLOWED_CHAT_IDS
 
@@ -62,7 +60,6 @@ def handle_telegram_command(
 
     if not auth_passed:
         logger.warning(f"UNAUTHORIZED_ATTEMPT | chat_hash={safe_chat_hash} | user={user} | text={text}")
-        # Unauthorized users receive no sensitive information
         return {"status": "unauthorized", "chat_id": chat_id}
 
     # Extract command
