@@ -1,7 +1,7 @@
 import os
 import requests
 from datetime import datetime, timezone
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Query
 import pandas as pd
 import yfinance as yf
 
@@ -14,7 +14,7 @@ from app.gates import (
 
 app = FastAPI(title="Deterministic Gated Trading Engine", version="2.0.0")
 
-# 🔒 SAFETY INVARIANTS (HARD-LOCKED SECURITY BOUNDARY)
+# 🔒 SAFETY INVARIANTS (HARD-LOCKED SECURITY BOUNDARY FOR LIVE DEFAULT)
 MASTER_ENABLE = False
 KILL_SWITCH = True
 TRADING_MODE = "PAPER"
@@ -76,8 +76,35 @@ def log_candidate_rejection(symbol: str, m5_action: str, failed_gate: str, score
     )
     send_telegram_alert(msg)
 
+# STRUCTURED PAPER EXECUTION LOG
+def log_paper_execution(symbol: str, m5_action: str, entry: float, sl: float, tp: float, score: int, gate_checklist: dict):
+    meta = get_symbol_metadata(symbol)
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    event_id = f"PAPER-{int(datetime.now(timezone.utc).timestamp())}"
+
+    checklist_str = "\n".join([f"  ✅ *{gate.upper()}:* `{status}`" for gate, status in gate_checklist.items()])
+
+    msg = (
+        f"📝 *PAPER EXECUTED*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"• *Symbol:* `{meta['normalized_symbol']}`\n"
+        f"• *Action:* `{m5_action}`\n"
+        f"• *Confluence Score:* `{score}/100`\n\n"
+        f"📍 *TRADE DETAILS*\n"
+        f"• *Entry:* `{entry}`\n"
+        f"• *Stop Loss:* `{sl}`\n"
+        f"• *Take Profit:* `{tp}`\n\n"
+        f"🛡️ *HARD GATE CHECKLIST*\n"
+        f"{checklist_str}\n\n"
+        f"📡 *DATA PROVIDER AUDIT*\n"
+        f"• *Provider:* `{meta['provider']}` | *Source:* `{meta['source_symbol']}`\n"
+        f"🟢 *Execution Lock:* `PASSED (PAPER)`\n"
+        f"🆔 *ID:* `{event_id}` | ⏰ `{now_utc}`"
+    )
+    send_telegram_alert(msg)
+
 # CANDIDATE EVALUATION PIPELINE
-def process_symbol_scan(symbol: str):
+def process_symbol_scan(symbol: str, master_override: bool = False, kill_override: bool = True):
     daily_stats["total_scans"] += 1
     meta = get_symbol_metadata(symbol)
 
@@ -120,6 +147,10 @@ def process_symbol_scan(symbol: str):
             "data_quality_bonus": True
         }
 
+        # Resolve Master and Kill switch settings (Supports controlled paper execution testing)
+        use_master = master_override if master_override else MASTER_ENABLE
+        use_kill = kill_override if master_override else KILL_SWITCH
+
         status, failed_gate, score, gate_checklist = evaluate_calibrated_candidate(
             symbol=symbol,
             df=df,
@@ -129,8 +160,8 @@ def process_symbol_scan(symbol: str):
             tp=tp,
             m5_candle_closed=True,
             analytical_factors=analytical_factors,
-            master_enable=MASTER_ENABLE,
-            kill_switch=KILL_SWITCH
+            master_enable=use_master,
+            kill_switch=use_kill
         )
 
         daily_stats["scores"].append(score)
@@ -139,6 +170,9 @@ def process_symbol_scan(symbol: str):
             daily_stats["rejected_candidates"] += 1
             daily_stats["rejection_breakdown"][failed_gate] = daily_stats["rejection_breakdown"].get(failed_gate, 0) + 1
             log_candidate_rejection(symbol, m5_action, failed_gate, score, gate_checklist)
+        elif status == "ACTIONABLE_PAPER_PASS":
+            daily_stats["paper_executions"] += 1
+            log_paper_execution(symbol, m5_action, price, sl, tp, score, gate_checklist)
         elif status == "WATCH":
             daily_stats["watch_candidates"] += 1
 
@@ -176,10 +210,18 @@ def signal_endpoint():
     }
 
 @app.get("/test-scan")
-def trigger_manual_scan(background_tasks: BackgroundTasks):
+def trigger_manual_scan(
+    background_tasks: BackgroundTasks,
+    paper_test: bool = Query(False, description="Set to True for controlled paper execution test")
+):
+    master_override = True if paper_test else MASTER_ENABLE
+    kill_override = False if paper_test else KILL_SWITCH
+
     for symbol in SYMBOL_MAP.keys():
-        background_tasks.add_task(process_symbol_scan, symbol)
+        background_tasks.add_task(process_symbol_scan, symbol, master_override, kill_override)
+    
     return {
         "status": "success",
-        "message": "Manual scan triggered. Audit reports dispatched to Telegram."
+        "paper_test_mode": paper_test,
+        "message": f"Manual scan triggered (Paper Test: {paper_test}). Audit reports dispatched to Telegram."
     }
