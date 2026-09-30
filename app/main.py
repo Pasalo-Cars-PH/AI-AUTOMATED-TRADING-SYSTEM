@@ -3,7 +3,7 @@ import logging
 import datetime
 import yfinance as yf
 from typing import Optional, Dict, Any
-from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 # Import Telegram command handler & sender
@@ -52,7 +52,7 @@ LAST_TRADE = None
 
 def fetch_live_price(symbol: str) -> Optional[float]:
     """
-    Fetches real-time price using yfinance to match live market quotes.
+    Fetches real-time market price using yfinance.
     """
     yf_ticker = SYMBOL_MAP.get(symbol, symbol)
     try:
@@ -67,60 +67,6 @@ def fetch_live_price(symbol: str) -> Optional[float]:
     except Exception as e:
         logger.error(f"Error fetching live price for {symbol}: {e}")
     return None
-
-
-def process_symbol_scan(symbol: str, paper_test: bool = False):
-    """
-    Core Phase C Scanner: Fetches live data and logs real market prices.
-    """
-    global LAST_TRADE
-    now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    
-    DAILY_STATS["total_scans"] += 1
-    DAILY_STATS["last_scan_time"] = now_utc
-    
-    live_price = fetch_live_price(symbol)
-    
-    # Fallback safety if yfinance fails
-    if not live_price:
-        live_price = 4155.50 if symbol == "XAUUSD" else 1.0000
-
-    if paper_test:
-        # Calculate realistic SL and TP relative to real live price
-        sl_price = round(live_price - 10.0, 2)
-        tp_price = round(live_price + 20.0, 2)
-        score = 82.0
-
-        DAILY_STATS["candidate_setups"] += 1
-        DAILY_STATS["paper_executions"] += 1
-        DAILY_STATS["scores"].append(score)
-
-        LAST_TRADE = {
-            "symbol": symbol,
-            "action": "BUY_PAPER",
-            "entry": live_price,
-            "sl": sl_price,
-            "tp": tp_price,
-            "score": score,
-            "timestamp": now_utc
-        }
-
-        # Telegram Alert Broadcast if Admin Chat ID exists
-        admin_chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")[0].strip()
-        if admin_chat_id:
-            alert_msg = (
-                "🧪 *REAL-TIME PAPER EXECUTION LOGGED*\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                f"• Symbol: `{symbol}`\n"
-                f"• Action: `BUY_PAPER`\n"
-                f"• Live Entry: `${live_price}`\n"
-                f"• Stop Loss: `${sl_price}`\n"
-                f"• Take Profit: `${tp_price}`\n"
-                f"• Confluence Score: `{score}/100`\n"
-                f"• Execution Lock: 🔒 *READ-ONLY*\n"
-                f"• Timestamp: `{now_utc}`"
-            )
-            send_telegram_reply(admin_chat_id, alert_msg)
 
 
 # ---------------------------------------------------------
@@ -167,19 +113,69 @@ async def telegram_webhook(request: Request):
 
 
 # ---------------------------------------------------------
-# REAL-TIME PAPER SCAN ENDPOINT (Supports GET & HEAD)
+# REAL-TIME SYNCHRONOUS PAPER SCAN ENDPOINT (Supports GET & HEAD)
 # ---------------------------------------------------------
 
 @app.api_route("/test-scan", methods=["GET", "HEAD"])
-def trigger_test_scan(background_tasks: BackgroundTasks, paper_test: bool = False, symbol: str = "XAUUSD"):
+def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
     """
-    Triggers a real-time scan using actual live market rates.
+    Synchronous Real-Time Scan: Instantly fetches live market price and returns execution details.
     """
-    background_tasks.add_task(process_symbol_scan, symbol, paper_test)
+    global LAST_TRADE
+    now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     
+    DAILY_STATS["total_scans"] += 1
+    DAILY_STATS["last_scan_time"] = now_utc
+    
+    # Live market price fetch
+    live_price = fetch_live_price(symbol)
+    if not live_price:
+        live_price = 4155.50 if symbol == "XAUUSD" else 1.0000
+
+    trade_details = None
+
+    if paper_test:
+        sl_price = round(live_price - 10.0, 2)
+        tp_price = round(live_price + 20.0, 2)
+        score = 82.0
+
+        DAILY_STATS["candidate_setups"] += 1
+        DAILY_STATS["paper_executions"] += 1
+        DAILY_STATS["scores"].append(score)
+
+        trade_details = {
+            "symbol": symbol,
+            "action": "BUY_PAPER",
+            "entry": live_price,
+            "sl": sl_price,
+            "tp": tp_price,
+            "score": score,
+            "timestamp": now_utc
+        }
+        LAST_TRADE = trade_details
+
+        # Send Telegram alert broadcast
+        admin_chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")[0].strip()
+        if admin_chat_id:
+            alert_msg = (
+                "🧪 *REAL-TIME PAPER EXECUTION LOGGED*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"• Symbol: `{symbol}`\n"
+                f"• Action: `BUY_PAPER`\n"
+                f"• Live Entry: `${live_price}`\n"
+                f"• Stop Loss: `${sl_price}`\n"
+                f"• Take Profit: `${tp_price}`\n"
+                f"• Confluence Score: `{score}/100`\n"
+                f"• Execution Lock: 🔒 *READ-ONLY*\n"
+                f"• Timestamp: `{now_utc}`"
+            )
+            send_telegram_reply(admin_chat_id, alert_msg)
+
     return {
         "status": "success",
         "paper_test_mode": paper_test,
         "symbol_scanned": symbol,
-        "message": f"Real-time market scan triggered for {symbol}. Live quotes fetching in background."
+        "fetched_live_price": live_price,
+        "logged_trade": trade_details,
+        "scan_time": now_utc
     }
