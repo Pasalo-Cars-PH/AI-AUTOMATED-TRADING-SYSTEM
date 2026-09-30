@@ -1,6 +1,7 @@
 import os
 import requests
 from datetime import datetime, timezone
+from typing import Optional, Dict, Any
 from fastapi import FastAPI, BackgroundTasks, Query, Request
 import pandas as pd
 import yfinance as yf
@@ -11,10 +12,11 @@ from app.gates import (
     get_symbol_metadata,
     SYMBOL_MAP
 )
+from app.telegram import handle_telegram_command
 
-app = FastAPI(title="Deterministic Gated Trading Engine", version="2.0.0")
+app = FastAPI(title="Deterministic Gated Trading Engine", version="2.1.0")
 
-# 🔒 HARD SAFETY INVARIANTS
+# 🔒 HARD SAFETY INVARIANTS (STRICT EXECUTION LOCK)
 MASTER_ENABLE = False
 KILL_SWITCH = True
 TRADING_MODE = "PAPER"  # Hard-locked default
@@ -22,6 +24,7 @@ TRADING_MODE = "PAPER"  # Hard-locked default
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# GLOBAL SYSTEM TRACKERS FOR PHASE C DATA COLLECTION
 daily_stats = {
     "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     "total_scans": 0,
@@ -32,23 +35,33 @@ daily_stats = {
     "rejection_breakdown": {},
     "symbol_breakdown": {"BTCUSD": 0, "XAUUSD": 0, "EURUSD": 0},
     "scores": [],
-    "system_errors": 0
+    "system_errors": 0,
+    "last_scan_time": "N/A"
 }
 
-def send_telegram_alert(message: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+# Track last executed paper trade for /lasttrade observability endpoint
+last_paper_execution: Optional[Dict[str, Any]] = None
+
+
+def send_telegram_alert(message: str, target_chat_id: Optional[str] = None):
+    """
+    Sends generic system alerts or dispatches to a specific chat_id.
+    """
+    dest_chat_id = target_chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not dest_chat_id:
         print("[TELEGRAM] Missing Bot Token or Chat ID. Alert skipped.")
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
+            "chat_id": dest_chat_id,
             "text": message,
             "parse_mode": "Markdown"
         }
         requests.post(url, json=payload, timeout=5)
     except Exception as e:
         print(f"[TELEGRAM ERROR] Failed to deliver alert: {e}")
+
 
 def log_candidate_rejection(symbol: str, m5_action: str, failed_gate: str, score: int, gate_checklist: dict, is_paper_override: bool):
     meta = get_symbol_metadata(symbol)
@@ -76,10 +89,24 @@ def log_candidate_rejection(symbol: str, m5_action: str, failed_gate: str, score
     )
     send_telegram_alert(msg)
 
+
 def log_paper_execution(symbol: str, m5_action: str, entry: float, sl: float, tp: float, score: int, gate_checklist: dict, is_paper_override: bool):
+    global last_paper_execution
     meta = get_symbol_metadata(symbol)
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     paper_trade_id = f"PAPER-{int(datetime.now(timezone.utc).timestamp())}"
+
+    # Cache for Telegram /lasttrade query
+    last_paper_execution = {
+        "symbol": meta['normalized_symbol'],
+        "action": m5_action,
+        "entry": f"{entry:.5f}",
+        "sl": f"{sl:.5f}",
+        "tp": f"{tp:.5f}",
+        "score": score,
+        "timestamp": now_utc,
+        "id": paper_trade_id
+    }
 
     checklist_str = "\n".join([f"  ✅ *{gate.upper()}:* `{status}`" for gate, status in gate_checklist.items()])
 
@@ -106,8 +133,10 @@ def log_paper_execution(symbol: str, m5_action: str, entry: float, sl: float, tp
     )
     send_telegram_alert(msg)
 
+
 def process_symbol_scan(symbol: str, is_paper_override: bool = False):
     daily_stats["total_scans"] += 1
+    daily_stats["last_scan_time"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     meta = get_symbol_metadata(symbol)
 
     try:
@@ -180,6 +209,11 @@ def process_symbol_scan(symbol: str, is_paper_override: bool = False):
         daily_stats["system_errors"] += 1
         print(f"[SCAN ERROR] Exception during {symbol} scan: {e}")
 
+
+# ==========================================
+# 🌐 FASTAPI ROUTE ENDPOINTS
+# ==========================================
+
 @app.get("/")
 def root():
     return {
@@ -190,14 +224,17 @@ def root():
         "mode": TRADING_MODE
     }
 
+
 @app.get("/health")
 def health_check():
     return {
         "status": "ok",
         "kill_switch": KILL_SWITCH,
         "master_enable": MASTER_ENABLE,
-        "mode": TRADING_MODE
+        "mode": TRADING_MODE,
+        "telegram_observability": "active"
     }
+
 
 @app.get("/signal")
 def signal_endpoint():
@@ -207,6 +244,7 @@ def signal_endpoint():
         "reason": "STRICT_EXECUTION_LOCK_ACTIVE",
         "mode": TRADING_MODE
     }
+
 
 @app.get("/test-scan")
 def trigger_manual_scan(
@@ -222,13 +260,24 @@ def trigger_manual_scan(
         "message": f"Manual scan triggered (Paper Test Mode: {paper_test}). Audit reports dispatched to Telegram."
     }
 
-# 🤖 TELEGRAM WEBHOOK ENDPOINT (Fixes 404 Error)
+
+# 🤖 TELEGRAM CONTROL & OBSERVABILITY LAYER V1 WEBHOOK
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
+    """
+    Strict Read-Only Observability Webhook Router.
+    Telegram commands CANNOT mutate execution variables (MASTER_ENABLE, KILL_SWITCH, TRADING_MODE).
+    """
     try:
         data = await request.json()
-        print(f"[TELEGRAM WEBHOOK] Payload received: {data}")
-        return {"status": "ok"}
+        system_state = {
+            "master_enable": MASTER_ENABLE,
+            "kill_switch": KILL_SWITCH,
+            "mode": TRADING_MODE
+        }
+        res = handle_telegram_command(data, system_state, daily_stats, last_paper_execution)
+        return {"status": "ok", "result": res}
     except Exception as e:
+        daily_stats["system_errors"] += 1
         print(f"[TELEGRAM WEBHOOK ERROR] {e}")
         return {"status": "error", "message": str(e)}
