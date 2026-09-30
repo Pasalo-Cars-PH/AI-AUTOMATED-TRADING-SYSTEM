@@ -1,23 +1,47 @@
 import pandas as pd
 import yfinance as yf
 
-# DATA PROVIDER AUDIT MAP
+# DATA PROVIDER AUDIT MAP (Prevents proxy substitution)
 SYMBOL_MAP = {
-    "BTC-USD": {"normalized_symbol": "BTCUSD", "provider": "yfinance", "source_symbol": "BTC-USD", "asset_class": "CRYPTO"},
-    "GC=F": {"normalized_symbol": "XAUUSD", "provider": "yfinance", "source_symbol": "GC=F", "asset_class": "COMMODITY"},
-    "EURUSD=X": {"normalized_symbol": "EURUSD", "provider": "yfinance", "source_symbol": "EURUSD=X", "asset_class": "FOREX"}
+    "BTC-USD": {
+        "normalized_symbol": "BTCUSD",
+        "provider": "yfinance",
+        "source_symbol": "BTC-USD",
+        "asset_class": "CRYPTO"
+    },
+    "GC=F": {
+        "normalized_symbol": "XAUUSD",
+        "provider": "yfinance",
+        "source_symbol": "GC=F",
+        "asset_class": "COMMODITY"
+    },
+    "EURUSD=X": {
+        "normalized_symbol": "EURUSD",
+        "provider": "yfinance",
+        "source_symbol": "EURUSD=X",
+        "asset_class": "FOREX"
+    }
 }
 
 def get_symbol_metadata(symbol: str) -> dict:
-    return SYMBOL_MAP.get(symbol, {"normalized_symbol": symbol, "provider": "yfinance", "source_symbol": symbol, "asset_class": "UNKNOWN"})
+    return SYMBOL_MAP.get(symbol, {
+        "normalized_symbol": symbol,
+        "provider": "yfinance",
+        "source_symbol": symbol,
+        "asset_class": "UNKNOWN"
+    })
 
-# HARD SAFETY GATES (Binary PASS/FAIL Only)
+# HARD SAFETY GATES (Binary PASS / FAIL)
 def check_data_quality_gate(df: pd.DataFrame) -> tuple[bool, str]:
     if df is None or df.empty or len(df) < 55:
         return False, "INSUFFICIENT_DATA_LENGTH"
     if df['Close'].isnull().values.any():
         return False, "STALE_OR_INVALID_DATA"
     return True, "PASS"
+
+def check_data_quality(df: pd.DataFrame) -> tuple[bool, str]:
+    """Backward compatibility wrapper."""
+    return check_data_quality_gate(df)
 
 def check_rr_gate(entry: float, sl: float, tp: float, min_rr: float = 1.5) -> tuple[bool, float, str]:
     risk = abs(entry - sl)
@@ -60,6 +84,7 @@ def evaluate_calibrated_candidate(
     kill_switch: bool = True
 ) -> tuple[str, str, int, dict]:
     """
+    Evaluates candidate signal against hard safety gates and weighted scoring.
     Returns: (decision_state, failed_hard_gate, confluence_score, full_audit_dict)
     Decision States: REJECTED, WATCH, ACTIONABLE_PAPER_PASS
     """
@@ -105,3 +130,6 @@ def evaluate_calibrated_candidate(
         return "REJECTED", "EXECUTION_LOCK_ACTIVE (MASTER_ENABLE=False / KILL_SWITCH=True)", score, hard_gates
 
     return "ACTIONABLE_PAPER_PASS", "NONE", score, hard_gates
+
+# BACKWARD-COMPATIBILITY ALIAS FOR MAIN.PY IMPORTS
+evaluate_trade_candidate = evaluate_calibrated_candidate
