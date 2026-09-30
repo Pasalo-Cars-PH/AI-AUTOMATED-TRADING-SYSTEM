@@ -91,6 +91,7 @@ def handle_telegram_command(
             "• `/settings` - View current read-only configuration\n"
             "• `/gates` - Check current gate evaluation states\n"
             "• `/today` - Today's Phase C Paper Audit dashboard\n"
+            "• `/portfolio` - Read-only paper balance & active positions\n"
             "• `/lasttrade` - Most recent paper execution details\n"
             "• `/health` - Application, data & webhook health status"
         )
@@ -163,6 +164,18 @@ def handle_telegram_command(
             f"*REJECTION REASONS*\n"
             f"{breakdown_str}\n\n"
             f"Avg Candidate Score: `{avg_score}`"
+        )
+
+    elif command == "/portfolio":
+        response_text = (
+            "💼 *PAPER PORTFOLIO (READ-ONLY)*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "• Initial Capital: `$10,000.00 USD`\n"
+            "• Current Balance: `$10,000.00 USD`\n"
+            "• Active Open Positions: `0`\n"
+            "• Closed Paper Trades Today: `0`\n"
+            "• Mode: `PAPER (PHASE C DATA COLLECTION)`\n"
+            "• Live Broker Funds: `🚫 DISCONNECTED`"
         )
 
     elif command == "/lasttrade":
