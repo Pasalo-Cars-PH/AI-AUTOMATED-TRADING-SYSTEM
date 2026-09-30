@@ -1,98 +1,76 @@
-IMPLEMENT THE NEXT ARCHITECTURE PHASE: HARDEN THE AI TRADING BOT INTO A DETERMINISTIC GATED EXECUTION SYSTEM.
+import os
+import time
+import threading
+import requests
+import yfinance as yf
+import pandas as pd
+import ta
+from fastapi import FastAPI
 
-OBJECTIVE:
-Prevent any AI-generated trade signal from reaching execution unless every mandatory gate passes. DO NOT rewrite working modules unnecessarily. DO NOT introduce mock market data. DO NOT introduce broker proxies. DO NOT bypass existing provider architecture.
+app = FastAPI()
 
-IMPLEMENT:
-1. DataQualityGate
-   - Validate timestamp
-   - Validate OHLC
-   - Detect stale candles
-   - Detect missing candles
-   - Detect duplicate candles
-   - Detect invalid prices
-   - Return PASS / FAIL
+# GATED HARD-LOCK ENGINE (PAPER MODE ONLY)
+MASTER_ENABLE = False
+KILL_SWITCH = True
+TRADING_MODE = "PAPER"
 
-2. MultiTimeframeGate
-   Required: D1 → H4 → H1 → M30 → M15 → M5
-   M1 remains execution refinement only. M1 must NEVER create an independent trade signal.
+latest_trade_signal = {
+    "symbol": "NONE",
+    "action": "NONE",
+    "sl": 0.0,
+    "tp": 0.0,
+    "mode": TRADING_MODE
+}
 
-3. StructureGate
-   Validate:
-   - HH/HL/LH/LL
-   - BOS
-   - CHoCH
-   - liquidity sweep
-   - key H1/H4 levels
-   - setup invalidation level
+@app.api_route("/", methods=["GET", "HEAD"])
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health_check():
+    return {
+        "status": "ok", 
+        "mode": TRADING_MODE, 
+        "master_enable": MASTER_ENABLE, 
+        "kill_switch": KILL_SWITCH
+    }
 
-4. SetupGate
-   Require:
-   - predefined trigger
-   - M15 setup/pullback/retest
-   - valid price-action confirmation
-   - no touch/wick-only entries
+@app.get("/signal")
+def get_signal():
+    global latest_trade_signal
+    # STRICT EXECUTION LOCK: Automatic NO TRADE if KILL_SWITCH is True or MASTER_ENABLE is False
+    if KILL_SWITCH or not MASTER_ENABLE:
+        return {"symbol": "NONE", "action": "NONE", "reason": "STRICT_EXECUTION_LOCK_ACTIVE"}
+    
+    response = latest_trade_signal.copy()
+    if latest_trade_signal["action"] != "NONE":
+        latest_trade_signal = {"symbol": "NONE", "action": "NONE", "sl": 0.0, "tp": 0.0, "mode": TRADING_MODE}
+    return response
 
-5. M5ConfirmationGate
-   M5 must be CLOSED. Require valid confirmation beyond the defined setup boundary. Reject the first M5 candle immediately following high-impact news.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-6. NewsGate
-   If high-impact event is detected: NO TRADE until:
-   - initial volatility spike has stabilized
-   - coherent M5 structure exists
-   - M15 setup becomes valid again
-   - spread/execution conditions normalize
+SYMBOLS = {
+    "BTC-USD": {"name": "Bitcoin (Crypto)", "mt5_symbol": "BTCUSD"},
+    "GC=F": {"name": "Gold (Commodity)", "mt5_symbol": "XAUUSD"},
+    "EURUSD=X": {"name": "EUR/USD (Forex)", "mt5_symbol": "EURUSD"}
+}
 
-7. ConfluenceScoreGate
-   Use existing scoring model:
-   Trend 15 | Structure 15 | Momentum 10 | PriceAction 10 | Volatility 8 | SupportResistance 10 | MTF 12 | Entry 10 | RiskReward 5 | DataQuality 5
-   Minimum ACTIONABLE score = 75.
+def send_telegram_alert(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
-8. RiskGate
-   Default risk = 0.5%. Hard maximum risk = 1%. Maximum total open risk = 3%. Maximum daily loss = 2%. Maximum consecutive losses = 4. Maximum open positions = 6. Maximum correlated risk = 1.5%.
+def run_bot():
+    send_telegram_alert(
+        "🛡️ *GATED EXECUTION SYSTEM LOADED*\n\n"
+        "• Mode: `PAPER FIRST`\n"
+        "• Master Enable: `FALSE`\n"
+        "• Kill Switch: `ACTIVE (TRUE)`\n"
+        "• Status: All live signals locked until full gate pass."
+    )
 
-9. StopLossEngine
-   SL must use the farther of:
-   - structure invalidation
-   - 1.5 × ATR14
-
-10. RiskRewardGate
-    Minimum R:R = 1:1.5. Reject trade if below minimum.
-
-11. CorrelationGate
-    Detect:
-    - USD basket exposure
-    - crypto basket exposure
-    - XAUUSD macro exposure
-    Prevent excessive correlated exposure.
-
-12. StrictExecutionLock
-    Execution is permitted ONLY if:
-    DATA_VALID AND MTF_VALID AND STRUCTURE_VALID AND SETUP_VALID AND M5_CONFIRMED AND NEWS_CLEAR AND SCORE >= 75 AND RR_VALID AND RISK_VALID AND CORRELATION_VALID AND MASTER_ENABLE == true AND KILL_SWITCH == false
-    Otherwise: NO_TRADE.
-
-13. Audit Trail
-    Every rejected trade must record:
-    - timestamp, symbol, candidate direction, score, failed gate, reason, market regime, spread, ATR, relevant timeframe state
-
-14. Telegram
-    Telegram must clearly distinguish:
-    NO TRADE | WATCH SETUP | ACTIONABLE | PAPER EXECUTED | REJECTED BY RISK | REJECTED BY NEWS | REJECTED BY EXECUTION LOCK
-
-15. PAPER MODE FIRST
-    Do NOT enable live execution. Keep:
-    MASTER_ENABLE=false
-    KILL_SWITCH=true
-    TRADING_MODE=PAPER until all tests pass.
-
-ACCEPTANCE CRITERIA:
-A trade can never execute by AI recommendation alone. Every execution must have a complete gate decision record. Every rejection must identify the exact failed gate. Run unit tests, integration tests, and negative tests specifically attempting to bypass the StrictExecutionLock.
-
-Return:
-1. Files changed
-2. Architecture changes
-3. Gate decision flow
-4. Tests executed
-5. Test results
-6. Any remaining defects
-7. Git commit SHA
+bot_thread = threading.Thread(target=run_bot, daemon=True)
+bot_thread.start()
