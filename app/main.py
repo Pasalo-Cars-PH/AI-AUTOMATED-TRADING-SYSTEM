@@ -14,15 +14,14 @@ from app.gates import (
 
 app = FastAPI(title="Deterministic Gated Trading Engine", version="2.0.0")
 
-# 🔒 SAFETY INVARIANTS (HARD-LOCKED SECURITY BOUNDARY FOR LIVE DEFAULT)
+# 🔒 HARD SAFETY INVARIANTS
 MASTER_ENABLE = False
 KILL_SWITCH = True
-TRADING_MODE = "PAPER"
+TRADING_MODE = "PAPER"  # Hard-locked default
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# 📊 DAILY AUDIT AGGREGATOR MEMORY
 daily_stats = {
     "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     "total_scans": 0,
@@ -37,7 +36,6 @@ daily_stats = {
 }
 
 def send_telegram_alert(message: str):
-    """Utility to deliver structured audit logs to Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[TELEGRAM] Missing Bot Token or Chat ID. Alert skipped.")
         return
@@ -52,8 +50,7 @@ def send_telegram_alert(message: str):
     except Exception as e:
         print(f"[TELEGRAM ERROR] Failed to deliver alert: {e}")
 
-# STRUCTURED REJECTION AUDIT LOG
-def log_candidate_rejection(symbol: str, m5_action: str, failed_gate: str, score: int, gate_checklist: dict):
+def log_candidate_rejection(symbol: str, m5_action: str, failed_gate: str, score: int, gate_checklist: dict, is_paper_override: bool):
     meta = get_symbol_metadata(symbol)
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     event_id = f"REJECT-{int(datetime.now(timezone.utc).timestamp())}"
@@ -69,18 +66,20 @@ def log_candidate_rejection(symbol: str, m5_action: str, failed_gate: str, score
         f"❌ *FAILED GATE:* `{failed_gate}`\n\n"
         f"🛡️ *HARD GATE CHECKLIST*\n"
         f"{checklist_str}\n\n"
-        f"📡 *DATA PROVIDER AUDIT*\n"
+        f"📡 *AUDIT METADATA*\n"
+        f"• *Mode:* `{TRADING_MODE}` | *Paper Override:* `{is_paper_override}`\n"
+        f"• *Live Execution Allowed:* `FALSE`\n"
+        f"• *Broker Order ID:* `NONE`\n"
         f"• *Provider:* `{meta['provider']}` | *Source:* `{meta['source_symbol']}`\n"
-        f"🔒 *Execution Lock:* `BLOCKED (PAPER)`\n"
+        f"🔒 *Execution Lock:* `BLOCKED`\n"
         f"🆔 *ID:* `{event_id}` | ⏰ `{now_utc}`"
     )
     send_telegram_alert(msg)
 
-# STRUCTURED PAPER EXECUTION LOG
-def log_paper_execution(symbol: str, m5_action: str, entry: float, sl: float, tp: float, score: int, gate_checklist: dict):
+def log_paper_execution(symbol: str, m5_action: str, entry: float, sl: float, tp: float, score: int, gate_checklist: dict, is_paper_override: bool):
     meta = get_symbol_metadata(symbol)
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    event_id = f"PAPER-{int(datetime.now(timezone.utc).timestamp())}"
+    paper_trade_id = f"PAPER-{int(datetime.now(timezone.utc).timestamp())}"
 
     checklist_str = "\n".join([f"  ✅ *{gate.upper()}:* `{status}`" for gate, status in gate_checklist.items()])
 
@@ -91,20 +90,23 @@ def log_paper_execution(symbol: str, m5_action: str, entry: float, sl: float, tp
         f"• *Action:* `{m5_action}`\n"
         f"• *Confluence Score:* `{score}/100`\n\n"
         f"📍 *TRADE DETAILS*\n"
-        f"• *Entry:* `{entry}`\n"
-        f"• *Stop Loss:* `{sl}`\n"
-        f"• *Take Profit:* `{tp}`\n\n"
+        f"• *Entry:* `{entry:.5f}`\n"
+        f"• *Stop Loss:* `{sl:.5f}`\n"
+        f"• *Take Profit:* `{tp:.5f}`\n\n"
         f"🛡️ *HARD GATE CHECKLIST*\n"
         f"{checklist_str}\n\n"
-        f"📡 *DATA PROVIDER AUDIT*\n"
+        f"🔒 *SAFETY & AUDIT TRAIL*\n"
+        f"• *Mode:* `{TRADING_MODE}`\n"
+        f"• *Paper Override:* `{is_paper_override}`\n"
+        f"• *Live Execution Allowed:* `FALSE`\n"
+        f"• *Broker Order ID:* `NONE`\n"
         f"• *Provider:* `{meta['provider']}` | *Source:* `{meta['source_symbol']}`\n"
-        f"🟢 *Execution Lock:* `PASSED (PAPER)`\n"
-        f"🆔 *ID:* `{event_id}` | ⏰ `{now_utc}`"
+        f"🟢 *Execution Lock:* `PASSED (PAPER ONLY)`\n"
+        f"🆔 *Paper Trade ID:* `{paper_trade_id}` | ⏰ `{now_utc}`"
     )
     send_telegram_alert(msg)
 
-# CANDIDATE EVALUATION PIPELINE
-def process_symbol_scan(symbol: str, master_override: bool = False, kill_override: bool = True):
+def process_symbol_scan(symbol: str, is_paper_override: bool = False):
     daily_stats["total_scans"] += 1
     meta = get_symbol_metadata(symbol)
 
@@ -147,10 +149,6 @@ def process_symbol_scan(symbol: str, master_override: bool = False, kill_overrid
             "data_quality_bonus": True
         }
 
-        # Resolve Master and Kill switch settings (Supports controlled paper execution testing)
-        use_master = master_override if master_override else MASTER_ENABLE
-        use_kill = kill_override if master_override else KILL_SWITCH
-
         status, failed_gate, score, gate_checklist = evaluate_calibrated_candidate(
             symbol=symbol,
             df=df,
@@ -160,8 +158,10 @@ def process_symbol_scan(symbol: str, master_override: bool = False, kill_overrid
             tp=tp,
             m5_candle_closed=True,
             analytical_factors=analytical_factors,
-            master_enable=use_master,
-            kill_switch=use_kill
+            master_enable=MASTER_ENABLE,
+            kill_switch=KILL_SWITCH,
+            trading_mode=TRADING_MODE,
+            is_paper_override=is_paper_override
         )
 
         daily_stats["scores"].append(score)
@@ -169,10 +169,10 @@ def process_symbol_scan(symbol: str, master_override: bool = False, kill_overrid
         if status == "REJECTED":
             daily_stats["rejected_candidates"] += 1
             daily_stats["rejection_breakdown"][failed_gate] = daily_stats["rejection_breakdown"].get(failed_gate, 0) + 1
-            log_candidate_rejection(symbol, m5_action, failed_gate, score, gate_checklist)
+            log_candidate_rejection(symbol, m5_action, failed_gate, score, gate_checklist, is_paper_override)
         elif status == "ACTIONABLE_PAPER_PASS":
             daily_stats["paper_executions"] += 1
-            log_paper_execution(symbol, m5_action, price, sl, tp, score, gate_checklist)
+            log_paper_execution(symbol, m5_action, price, sl, tp, score, gate_checklist, is_paper_override)
         elif status == "WATCH":
             daily_stats["watch_candidates"] += 1
 
@@ -180,7 +180,6 @@ def process_symbol_scan(symbol: str, master_override: bool = False, kill_overrid
         daily_stats["system_errors"] += 1
         print(f"[SCAN ERROR] Exception during {symbol} scan: {e}")
 
-# API ENDPOINTS
 @app.get("/")
 def root():
     return {
@@ -212,16 +211,13 @@ def signal_endpoint():
 @app.get("/test-scan")
 def trigger_manual_scan(
     background_tasks: BackgroundTasks,
-    paper_test: bool = Query(False, description="Set to True for controlled paper execution test")
+    paper_test: bool = Query(False, description="Set to True for request-scoped paper-only execution test")
 ):
-    master_override = True if paper_test else MASTER_ENABLE
-    kill_override = False if paper_test else KILL_SWITCH
-
     for symbol in SYMBOL_MAP.keys():
-        background_tasks.add_task(process_symbol_scan, symbol, master_override, kill_override)
+        background_tasks.add_task(process_symbol_scan, symbol, paper_test)
     
     return {
         "status": "success",
         "paper_test_mode": paper_test,
-        "message": f"Manual scan triggered (Paper Test: {paper_test}). Audit reports dispatched to Telegram."
+        "message": f"Manual scan triggered (Paper Test Mode: {paper_test}). Audit reports dispatched to Telegram."
     }
