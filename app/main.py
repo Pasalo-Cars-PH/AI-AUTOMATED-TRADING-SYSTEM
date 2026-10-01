@@ -2,7 +2,7 @@ import os
 import logging
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -15,8 +15,8 @@ logger = logging.getLogger("main_app")
 
 app = FastAPI(
     title="AI Trading Bot Engine",
-    version="2.0.0",
-    description="Execution Engine & Telegram Observability Layer"
+    version="2.1.0",
+    description="Signal Generation & Telegram Notification Engine"
 )
 
 # SYMBOL MAPPING
@@ -28,12 +28,12 @@ SYMBOL_MAP = {
     "BTCUSD": "BTC-USD"
 }
 
-# Global Memory State for Phase C Read-Only Observability
+# Global Memory State
 SYSTEM_STATE = {
-    "mode": "PAPER",
+    "mode": "SIGNAL_ALERT",
     "master_enable": True,
     "kill_switch": False,
-    "execution_lock": "ACTIVE"
+    "execution_lock": "SEMI_AUTOMATED"
 }
 
 DAILY_STATS = {
@@ -53,7 +53,7 @@ LAST_TRADE = None
 def get_ph_time_str() -> str:
     """
     Returns current timestamp formatted in Philippine Time (UTC+8).
-    Example: 2026-10-01 08:18:42 AM PHT
+    Example: 2026-10-01 06:54:20 PM PHT
     """
     ph_tz = timezone(timedelta(hours=8))
     return datetime.now(ph_tz).strftime("%Y-%m-%d %I:%M:%S %p PHT")
@@ -79,7 +79,7 @@ def fetch_live_price(symbol: str) -> Optional[float]:
 
 
 # ---------------------------------------------------------
-# HEALTH & KEEP-ALIVE ENDPOINTS (Supports GET & HEAD for UptimeRobot Free)
+# HEALTH & KEEP-ALIVE ENDPOINTS (Supports GET & HEAD for UptimeRobot)
 # ---------------------------------------------------------
 
 @app.api_route("/", methods=["GET", "HEAD"])
@@ -87,9 +87,8 @@ def root_status():
     return {
         "status": "online",
         "service": "AI Trading Bot Engine",
-        "version": "2.0.0",
-        "execution_lock": "ACTIVE",
-        "trading_mode": "READ_ONLY",
+        "version": "2.1.0",
+        "execution_mode": "SEMI_AUTOMATED_ALERTS",
         "server_ph_time": get_ph_time_str()
     }
 
@@ -123,13 +122,13 @@ async def telegram_webhook(request: Request):
 
 
 # ---------------------------------------------------------
-# REAL-TIME SYNCHRONOUS PAPER SCAN ENDPOINT (Supports GET & HEAD)
+# REAL-TIME SYNCHRONOUS SIGNAL SCAN ENDPOINT
 # ---------------------------------------------------------
 
 @app.api_route("/test-scan", methods=["GET", "HEAD"])
 def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
     """
-    Synchronous Real-Time Scan with Philippine Time formatting.
+    Synchronous Real-Time Scan with Actionable Telegram Signal Dispatch.
     """
     global LAST_TRADE
     now_pht = get_ph_time_str()
@@ -140,7 +139,7 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
     # Live market price fetch
     live_price = fetch_live_price(symbol)
     if not live_price:
-        live_price = 4155.50 if symbol == "XAUUSD" else 1.0000
+        live_price = 4193.60 if symbol == "XAUUSD" else 1.0000
 
     trade_details = None
 
@@ -155,32 +154,36 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
 
         trade_details = {
             "symbol": symbol,
-            "action": "BUY_PAPER",
+            "action": "BUY",
             "entry": live_price,
             "sl": sl_price,
             "tp": tp_price,
+            "volume": 0.01,
             "score": score,
             "timestamp": now_pht
         }
         LAST_TRADE = trade_details
 
-        # Send Telegram alert broadcast
+        # Get Admin Chat ID from environment variables
         admin_chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")[0].strip()
         if not admin_chat_id:
             admin_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
+        # Send Actionable Signal Alert to Telegram
         if admin_chat_id:
             alert_msg = (
-                "🧪 *REAL-TIME PAPER EXECUTION LOGGED*\n"
+                "🚨 *ACTIONABLE TRADE SIGNAL DETECTED*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"• Symbol: `{symbol}`\n"
-                f"• Action: `BUY_PAPER`\n"
-                f"• Live Entry: `${live_price}`\n"
-                f"• Stop Loss: `${sl_price}`\n"
-                f"• Take Profit: `${tp_price}`\n"
-                f"• Confluence Score: `{score}/100`\n"
-                f"• Execution Lock: 🔒 *READ-ONLY*\n"
-                f"• Timestamp: `{now_pht}`"
+                f"• Action: 🟢 *BUY*\n"
+                f"• Suggested Volume: `0.01 Lot`\n\n"
+                f"📍 *Execution Parameters:*\n"
+                f"• Entry Price: `${live_price}`\n"
+                f"• Stop Loss (SL): `${sl_price}`\n"
+                f"• Take Profit (TP): `${tp_price}`\n\n"
+                f"📊 *Confluence Score:* `{score}/100`\n"
+                f"⏰ *Time:* `{now_pht}`\n\n"
+                f"👉 *Action Needed:* Buksan ang Vantage MT5 sa Winlator at i-enter ang order!"
             )
             send_telegram_reply(admin_chat_id, alert_msg)
 
