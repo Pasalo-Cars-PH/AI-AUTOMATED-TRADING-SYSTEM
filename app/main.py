@@ -2,7 +2,7 @@ import os
 import logging
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -15,11 +15,11 @@ logger = logging.getLogger("main_app")
 
 app = FastAPI(
     title="AI Trading Bot Engine",
-    version="2.4.0",
-    description="Strict Pinbar Signal Alert System (Multi-Pair)"
+    version="2.5.0",
+    description="Multi-Pair All-in-One Pinbar Scanner Engine"
 )
 
-# SYMBOL MAPPING (Multi-Pair Focus)
+# SYMBOL MAPPING
 SYMBOL_MAP = {
     "XAUUSD": "GC=F",      # Gold Futures / Spot Proxy
     "EURUSD": "EURUSD=X",  # Euro / US Dollar
@@ -58,7 +58,7 @@ def get_ph_time_str() -> str:
 
 def analyze_last_pinbar(symbol: str) -> Tuple[str, Optional[Dict]]:
     """
-    Kina-kalkula ang huling saradong candle (Last Closed Candle) sa M15 timeframe 
+    Kina-kalkula ang huling saradong candle sa M15 timeframe 
     upang malaman kung may valid at accurate na Pinbar pattern (Wick >= 55%).
     """
     yf_ticker = SYMBOL_MAP.get(symbol, symbol)
@@ -69,7 +69,6 @@ def analyze_last_pinbar(symbol: str) -> Tuple[str, Optional[Dict]]:
         if len(hist) < 2:
             return "NO_PINBAR", None
 
-        # Kunin ang HULING SARADONG CANDLE (Index -2)
         last_candle = hist.iloc[-2]
         c_open = float(last_candle['Open'])
         c_high = float(last_candle['High'])
@@ -96,7 +95,7 @@ def analyze_last_pinbar(symbol: str) -> Tuple[str, Optional[Dict]]:
             "lower_wick_pct": round((lower_wick / total_range) * 100, 1)
         }
 
-        # Accurate Pinbar Logic: Wick >= 55% of total range & body <= 30%
+        # Pinbar Rule: Wick >= 55% of total range & body <= 30%
         if lower_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
             return "BULLISH_PINBAR", candle_details
         elif upper_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
@@ -136,9 +135,9 @@ def root_status():
     return {
         "status": "online",
         "service": "AI Trading Bot Engine",
-        "version": "2.4.0",
+        "version": "2.5.0",
         "supported_pairs": list(SYMBOL_MAP.keys()),
-        "execution_mode": "STRICT_PINBAR_ALERTS",
+        "execution_mode": "MULTI_PAIR_PINBAR_SCANNER",
         "server_ph_time": get_ph_time_str()
     }
 
@@ -172,129 +171,126 @@ async def telegram_webhook(request: Request):
 
 
 # ---------------------------------------------------------
-# REAL-TIME SYNCHRONOUS SIGNAL SCAN ENDPOINT
+# ALL-IN-ONE MULTI-PAIR SCANNER ENDPOINT
 # ---------------------------------------------------------
 
-@app.api_route("/test-scan", methods=["GET", "HEAD"])
-def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
+@app.api_route("/scan-all", methods=["GET", "HEAD"])
+def scan_all_pairs(paper_test: bool = False):
     """
-    Synchronous Real-Time Scan featuring Strict Pinbar Verification.
-    Dispatches Telegram notification ONLY when a valid Pinbar is detected.
+    Scans ALL 5 supported pairs simultaneously in a single command/URL request.
+    Only dispatches alerts to Telegram if a VALID PINBAR is detected!
     """
     global LAST_TRADE
     now_pht = get_ph_time_str()
-    
-    if symbol not in SYMBOL_MAP:
-        return JSONResponse(
-            content={"status": "error", "message": f"Symbol {symbol} not supported. Use: {list(SYMBOL_MAP.keys())}"},
-            status_code=400
-        )
-
     DAILY_STATS["total_scans"] += 1
     DAILY_STATS["last_scan_time"] = now_pht
-    
-    live_price = fetch_live_price(symbol)
-    if not live_price:
-        live_price = 4153.30 if symbol == "XAUUSD" else 1.08500
 
-    # Analyze Pinbar Pattern
-    pinbar_type, candle_meta = analyze_last_pinbar(symbol)
+    admin_chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")[0].strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-    # Simulated Mock Data for manual paper test link override if needed
-    if paper_test and pinbar_type == "NO_PINBAR":
-        # Force a test Pinbar structure ONLY if explicitly forced via URL query
-        pinbar_type = "BULLISH_PINBAR"
-        decimals = 5 if symbol in ["EURUSD", "GBPUSD"] else (3 if symbol == "USDJPY" else 2)
-        candle_meta = {
-            "open": round(live_price - 1.50, decimals),
-            "high": round(live_price + 0.50, decimals),
-            "low": round(live_price - 8.50, decimals),
-            "close": live_price,
-            "range": 9.00,
-            "upper_wick_pct": 5.5,
-            "lower_wick_pct": 77.8
-        }
+    scan_results = []
+    signals_found = 0
 
-    trade_details = None
+    for symbol in SYMBOL_MAP.keys():
+        live_price = fetch_live_price(symbol) or 1.0000
+        pinbar_type, candle_meta = analyze_last_pinbar(symbol)
 
-    # Proceed ONLY IF A VALID PINBAR IS DETECTED
-    if pinbar_type in ["BULLISH_PINBAR", "BEARISH_PINBAR"]:
-        action = "BUY" if pinbar_type == "BULLISH_PINBAR" else "SELL"
-        decimals = 5 if symbol in ["EURUSD", "GBPUSD"] else (3 if symbol == "USDJPY" else 2)
+        # Force a simulated pinbar ONLY IF paper_test=true and Gold (XAUUSD) for testing purposes
+        if paper_test and pinbar_type == "NO_PINBAR" and symbol == "XAUUSD":
+            pinbar_type = "BULLISH_PINBAR"
+            candle_meta = {
+                "open": round(live_price - 1.50, 2),
+                "high": round(live_price + 0.50, 2),
+                "low": round(live_price - 8.50, 2),
+                "close": live_price,
+                "range": 9.00,
+                "upper_wick_pct": 5.5,
+                "lower_wick_pct": 77.8
+            }
 
-        # Dynamic Pip/Price Buffers
-        if symbol in ["EURUSD", "GBPUSD"]:
-            buffer = 0.00150
-        elif symbol == "USDJPY":
-            buffer = 0.150
-        elif symbol == "BTCUSD":
-            buffer = 150.00
-        else: # Gold (XAUUSD)
-            buffer = 1.50
+        if pinbar_type in ["BULLISH_PINBAR", "BEARISH_PINBAR"]:
+            signals_found += 1
+            action = "BUY" if pinbar_type == "BULLISH_PINBAR" else "SELL"
+            decimals = 5 if symbol in ["EURUSD", "GBPUSD"] else (3 if symbol == "USDJPY" else 2)
 
-        if action == "BUY":
-            sl_price = round(candle_meta['low'] - buffer, decimals)
-            tp_price = round(live_price + (buffer * 2.5), decimals)
+            # Dynamic Risk Buffers
+            if symbol in ["EURUSD", "GBPUSD"]:
+                buffer = 0.00150
+            elif symbol == "USDJPY":
+                buffer = 0.150
+            elif symbol == "BTCUSD":
+                buffer = 150.00
+            else: # Gold
+                buffer = 1.50
+
+            if action == "BUY":
+                sl_price = round(candle_meta['low'] - buffer, decimals)
+                tp_price = round(live_price + (buffer * 2.5), decimals)
+            else:
+                sl_price = round(candle_meta['high'] + buffer, decimals)
+                tp_price = round(live_price - (buffer * 2.5), decimals)
+
+            score = 88.5
+            DAILY_STATS["candidate_setups"] += 1
+            DAILY_STATS["paper_executions"] += 1
+
+            trade_details = {
+                "symbol": symbol,
+                "action": action,
+                "entry": live_price,
+                "sl": sl_price,
+                "tp": tp_price,
+                "volume": 0.01,
+                "score": score,
+                "pinbar_pattern": pinbar_type,
+                "candle_data": candle_meta,
+                "timestamp": now_pht
+            }
+            LAST_TRADE = trade_details
+
+            # Dispatch Alert to Telegram
+            if admin_chat_id:
+                action_emoji = "🟢 *BUY*" if action == "BUY" else "🔴 *SELL*"
+                alert_msg = (
+                    "🚨 *ACCURATE PINBAR SIGNAL DETECTED*\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"• Symbol: `{symbol}`\n"
+                    f"• Action: {action_emoji}\n"
+                    f"• Pattern: `{pinbar_type}`\n"
+                    f"• Volume: `0.01 Lot`\n\n"
+                    f"📊 *Last Closed Candle (M15) Breakdown:*\n"
+                    f"• Open: `${candle_meta['open']}` | High: `${candle_meta['high']}`\n"
+                    f"• Low: `${candle_meta['low']}` | Close: `${candle_meta['close']}`\n"
+                    f"• Lower Wick: `{candle_meta['lower_wick_pct']}%` | Upper Wick: `{candle_meta['upper_wick_pct']}%`\n\n"
+                    f"📍 *Execution Parameters:*\n"
+                    f"• Entry Price: `${live_price}`\n"
+                    f"• Stop Loss (SL): `${sl_price}`\n"
+                    f"• Take Profit (TP): `${tp_price}`\n\n"
+                    f"📈 *Confluence Score:* `{score}/100`\n"
+                    f"⏰ *Time:* `{now_pht}`\n\n"
+                    f"👉 *Action Needed:* Buksan ang Vantage MT5 sa Winlator at i-enter ang order!"
+                )
+                send_telegram_reply(admin_chat_id, alert_msg)
+
+            scan_results.append({
+                "symbol": symbol,
+                "status": "SIGNAL_FOUND",
+                "action": action,
+                "pattern": pinbar_type,
+                "price": live_price
+            })
         else:
-            sl_price = round(candle_meta['high'] + buffer, decimals)
-            tp_price = round(live_price - (buffer * 2.5), decimals)
-
-        score = 88.5
-
-        DAILY_STATS["candidate_setups"] += 1
-        DAILY_STATS["paper_executions"] += 1
-        DAILY_STATS["scores"].append(score)
-
-        trade_details = {
-            "symbol": symbol,
-            "action": action,
-            "entry": live_price,
-            "sl": sl_price,
-            "tp": tp_price,
-            "volume": 0.01,
-            "score": score,
-            "pinbar_pattern": pinbar_type,
-            "candle_data": candle_meta,
-            "timestamp": now_pht
-        }
-        LAST_TRADE = trade_details
-
-        # Get Admin Chat ID
-        admin_chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")[0].strip()
-        if not admin_chat_id:
-            admin_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-        # Send Actionable Signal Alert to Telegram
-        if admin_chat_id:
-            action_emoji = "🟢 *BUY*" if action == "BUY" else "🔴 *SELL*"
-            alert_msg = (
-                "🚨 *ACCURATE PINBAR SIGNAL DETECTED*\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                f"• Symbol: `{symbol}`\n"
-                f"• Action: {action_emoji}\n"
-                f"• Pattern: `{pinbar_type}`\n"
-                f"• Volume: `0.01 Lot`\n\n"
-                f"📊 *Last Closed Candle (M15) Breakdown:*\n"
-                f"• Open: `${candle_meta['open']}` | High: `${candle_meta['high']}`\n"
-                f"• Low: `${candle_meta['low']}` | Close: `${candle_meta['close']}`\n"
-                f"• Lower Wick: `{candle_meta['lower_wick_pct']}%` | Upper Wick: `{candle_meta['upper_wick_pct']}%`\n\n"
-                f"📍 *Execution Parameters:*\n"
-                f"• Entry Price: `${live_price}`\n"
-                f"• Stop Loss (SL): `${sl_price}`\n"
-                f"• Take Profit (TP): `${tp_price}`\n\n"
-                f"📈 *Confluence Score:* `{score}/100`\n"
-                f"⏰ *Time:* `{now_pht}`\n\n"
-                f"👉 *Action Needed:* Buksan ang Vantage MT5 sa Winlator at i-enter ang order!"
-            )
-            send_telegram_reply(admin_chat_id, alert_msg)
+            scan_results.append({
+                "symbol": symbol,
+                "status": "NO_SIGNAL",
+                "pattern": "NO_PINBAR",
+                "price": live_price
+            })
 
     return {
         "status": "success",
-        "symbol_scanned": symbol,
-        "pinbar_detected": pinbar_type,
-        "alert_dispatched": pinbar_type in ["BULLISH_PINBAR", "BEARISH_PINBAR"],
-        "last_candle_structure": candle_meta,
-        "fetched_live_price": live_price,
-        "logged_trade": trade_details,
+        "scan_type": "MULTI_PAIR_ALL_IN_ONE",
+        "total_pairs_scanned": len(SYMBOL_MAP),
+        "signals_detected": signals_found,
+        "results": scan_results,
         "scan_time": now_pht
     }
