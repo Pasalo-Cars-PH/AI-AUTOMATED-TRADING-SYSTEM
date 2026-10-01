@@ -15,8 +15,8 @@ logger = logging.getLogger("main_app")
 
 app = FastAPI(
     title="AI Trading Bot Engine",
-    version="2.5.0",
-    description="Multi-Pair All-in-One Pinbar Scanner Engine"
+    version="2.6.0",
+    description="Multi-Pair Pinbar Scanner with 1:2 Dynamic RRR"
 )
 
 # SYMBOL MAPPING
@@ -95,7 +95,7 @@ def analyze_last_pinbar(symbol: str) -> Tuple[str, Optional[Dict]]:
             "lower_wick_pct": round((lower_wick / total_range) * 100, 1)
         }
 
-        # Pinbar Rule: Wick >= 55% of total range & body <= 30%
+        # Pinbar Rule: Lower/Upper Wick >= 55% & Body <= 30%
         if lower_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
             return "BULLISH_PINBAR", candle_details
         elif upper_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
@@ -135,9 +135,9 @@ def root_status():
     return {
         "status": "online",
         "service": "AI Trading Bot Engine",
-        "version": "2.5.0",
+        "version": "2.6.0",
         "supported_pairs": list(SYMBOL_MAP.keys()),
-        "execution_mode": "MULTI_PAIR_PINBAR_SCANNER",
+        "execution_mode": "PINBAR_1TO2_RRR_ENGINE",
         "server_ph_time": get_ph_time_str()
     }
 
@@ -171,14 +171,14 @@ async def telegram_webhook(request: Request):
 
 
 # ---------------------------------------------------------
-# ALL-IN-ONE MULTI-PAIR SCANNER ENDPOINT
+# ALL-IN-ONE SCANNER WITH DYNAMIC 1:2 RISK-REWARD RATIO
 # ---------------------------------------------------------
 
 @app.api_route("/scan-all", methods=["GET", "HEAD"])
 def scan_all_pairs(paper_test: bool = False):
     """
-    Scans ALL 5 supported pairs simultaneously in a single command/URL request.
-    Only dispatches alerts to Telegram if a VALID PINBAR is detected!
+    Scans ALL 5 supported pairs simultaneously.
+    Calculates Stop Loss based on Pinbar Wick and sets Take Profit at exactly 1:2 RRR!
     """
     global LAST_TRADE
     now_pht = get_ph_time_str()
@@ -194,7 +194,7 @@ def scan_all_pairs(paper_test: bool = False):
         live_price = fetch_live_price(symbol) or 1.0000
         pinbar_type, candle_meta = analyze_last_pinbar(symbol)
 
-        # Force a simulated pinbar ONLY IF paper_test=true and Gold (XAUUSD) for testing purposes
+        # Force simulated pinbar ONLY IF paper_test=true for Gold
         if paper_test and pinbar_type == "NO_PINBAR" and symbol == "XAUUSD":
             pinbar_type = "BULLISH_PINBAR"
             candle_meta = {
@@ -212,22 +212,31 @@ def scan_all_pairs(paper_test: bool = False):
             action = "BUY" if pinbar_type == "BULLISH_PINBAR" else "SELL"
             decimals = 5 if symbol in ["EURUSD", "GBPUSD"] else (3 if symbol == "USDJPY" else 2)
 
-            # Dynamic Risk Buffers
+            # Extra buffer sa labas ng Wick
             if symbol in ["EURUSD", "GBPUSD"]:
-                buffer = 0.00150
+                buffer = 0.00050
             elif symbol == "USDJPY":
-                buffer = 0.150
+                buffer = 0.050
             elif symbol == "BTCUSD":
-                buffer = 150.00
-            else: # Gold
-                buffer = 1.50
+                buffer = 20.00
+            else: # Gold (XAUUSD)
+                buffer = 0.50
 
+            # --- DYNAMIC 1:2 RISK-TO-REWARD CALCULATION ---
             if action == "BUY":
+                # SL = Low ng Pinbar Candle minus buffer
                 sl_price = round(candle_meta['low'] - buffer, decimals)
-                tp_price = round(live_price + (buffer * 2.5), decimals)
+                risk_distance = round(live_price - sl_price, decimals)
+                
+                # TP = Exactly 2x ng Risk Distance (1:2 RRR)
+                tp_price = round(live_price + (risk_distance * 2.0), decimals)
             else:
+                # SL = High ng Pinbar Candle plus buffer
                 sl_price = round(candle_meta['high'] + buffer, decimals)
-                tp_price = round(live_price - (buffer * 2.5), decimals)
+                risk_distance = round(sl_price - live_price, decimals)
+                
+                # TP = Exactly 2x ng Risk Distance (1:2 RRR)
+                tp_price = round(live_price - (risk_distance * 2.0), decimals)
 
             score = 88.5
             DAILY_STATS["candidate_setups"] += 1
@@ -239,6 +248,7 @@ def scan_all_pairs(paper_test: bool = False):
                 "entry": live_price,
                 "sl": sl_price,
                 "tp": tp_price,
+                "risk_reward_ratio": "1:2",
                 "volume": 0.01,
                 "score": score,
                 "pinbar_pattern": pinbar_type,
@@ -256,7 +266,8 @@ def scan_all_pairs(paper_test: bool = False):
                     f"• Symbol: `{symbol}`\n"
                     f"• Action: {action_emoji}\n"
                     f"• Pattern: `{pinbar_type}`\n"
-                    f"• Volume: `0.01 Lot`\n\n"
+                    f"• Volume: `0.01 Lot`\n"
+                    f"• Risk-Reward: `1:2 (Optimal)`\n\n"
                     f"📊 *Last Closed Candle (M15) Breakdown:*\n"
                     f"• Open: `${candle_meta['open']}` | High: `${candle_meta['high']}`\n"
                     f"• Low: `${candle_meta['low']}` | Close: `${candle_meta['close']}`\n"
@@ -276,7 +287,9 @@ def scan_all_pairs(paper_test: bool = False):
                 "status": "SIGNAL_FOUND",
                 "action": action,
                 "pattern": pinbar_type,
-                "price": live_price
+                "price": live_price,
+                "sl": sl_price,
+                "tp": tp_price
             })
         else:
             scan_results.append({
@@ -288,7 +301,7 @@ def scan_all_pairs(paper_test: bool = False):
 
     return {
         "status": "success",
-        "scan_type": "MULTI_PAIR_ALL_IN_ONE",
+        "scan_type": "MULTI_PAIR_1TO2_RRR_SCANNER",
         "total_pairs_scanned": len(SYMBOL_MAP),
         "signals_detected": signals_found,
         "results": scan_results,
