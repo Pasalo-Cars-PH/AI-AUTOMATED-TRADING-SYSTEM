@@ -15,17 +15,17 @@ logger = logging.getLogger("main_app")
 
 app = FastAPI(
     title="AI Trading Bot Engine",
-    version="2.2.0",
-    description="Pinbar Pattern & Signal Alert System"
+    version="2.3.0",
+    description="Multi-Pair Pinbar Signal Alert System"
 )
 
-# SYMBOL MAPPING
+# SYMBOL MAPPING (Updated Multi-Pair Focus)
 SYMBOL_MAP = {
     "XAUUSD": "GC=F",      # Gold Futures / Spot Proxy
-    "EURUSD": "EURUSD=X",
-    "GBPUSD": "GBPUSD=X",
-    "USDJPY": "JPY=X",
-    "BTCUSD": "BTC-USD"
+    "EURUSD": "EURUSD=X",  # Euro / US Dollar
+    "GBPUSD": "GBPUSD=X",  # British Pound / US Dollar
+    "USDJPY": "JPY=X",      # US Dollar / Japanese Yen
+    "BTCUSD": "BTC-USD"    # Bitcoin / US Dollar
 }
 
 # Global Memory State
@@ -58,13 +58,13 @@ def get_ph_time_str() -> str:
 
 def analyze_last_pinbar(symbol: str) -> Tuple[Optional[str], Optional[Dict]]:
     """
-    Kina-kalkula ang huling saradong candle (Last Closed Candle) galing yfinance 
-    upang malaman kung may valid at accurate na Pinbar pattern (Bullish or Bearish).
+    Kina-kalkula ang huling saradong candle (Last Closed Candle) sa M15 timeframe 
+    upang malaman kung may valid at accurate na Pinbar pattern.
     """
     yf_ticker = SYMBOL_MAP.get(symbol, symbol)
     try:
         ticker = yf.Ticker(yf_ticker)
-        hist = ticker.history(period="1d", interval="15m") # 15-minute timeframe candles
+        hist = ticker.history(period="1d", interval="15m")
         
         if len(hist) < 2:
             return None, None
@@ -85,16 +85,16 @@ def analyze_last_pinbar(symbol: str) -> Tuple[Optional[str], Optional[Dict]]:
         lower_wick = min(c_open, c_close) - c_low
 
         candle_details = {
-            "open": round(c_open, 2),
-            "high": round(c_high, 2),
-            "low": round(c_low, 2),
-            "close": round(c_close, 2),
-            "range": round(total_range, 2),
+            "open": round(c_open, 5 if "USD" in symbol and symbol != "XAUUSD" and symbol != "BTCUSD" else 2),
+            "high": round(c_high, 5 if "USD" in symbol and symbol != "XAUUSD" and symbol != "BTCUSD" else 2),
+            "low": round(c_low, 5 if "USD" in symbol and symbol != "XAUUSD" and symbol != "BTCUSD" else 2),
+            "close": round(c_close, 5 if "USD" in symbol and symbol != "XAUUSD" and symbol != "BTCUSD" else 2),
+            "range": round(total_range, 5 if "USD" in symbol and symbol != "XAUUSD" and symbol != "BTCUSD" else 2),
             "upper_wick_pct": round((upper_wick / total_range) * 100, 1),
             "lower_wick_pct": round((lower_wick / total_range) * 100, 1)
         }
 
-        # Rules for Accurate Pinbar (Wick > 55% of total candle range & small body)
+        # Rules for Accurate Pinbar (Wick >= 55% of total candle range & small body)
         if lower_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
             return "BULLISH_PINBAR", candle_details
         elif upper_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
@@ -114,11 +114,11 @@ def fetch_live_price(symbol: str) -> Optional[float]:
         ticker = yf.Ticker(yf_ticker)
         fast_info = getattr(ticker, 'fast_info', None)
         if fast_info and 'lastPrice' in fast_info and fast_info['lastPrice']:
-            return round(float(fast_info['lastPrice']), 2)
+            return round(float(fast_info['lastPrice']), 5 if "USD" in symbol and symbol not in ["XAUUSD", "BTCUSD"] else 2)
         
         hist = ticker.history(period="1d", interval="1m")
         if not hist.empty:
-            return round(float(hist['Close'].iloc[-1]), 2)
+            return round(float(hist['Close'].iloc[-1]), 5 if "USD" in symbol and symbol not in ["XAUUSD", "BTCUSD"] else 2)
     except Exception as e:
         logger.error(f"Error fetching live price for {symbol}: {e}")
     return None
@@ -133,8 +133,9 @@ def root_status():
     return {
         "status": "online",
         "service": "AI Trading Bot Engine",
-        "version": "2.2.0",
-        "execution_mode": "PINBAR_SIGNAL_ALERTS",
+        "version": "2.3.0",
+        "supported_pairs": list(SYMBOL_MAP.keys()),
+        "execution_mode": "MULTI_PAIR_PINBAR_ALERTS",
         "server_ph_time": get_ph_time_str()
     }
 
@@ -168,23 +169,30 @@ async def telegram_webhook(request: Request):
 
 
 # ---------------------------------------------------------
-# REAL-TIME SYNCHRONOUS SIGNAL SCAN ENDPOINT WITH PINBAR FILTER
+# REAL-TIME SYNCHRONOUS SIGNAL SCAN ENDPOINT WITH MULTI-PAIR SUPPORT
 # ---------------------------------------------------------
 
 @app.api_route("/test-scan", methods=["GET", "HEAD"])
 def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
     """
-    Synchronous Real-Time Scan featuring Pinbar Candle Pattern Verification.
+    Synchronous Real-Time Scan featuring Pinbar Candle Pattern Verification for Multi-Pairs.
     """
     global LAST_TRADE
     now_pht = get_ph_time_str()
     
+    # Check if symbol is supported
+    if symbol not in SYMBOL_MAP:
+        return JSONResponse(
+            content={"status": "error", "message": f"Symbol {symbol} not in supported pairs list: {list(SYMBOL_MAP.keys())}"},
+            status_code=400
+        )
+
     DAILY_STATS["total_scans"] += 1
     DAILY_STATS["last_scan_time"] = now_pht
     
     live_price = fetch_live_price(symbol)
     if not live_price:
-        live_price = 4153.30 if symbol == "XAUUSD" else 1.0000
+        live_price = 4153.30 if symbol == "XAUUSD" else 1.08500
 
     # Analyze Pinbar Candle
     pinbar_type, candle_meta = analyze_last_pinbar(symbol)
@@ -192,29 +200,31 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
     trade_details = None
 
     if paper_test:
-        # Default mock Pinbar meta kung gagamit ng simulated paper test
         if not candle_meta:
             candle_meta = {
-                "open": round(live_price - 2.0, 2),
-                "high": round(live_price + 1.0, 2),
-                "low": round(live_price - 12.0, 2),
+                "open": round(live_price - 0.0020, 5 if symbol in ["EURUSD", "GBPUSD"] else 2),
+                "high": round(live_price + 0.0010, 5 if symbol in ["EURUSD", "GBPUSD"] else 2),
+                "low": round(live_price - 0.0080, 5 if symbol in ["EURUSD", "GBPUSD"] else 2),
                 "close": live_price,
-                "range": 13.0,
-                "upper_wick_pct": 7.7,
-                "lower_wick_pct": 76.9
+                "range": 0.0090,
+                "upper_wick_pct": 11.1,
+                "lower_wick_pct": 77.8
             }
             pinbar_type = "BULLISH_PINBAR"
 
         action = "BUY" if pinbar_type == "BULLISH_PINBAR" or pinbar_type == "NO_PINBAR" else "SELL"
         
+        # Risk settings dynamically adjusted per asset type
+        pips_buffer = 0.00150 if symbol in ["EURUSD", "GBPUSD"] else (0.15 if symbol == "USDJPY" else 2.00)
+        
         if action == "BUY":
-            sl_price = round(candle_meta['low'] - 1.50, 2)  # SL Sa ibaba ng Pinbar Low
-            tp_price = round(live_price + 20.0, 2)
+            sl_price = round(candle_meta['low'] - pips_buffer, 5 if symbol in ["EURUSD", "GBPUSD"] else 2)
+            tp_price = round(live_price + (pips_buffer * 2.5), 5 if symbol in ["EURUSD", "GBPUSD"] else 2)
         else:
-            sl_price = round(candle_meta['high'] + 1.50, 2)  # SL Sa itaas ng Pinbar High
-            tp_price = round(live_price - 20.0, 2)
+            sl_price = round(candle_meta['high'] + pips_buffer, 5 if symbol in ["EURUSD", "GBPUSD"] else 2)
+            tp_price = round(live_price - (pips_buffer * 2.5), 5 if symbol in ["EURUSD", "GBPUSD"] else 2)
 
-        score = 86.5
+        score = 88.0
 
         DAILY_STATS["candidate_setups"] += 1
         DAILY_STATS["paper_executions"] += 1
@@ -239,7 +249,7 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
         if not admin_chat_id:
             admin_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-        # Send Actionable Signal Alert with Pinbar Data to Telegram
+        # Send Actionable Signal Alert to Telegram
         if admin_chat_id:
             action_emoji = "🟢 *BUY*" if action == "BUY" else "🔴 *SELL*"
             alert_msg = (
@@ -249,7 +259,7 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
                 f"• Action: {action_emoji}\n"
                 f"• Pattern: `{pinbar_type}`\n"
                 f"• Volume: `0.01 Lot`\n\n"
-                f"📊 *Last Closed Candle Breakdown:*\n"
+                f"📊 *Last Closed Candle (M15) Breakdown:*\n"
                 f"• Open: `${candle_meta['open']}` | High: `${candle_meta['high']}`\n"
                 f"• Low: `${candle_meta['low']}` | Close: `${candle_meta['close']}`\n"
                 f"• Lower Wick: `{candle_meta['lower_wick_pct']}%` | Upper Wick: `{candle_meta['upper_wick_pct']}%`\n\n"
