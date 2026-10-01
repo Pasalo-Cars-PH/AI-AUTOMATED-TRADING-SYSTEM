@@ -15,8 +15,8 @@ logger = logging.getLogger("main_app")
 
 app = FastAPI(
     title="AI Trading Bot Engine",
-    version="2.7.0",
-    description="Multi-Pair Pinbar Scanner with Fixed 1:2 RRR"
+    version="4.0.0",
+    description="Full Institutional Smart Money Concepts (SMC) + Pinbar Engine"
 )
 
 # SYMBOL MAPPING
@@ -56,18 +56,105 @@ def get_ph_time_str() -> str:
     return datetime.now(ph_tz).strftime("%Y-%m-%d %I:%M:%S %p PHT")
 
 
-def analyze_last_pinbar(symbol: str) -> Tuple[str, Optional[Dict]]:
+def check_full_smc_confluence(df, action: str, current_price: float) -> Dict[str, str]:
     """
-    Kina-kalkula ang huling saradong candle sa M15 timeframe 
-    upang malaman kung may valid at accurate na Pinbar pattern (Wick >= 55%).
+    FULL SMC ENGINE:
+    Calculates BOS, CHoCH, Premium/Discount Zones, Order Blocks, FVG, and Liquidity Sweeps.
+    """
+    if len(df) < 20:
+        return {
+            "structure": "NEUTRAL",
+            "zone": "EQUILIBRIUM",
+            "order_block": "NO",
+            "fvg": "NO",
+            "liquidity_sweep": "NO"
+        }
+
+    recent_20 = df.iloc[-20:-2]
+    current_candle = df.iloc[-2]
+
+    range_high = recent_20['High'].max()
+    range_low = recent_20['Low'].min()
+    equilibrium = (range_high + range_low) / 2.0
+
+    # 1. Premium / Discount Zone Check
+    if action == "BUY":
+        zone = "DISCOUNT (CHEAP)" if current_price < equilibrium else "PREMIUM (EXPENSIVE)"
+    else:
+        zone = "PREMIUM (EXPENSIVE)" if current_price > equilibrium else "DISCOUNT (CHEAP)"
+
+    # 2. BOS / CHoCH Structure Check
+    prev_high = recent_20.iloc[-10:-3]['High'].max()
+    prev_low = recent_20.iloc[-10:-3]['Low'].min()
+
+    if action == "BUY":
+        if current_candle['Close'] > prev_high:
+            structure = "CHoCH (BULLISH REVERSAL)"
+        elif current_candle['High'] > prev_high:
+            structure = "BOS (BULLISH CONTINUATION)"
+        else:
+            structure = "RANGE_ALIGNED"
+    else:
+        if current_candle['Close'] < prev_low:
+            structure = "CHoCH (BEARISH REVERSAL)"
+        elif current_candle['Low'] < prev_low:
+            structure = "BOS (BEARISH CONTINUATION)"
+        else:
+            structure = "RANGE_ALIGNED"
+
+    # 3. Order Block Detection
+    ob_status = "NO"
+    if action == "BUY" and current_candle['Low'] <= range_low * 1.001:
+        ob_status = "DEMAND_OB"
+    elif action == "SELL" and current_candle['High'] >= range_high * 0.999:
+        ob_status = "SUPPLY_OB"
+
+    # 4. Fair Value Gap (FVG)
+    fvg_status = "NO"
+    for i in range(len(df) - 6, len(df) - 2):
+        c1 = df.iloc[i-1]
+        c3 = df.iloc[i+1]
+        if action == "BUY" and c3['Low'] > c1['High']:
+            fvg_status = "BULLISH_FVG"
+            break
+        elif action == "SELL" and c3['High'] < c1['Low']:
+            fvg_status = "BEARISH_FVG"
+            break
+
+    # 5. Liquidity Sweep Detection
+    sweep_status = "NO"
+    if action == "BUY" and current_candle['Low'] < prev_low:
+        sweep_status = "SSL_SWEPT (SELL-SIDE)"
+    elif action == "SELL" and current_candle['High'] > prev_high:
+        sweep_status = "BSL_SWEPT (BUY-SIDE)"
+
+    return {
+        "structure": structure,
+        "zone": zone,
+        "order_block": ob_status,
+        "fvg": fvg_status,
+        "liquidity_sweep": sweep_status
+    }
+
+
+def analyze_last_pinbar(symbol: str) -> Tuple[str, Optional[Dict], Dict[str, str]]:
+    """
+    Kina-kalkula ang M15 Pinbar pattern at tina-tsek ang Full SMC Confluences.
     """
     yf_ticker = SYMBOL_MAP.get(symbol, symbol)
+    smc_analysis = {
+        "structure": "NEUTRAL",
+        "zone": "EQUILIBRIUM",
+        "order_block": "NO",
+        "fvg": "NO",
+        "liquidity_sweep": "NO"
+    }
     try:
         ticker = yf.Ticker(yf_ticker)
-        hist = ticker.history(period="1d", interval="15m")
+        hist = ticker.history(period="3d", interval="15m")
         
-        if len(hist) < 2:
-            return "NO_PINBAR", None
+        if len(hist) < 20:
+            return "NO_PINBAR", None, smc_analysis
 
         last_candle = hist.iloc[-2]
         c_open = float(last_candle['Open'])
@@ -77,7 +164,7 @@ def analyze_last_pinbar(symbol: str) -> Tuple[str, Optional[Dict]]:
 
         total_range = c_high - c_low
         if total_range == 0:
-            return "NO_PINBAR", None
+            return "NO_PINBAR", None, smc_analysis
 
         body_size = abs(c_close - c_open)
         upper_wick = c_high - max(c_open, c_close)
@@ -97,15 +184,17 @@ def analyze_last_pinbar(symbol: str) -> Tuple[str, Optional[Dict]]:
 
         # Pinbar Rule: Lower/Upper Wick >= 55% & Body <= 30%
         if lower_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
-            return "BULLISH_PINBAR", candle_details
+            smc_analysis = check_full_smc_confluence(hist, "BUY", c_close)
+            return "BULLISH_PINBAR", candle_details, smc_analysis
         elif upper_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
-            return "BEARISH_PINBAR", candle_details
+            smc_analysis = check_full_smc_confluence(hist, "SELL", c_close)
+            return "BEARISH_PINBAR", candle_details, smc_analysis
 
-        return "NO_PINBAR", candle_details
+        return "NO_PINBAR", candle_details, smc_analysis
 
     except Exception as e:
         logger.error(f"Pinbar analysis error for {symbol}: {e}")
-        return "NO_PINBAR", None
+        return "NO_PINBAR", None, smc_analysis
 
 
 def fetch_live_price(symbol: str) -> Optional[float]:
@@ -135,9 +224,9 @@ def root_status():
     return {
         "status": "online",
         "service": "AI Trading Bot Engine",
-        "version": "2.7.0",
+        "version": "4.0.0",
         "supported_pairs": list(SYMBOL_MAP.keys()),
-        "execution_mode": "PINBAR_1TO2_RRR_FIXED",
+        "execution_mode": "FULL_SMC_INSTITUTIONAL_ENGINE",
         "server_ph_time": get_ph_time_str()
     }
 
@@ -171,7 +260,7 @@ async def telegram_webhook(request: Request):
 
 
 # ---------------------------------------------------------
-# ALL-IN-ONE SCANNER WITH FIXED 1:2 RRR
+# ALL-IN-ONE SCANNER WITH FULL SMC ENGINE & 1:2 RRR
 # ---------------------------------------------------------
 
 @app.api_route("/scan-all", methods=["GET", "HEAD"])
@@ -188,7 +277,7 @@ def scan_all_pairs(paper_test: bool = False):
 
     for symbol in SYMBOL_MAP.keys():
         live_price = fetch_live_price(symbol) or 1.0000
-        pinbar_type, candle_meta = analyze_last_pinbar(symbol)
+        pinbar_type, candle_meta, smc_analysis = analyze_last_pinbar(symbol)
 
         # Paper test simulation override
         if paper_test and pinbar_type == "NO_PINBAR" and symbol == "XAUUSD":
@@ -201,6 +290,13 @@ def scan_all_pairs(paper_test: bool = False):
                 "range": 9.00,
                 "upper_wick_pct": 5.5,
                 "lower_wick_pct": 77.8
+            }
+            smc_analysis = {
+                "structure": "CHoCH (BULLISH REVERSAL)",
+                "zone": "DISCOUNT (CHEAP)",
+                "order_block": "DEMAND_OB",
+                "fvg": "BULLISH_FVG",
+                "liquidity_sweep": "SSL_SWEPT (SELL-SIDE)"
             }
 
         if pinbar_type in ["BULLISH_PINBAR", "BEARISH_PINBAR"]:
@@ -218,23 +314,25 @@ def scan_all_pairs(paper_test: bool = False):
             else: # Gold (XAUUSD)
                 buffer = 0.50
 
-            # --- DYNAMIC 1:2 RISK-TO-REWARD CALCULATION ---
+            # Dynamic 1:2 Risk-to-Reward Calculation
             if action == "BUY":
-                # SL = Low ng Candle - Buffer
                 sl_price = round(candle_meta['low'] - buffer, decimals)
                 risk_distance = round(live_price - sl_price, decimals)
-                
-                # TP = Entry + (Risk * 2.0)
                 tp_price = round(live_price + (risk_distance * 2.0), decimals)
             else:
-                # SL = High ng Candle + Buffer
                 sl_price = round(candle_meta['high'] + buffer, decimals)
                 risk_distance = round(sl_price - live_price, decimals)
-                
-                # TP = Entry - (Risk * 2.0)
                 tp_price = round(live_price - (risk_distance * 2.0), decimals)
 
-            score = 88.5
+            # Institutional Confluence Scoring
+            score = 60.0
+            if "DISCOUNT" in smc_analysis["zone"] and action == "BUY": score += 10.0
+            if "PREMIUM" in smc_analysis["zone"] and action == "SELL": score += 10.0
+            if smc_analysis["order_block"] != "NO": score += 10.0
+            if smc_analysis["fvg"] != "NO": score += 10.0
+            if smc_analysis["liquidity_sweep"] != "NO": score += 10.0
+            score = min(score, 100.0)
+
             DAILY_STATS["candidate_setups"] += 1
             DAILY_STATS["paper_executions"] += 1
 
@@ -245,10 +343,8 @@ def scan_all_pairs(paper_test: bool = False):
                 "sl": sl_price,
                 "tp": tp_price,
                 "risk_reward_ratio": "1:2",
-                "volume": 0.01,
+                "smc_details": smc_analysis,
                 "score": score,
-                "pinbar_pattern": pinbar_type,
-                "candle_data": candle_meta,
                 "timestamp": now_pht
             }
             LAST_TRADE = trade_details
@@ -256,23 +352,25 @@ def scan_all_pairs(paper_test: bool = False):
             # Dispatch Alert to Telegram
             if admin_chat_id:
                 action_emoji = "🟢 *BUY*" if action == "BUY" else "🔴 *SELL*"
+
                 alert_msg = (
-                    "🚨 *ACCURATE PINBAR SIGNAL DETECTED*\n"
+                    "🚨 *FULL INSTITUTIONAL SMC SIGNAL DETECTED*\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"• Symbol: `{symbol}`\n"
                     f"• Action: {action_emoji}\n"
                     f"• Pattern: `{pinbar_type}`\n"
-                    f"• Volume: `0.01 Lot`\n"
                     f"• Risk-Reward: `1:2 (Optimal)`\n\n"
-                    f"📊 *Last Closed Candle (M15) Breakdown:*\n"
-                    f"• Open: `${candle_meta['open']}` | High: `${candle_meta['high']}`\n"
-                    f"• Low: `${candle_meta['low']}` | Close: `${candle_meta['close']}`\n"
-                    f"• Lower Wick: `{candle_meta['lower_wick_pct']}%` | Upper Wick: `{candle_meta['upper_wick_pct']}%`\n\n"
+                    f"🏛️ *Smart Money Concepts (SMC):*\n"
+                    f"• Structure: `{smc_analysis['structure']}`\n"
+                    f"• Market Zone: `{smc_analysis['zone']}`\n"
+                    f"• Order Block: `{smc_analysis['order_block']}`\n"
+                    f"• Fair Value Gap: `{smc_analysis['fvg']}`\n"
+                    f"• Liquidity Sweep: `{smc_analysis['liquidity_sweep']}`\n\n"
                     f"📍 *Execution Parameters:*\n"
                     f"• Entry Price: `${live_price}`\n"
                     f"• Stop Loss (SL): `${sl_price}`\n"
                     f"• Take Profit (TP): `${tp_price}`\n\n"
-                    f"📈 *Confluence Score:* `{score}/100`\n"
+                    f"📈 *Institutional Confluence Score:* `{score}/100`\n"
                     f"⏰ *Time:* `{now_pht}`\n\n"
                     f"👉 *Action Needed:* Buksan ang Vantage MT5 sa Winlator at i-enter ang order!"
                 )
@@ -282,7 +380,7 @@ def scan_all_pairs(paper_test: bool = False):
                 "symbol": symbol,
                 "status": "SIGNAL_FOUND",
                 "action": action,
-                "pattern": pinbar_type,
+                "smc": smc_analysis,
                 "price": live_price,
                 "sl": sl_price,
                 "tp": tp_price
@@ -297,9 +395,9 @@ def scan_all_pairs(paper_test: bool = False):
 
     return {
         "status": "success",
-        "scan_type": "MULTI_PAIR_1TO2_RRR_SCANNER",
-        "total_pairs_scanned": len(SYMBOL_MAP),
+        "scan_type": "MULTI_PAIR_FULL_SMC_SCANNER",
         "signals_detected": signals_found,
         "results": scan_results,
         "scan_time": now_pht
     }
+
