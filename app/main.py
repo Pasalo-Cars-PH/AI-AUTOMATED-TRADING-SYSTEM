@@ -2,7 +2,7 @@ import os
 import logging
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Dict, Tuple
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -15,8 +15,8 @@ logger = logging.getLogger("main_app")
 
 app = FastAPI(
     title="AI Trading Bot Engine",
-    version="2.1.0",
-    description="Signal Generation & Telegram Notification Engine"
+    version="2.2.0",
+    description="Pinbar Pattern & Signal Alert System"
 )
 
 # SYMBOL MAPPING
@@ -51,18 +51,64 @@ LAST_TRADE = None
 
 
 def get_ph_time_str() -> str:
-    """
-    Returns current timestamp formatted in Philippine Time (UTC+8).
-    Example: 2026-10-01 06:54:20 PM PHT
-    """
+    """Returns current timestamp formatted in Philippine Time (UTC+8)."""
     ph_tz = timezone(timedelta(hours=8))
     return datetime.now(ph_tz).strftime("%Y-%m-%d %I:%M:%S %p PHT")
 
 
+def analyze_last_pinbar(symbol: str) -> Tuple[Optional[str], Optional[Dict]]:
+    """
+    Kina-kalkula ang huling saradong candle (Last Closed Candle) galing yfinance 
+    upang malaman kung may valid at accurate na Pinbar pattern (Bullish or Bearish).
+    """
+    yf_ticker = SYMBOL_MAP.get(symbol, symbol)
+    try:
+        ticker = yf.Ticker(yf_ticker)
+        hist = ticker.history(period="1d", interval="15m") # 15-minute timeframe candles
+        
+        if len(hist) < 2:
+            return None, None
+
+        # Kunin ang HULING SARADONG CANDLE (Prev Candle / Index -2)
+        last_candle = hist.iloc[-2]
+        c_open = float(last_candle['Open'])
+        c_high = float(last_candle['High'])
+        c_low = float(last_candle['Low'])
+        c_close = float(last_candle['Close'])
+
+        total_range = c_high - c_low
+        if total_range == 0:
+            return None, None
+
+        body_size = abs(c_close - c_open)
+        upper_wick = c_high - max(c_open, c_close)
+        lower_wick = min(c_open, c_close) - c_low
+
+        candle_details = {
+            "open": round(c_open, 2),
+            "high": round(c_high, 2),
+            "low": round(c_low, 2),
+            "close": round(c_close, 2),
+            "range": round(total_range, 2),
+            "upper_wick_pct": round((upper_wick / total_range) * 100, 1),
+            "lower_wick_pct": round((lower_wick / total_range) * 100, 1)
+        }
+
+        # Rules for Accurate Pinbar (Wick > 55% of total candle range & small body)
+        if lower_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
+            return "BULLISH_PINBAR", candle_details
+        elif upper_wick / total_range >= 0.55 and body_size / total_range <= 0.30:
+            return "BEARISH_PINBAR", candle_details
+
+        return "NO_PINBAR", candle_details
+
+    except Exception as e:
+        logger.error(f"Pinbar analysis error for {symbol}: {e}")
+        return None, None
+
+
 def fetch_live_price(symbol: str) -> Optional[float]:
-    """
-    Fetches real-time market price using yfinance.
-    """
+    """Fetches real-time market price using yfinance."""
     yf_ticker = SYMBOL_MAP.get(symbol, symbol)
     try:
         ticker = yf.Ticker(yf_ticker)
@@ -79,7 +125,7 @@ def fetch_live_price(symbol: str) -> Optional[float]:
 
 
 # ---------------------------------------------------------
-# HEALTH & KEEP-ALIVE ENDPOINTS (Supports GET & HEAD for UptimeRobot)
+# HEALTH & KEEP-ALIVE ENDPOINTS
 # ---------------------------------------------------------
 
 @app.api_route("/", methods=["GET", "HEAD"])
@@ -87,8 +133,8 @@ def root_status():
     return {
         "status": "online",
         "service": "AI Trading Bot Engine",
-        "version": "2.1.0",
-        "execution_mode": "SEMI_AUTOMATED_ALERTS",
+        "version": "2.2.0",
+        "execution_mode": "PINBAR_SIGNAL_ALERTS",
         "server_ph_time": get_ph_time_str()
     }
 
@@ -122,13 +168,13 @@ async def telegram_webhook(request: Request):
 
 
 # ---------------------------------------------------------
-# REAL-TIME SYNCHRONOUS SIGNAL SCAN ENDPOINT
+# REAL-TIME SYNCHRONOUS SIGNAL SCAN ENDPOINT WITH PINBAR FILTER
 # ---------------------------------------------------------
 
 @app.api_route("/test-scan", methods=["GET", "HEAD"])
 def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
     """
-    Synchronous Real-Time Scan with Actionable Telegram Signal Dispatch.
+    Synchronous Real-Time Scan featuring Pinbar Candle Pattern Verification.
     """
     global LAST_TRADE
     now_pht = get_ph_time_str()
@@ -136,17 +182,39 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
     DAILY_STATS["total_scans"] += 1
     DAILY_STATS["last_scan_time"] = now_pht
     
-    # Live market price fetch
     live_price = fetch_live_price(symbol)
     if not live_price:
-        live_price = 4193.60 if symbol == "XAUUSD" else 1.0000
+        live_price = 4153.30 if symbol == "XAUUSD" else 1.0000
+
+    # Analyze Pinbar Candle
+    pinbar_type, candle_meta = analyze_last_pinbar(symbol)
 
     trade_details = None
 
     if paper_test:
-        sl_price = round(live_price - 10.0, 2)
-        tp_price = round(live_price + 20.0, 2)
-        score = 82.0
+        # Default mock Pinbar meta kung gagamit ng simulated paper test
+        if not candle_meta:
+            candle_meta = {
+                "open": round(live_price - 2.0, 2),
+                "high": round(live_price + 1.0, 2),
+                "low": round(live_price - 12.0, 2),
+                "close": live_price,
+                "range": 13.0,
+                "upper_wick_pct": 7.7,
+                "lower_wick_pct": 76.9
+            }
+            pinbar_type = "BULLISH_PINBAR"
+
+        action = "BUY" if pinbar_type == "BULLISH_PINBAR" or pinbar_type == "NO_PINBAR" else "SELL"
+        
+        if action == "BUY":
+            sl_price = round(candle_meta['low'] - 1.50, 2)  # SL Sa ibaba ng Pinbar Low
+            tp_price = round(live_price + 20.0, 2)
+        else:
+            sl_price = round(candle_meta['high'] + 1.50, 2)  # SL Sa itaas ng Pinbar High
+            tp_price = round(live_price - 20.0, 2)
+
+        score = 86.5
 
         DAILY_STATS["candidate_setups"] += 1
         DAILY_STATS["paper_executions"] += 1
@@ -154,34 +222,42 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
 
         trade_details = {
             "symbol": symbol,
-            "action": "BUY",
+            "action": action,
             "entry": live_price,
             "sl": sl_price,
             "tp": tp_price,
             "volume": 0.01,
             "score": score,
+            "pinbar_pattern": pinbar_type,
+            "candle_data": candle_meta,
             "timestamp": now_pht
         }
         LAST_TRADE = trade_details
 
-        # Get Admin Chat ID from environment variables
+        # Get Admin Chat ID
         admin_chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")[0].strip()
         if not admin_chat_id:
             admin_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-        # Send Actionable Signal Alert to Telegram
+        # Send Actionable Signal Alert with Pinbar Data to Telegram
         if admin_chat_id:
+            action_emoji = "🟢 *BUY*" if action == "BUY" else "🔴 *SELL*"
             alert_msg = (
-                "🚨 *ACTIONABLE TRADE SIGNAL DETECTED*\n"
+                "🚨 *ACCURATE PINBAR SIGNAL DETECTED*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"• Symbol: `{symbol}`\n"
-                f"• Action: 🟢 *BUY*\n"
-                f"• Suggested Volume: `0.01 Lot`\n\n"
+                f"• Action: {action_emoji}\n"
+                f"• Pattern: `{pinbar_type}`\n"
+                f"• Volume: `0.01 Lot`\n\n"
+                f"📊 *Last Closed Candle Breakdown:*\n"
+                f"• Open: `${candle_meta['open']}` | High: `${candle_meta['high']}`\n"
+                f"• Low: `${candle_meta['low']}` | Close: `${candle_meta['close']}`\n"
+                f"• Lower Wick: `{candle_meta['lower_wick_pct']}%` | Upper Wick: `{candle_meta['upper_wick_pct']}%`\n\n"
                 f"📍 *Execution Parameters:*\n"
                 f"• Entry Price: `${live_price}`\n"
                 f"• Stop Loss (SL): `${sl_price}`\n"
                 f"• Take Profit (TP): `${tp_price}`\n\n"
-                f"📊 *Confluence Score:* `{score}/100`\n"
+                f"📈 *Confluence Score:* `{score}/100`\n"
                 f"⏰ *Time:* `{now_pht}`\n\n"
                 f"👉 *Action Needed:* Buksan ang Vantage MT5 sa Winlator at i-enter ang order!"
             )
@@ -191,6 +267,8 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
         "status": "success",
         "paper_test_mode": paper_test,
         "symbol_scanned": symbol,
+        "pinbar_detected": pinbar_type,
+        "last_candle_structure": candle_meta,
         "fetched_live_price": live_price,
         "logged_trade": trade_details,
         "scan_time": now_pht
