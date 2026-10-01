@@ -1,7 +1,7 @@
 import os
 import logging
-import datetime
 import yfinance as yf
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -50,6 +50,15 @@ DAILY_STATS = {
 LAST_TRADE = None
 
 
+def get_ph_time_str() -> str:
+    """
+    Returns current timestamp formatted in Philippine Time (UTC+8).
+    Example: 2026-10-01 08:18:42 AM PHT
+    """
+    ph_tz = timezone(timedelta(hours=8))
+    return datetime.now(ph_tz).strftime("%Y-%m-%d %I:%M:%S %p PHT")
+
+
 def fetch_live_price(symbol: str) -> Optional[float]:
     """
     Fetches real-time market price using yfinance.
@@ -80,7 +89,8 @@ def root_status():
         "service": "AI Trading Bot Engine",
         "version": "2.0.0",
         "execution_lock": "ACTIVE",
-        "trading_mode": "READ_ONLY"
+        "trading_mode": "READ_ONLY",
+        "server_ph_time": get_ph_time_str()
     }
 
 @app.api_route("/health", methods=["GET", "HEAD"])
@@ -119,13 +129,13 @@ async def telegram_webhook(request: Request):
 @app.api_route("/test-scan", methods=["GET", "HEAD"])
 def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
     """
-    Synchronous Real-Time Scan: Instantly fetches live market price and returns execution details.
+    Synchronous Real-Time Scan with Philippine Time formatting.
     """
     global LAST_TRADE
-    now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now_pht = get_ph_time_str()
     
     DAILY_STATS["total_scans"] += 1
-    DAILY_STATS["last_scan_time"] = now_utc
+    DAILY_STATS["last_scan_time"] = now_pht
     
     # Live market price fetch
     live_price = fetch_live_price(symbol)
@@ -150,12 +160,15 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
             "sl": sl_price,
             "tp": tp_price,
             "score": score,
-            "timestamp": now_utc
+            "timestamp": now_pht
         }
         LAST_TRADE = trade_details
 
         # Send Telegram alert broadcast
         admin_chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")[0].strip()
+        if not admin_chat_id:
+            admin_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
         if admin_chat_id:
             alert_msg = (
                 "🧪 *REAL-TIME PAPER EXECUTION LOGGED*\n"
@@ -167,7 +180,7 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
                 f"• Take Profit: `${tp_price}`\n"
                 f"• Confluence Score: `{score}/100`\n"
                 f"• Execution Lock: 🔒 *READ-ONLY*\n"
-                f"• Timestamp: `{now_utc}`"
+                f"• Timestamp: `{now_pht}`"
             )
             send_telegram_reply(admin_chat_id, alert_msg)
 
@@ -177,5 +190,5 @@ def trigger_test_scan(paper_test: bool = False, symbol: str = "XAUUSD"):
         "symbol_scanned": symbol,
         "fetched_live_price": live_price,
         "logged_trade": trade_details,
-        "scan_time": now_utc
+        "scan_time": now_pht
     }
