@@ -15,8 +15,8 @@ logger = logging.getLogger("main_app")
 
 app = FastAPI(
     title="AI Trading Bot Engine",
-    version="2.6.0",
-    description="Multi-Pair Pinbar Scanner with 1:2 Dynamic RRR"
+    version="2.7.0",
+    description="Multi-Pair Pinbar Scanner with Fixed 1:2 RRR"
 )
 
 # SYMBOL MAPPING
@@ -135,9 +135,9 @@ def root_status():
     return {
         "status": "online",
         "service": "AI Trading Bot Engine",
-        "version": "2.6.0",
+        "version": "2.7.0",
         "supported_pairs": list(SYMBOL_MAP.keys()),
-        "execution_mode": "PINBAR_1TO2_RRR_ENGINE",
+        "execution_mode": "PINBAR_1TO2_RRR_FIXED",
         "server_ph_time": get_ph_time_str()
     }
 
@@ -171,15 +171,11 @@ async def telegram_webhook(request: Request):
 
 
 # ---------------------------------------------------------
-# ALL-IN-ONE SCANNER WITH DYNAMIC 1:2 RISK-REWARD RATIO
+# ALL-IN-ONE SCANNER WITH FIXED 1:2 RRR
 # ---------------------------------------------------------
 
 @app.api_route("/scan-all", methods=["GET", "HEAD"])
 def scan_all_pairs(paper_test: bool = False):
-    """
-    Scans ALL 5 supported pairs simultaneously.
-    Calculates Stop Loss based on Pinbar Wick and sets Take Profit at exactly 1:2 RRR!
-    """
     global LAST_TRADE
     now_pht = get_ph_time_str()
     DAILY_STATS["total_scans"] += 1
@@ -194,7 +190,7 @@ def scan_all_pairs(paper_test: bool = False):
         live_price = fetch_live_price(symbol) or 1.0000
         pinbar_type, candle_meta = analyze_last_pinbar(symbol)
 
-        # Force simulated pinbar ONLY IF paper_test=true for Gold
+        # Paper test simulation override
         if paper_test and pinbar_type == "NO_PINBAR" and symbol == "XAUUSD":
             pinbar_type = "BULLISH_PINBAR"
             candle_meta = {
@@ -224,18 +220,18 @@ def scan_all_pairs(paper_test: bool = False):
 
             # --- DYNAMIC 1:2 RISK-TO-REWARD CALCULATION ---
             if action == "BUY":
-                # SL = Low ng Pinbar Candle minus buffer
+                # SL = Low ng Candle - Buffer
                 sl_price = round(candle_meta['low'] - buffer, decimals)
                 risk_distance = round(live_price - sl_price, decimals)
                 
-                # TP = Exactly 2x ng Risk Distance (1:2 RRR)
+                # TP = Entry + (Risk * 2.0)
                 tp_price = round(live_price + (risk_distance * 2.0), decimals)
             else:
-                # SL = High ng Pinbar Candle plus buffer
+                # SL = High ng Candle + Buffer
                 sl_price = round(candle_meta['high'] + buffer, decimals)
                 risk_distance = round(sl_price - live_price, decimals)
                 
-                # TP = Exactly 2x ng Risk Distance (1:2 RRR)
+                # TP = Entry - (Risk * 2.0)
                 tp_price = round(live_price - (risk_distance * 2.0), decimals)
 
             score = 88.5
