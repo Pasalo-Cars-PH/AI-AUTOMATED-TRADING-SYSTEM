@@ -32,7 +32,12 @@ SYMBOL_MAP = {
     "NZDUSD": {"canonical": "NZD/USD", "yahoo_fallback": "NZDUSD=X"}
 }
 
-TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
+# FLEXIBLE API KEY READER (Reads both TWELVE_DATA_API_KEY and TWELVEDATA_API_KEY)
+TWELVE_DATA_API_KEY = (
+    os.getenv("TWELVE_DATA_API_KEY") or 
+    os.getenv("TWELVEDATA_API_KEY") or 
+    ""
+).strip()
 
 # FAIL-CLOSED & STRICT DATA ROUTING CONFIGURATION
 SYSTEM_STATE = {
@@ -65,6 +70,18 @@ def get_ph_now() -> datetime:
 
 def get_ph_time_str() -> str:
     return get_ph_now().strftime("%Y-%m-%d %I:%M:%S %p PHT")
+
+
+def get_recent_paper_orders() -> List[str]:
+    """Helper function accessed by Telegram command handlers."""
+    if not PAPER_JOURNAL:
+        return []
+    
+    formatted_list = []
+    for trade_id, trade in PAPER_JOURNAL.items():
+        entry_info = f"ID: {trade_id} | {trade['symbol']} {trade['direction']} @ {trade['entry_price']} (Score: {trade['score']})"
+        formatted_list.append(entry_info)
+    return formatted_list
 
 
 # ------------------------------------------------------------------
@@ -368,6 +385,7 @@ def run_smc_v1_pipeline():
 
     admin_chat_id = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")[0].strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip()
     scan_results = []
+    accepted_signals_count = 0
     
     for symbol in SYMBOL_MAP.keys():
         data, active_provider = fetch_symbol_data(symbol)
@@ -417,6 +435,7 @@ def run_smc_v1_pipeline():
         
         if is_authorized:
             DAILY_STATS["paper_executions"] += 1
+            accepted_signals_count += 1
             paper_trade_id = f"PT-{uuid.uuid4().hex[:8].upper()}"
             
             trade_payload = {
@@ -476,6 +495,7 @@ def run_smc_v1_pipeline():
         "status": "success",
         "engine_version": "5.3.0",
         "system_state": SYSTEM_STATE,
+        "accepted_signals": accepted_signals_count,
         "results": scan_results,
         "scan_time": now_pht
     }
