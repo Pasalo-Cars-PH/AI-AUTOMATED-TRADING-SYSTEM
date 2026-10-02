@@ -1,12 +1,12 @@
 import os
 import datetime
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 
 app = FastAPI(title="SMC Hybrid Scalper Engine")
 
-# Configuration
+# Environment Variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
@@ -14,12 +14,13 @@ TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 PAIRS = ["XAUUSD", "GBPUSD", "EURUSD"]
 SCANS_TODAY = 0
 
-def send_telegram_msg(message: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+def send_telegram_msg(message: str, target_chat_id: str = None):
+    chat_id = target_chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
         print("Telegram tokens missing.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as e:
@@ -48,17 +49,14 @@ def analyze_hybrid_scalp(symbol, candles):
     c1 = float(candles[1]["close"])
     o1 = float(candles[1]["open"])
     
-    c2 = float(candles[2]["close"])
-    
     # 1. Micro-FVG / Gap Detection
-    bullish_gap = float(candles[0]["low"]) > float(candles[2]["high"])
-    bearish_gap = float(candles[0]["high"]) < float(candles[2]["low"])
+    bullish_gap = l0 > float(candles[2]["high"])
+    bearish_gap = h0 < float(candles[2]["low"])
     
     # 2. Momentum / Displacement Body
     body_size = abs(c0 - o0)
     prev_body = abs(c1 - o1)
     
-    # Thresholds
     score = 0
     signal_type = None
     
@@ -106,31 +104,84 @@ def analyze_hybrid_scalp(symbol, candles):
 def scheduled_market_scan():
     global SCANS_TODAY
     SCANS_TODAY += 1
-    signals_found = []
     
     for pair in PAIRS:
         data = fetch_m5_data(pair)
         if data:
-            signal = analyze_hybrid_scalp(pair, data)
-            if signal:
-                signals_found.append(signal)
-                
-    for sig in signals_found:
-        msg = (
-            f"⚡ *M5 HYBRID SCALP SIGNAL DETECTED*\n\n"
-            f"• *Pair:* `{sig['pair']}`\n"
-            f"• *Action:* `{sig['type']}`\n"
-            f"• *Entry Price:* `{sig['entry']}`\n"
-            f"• *Stop Loss:* `{sig['sl']}`\n"
-            f"• *Take Profit:* `{sig['tp']}`\n"
-            f"• *Confluence Score:* `{sig['score']}/100`\n\n"
-            f"⚠️ *Execution Mode:* Paper Trade Verification"
-        )
-        send_telegram_msg(msg)
+            sig = analyze_hybrid_scalp(pair, data)
+            if sig:
+                msg = (
+                    f"⚡ *M5 HYBRID SCALP SIGNAL DETECTED*\n\n"
+                    f"• *Pair:* `{sig['pair']}`\n"
+                    f"• *Action:* `{sig['type']}`\n"
+                    f"• *Entry Price:* `{sig['entry']}`\n"
+                    f"• *Stop Loss:* `{sig['sl']}`\n"
+                    f"• *Take Profit:* `{sig['tp']}`\n"
+                    f"• *Confluence Score:* `{sig['score']}/100`\n\n"
+                    f"⚠️ *Execution Mode:* Paper Trade Verification"
+                )
+                send_telegram_msg(msg)
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
 scheduler.start()
+
+# Telegram Webhook Endpoint
+@app.post("/telegram-webhook")
+async def telegram_webhook(request: Request):
+    try:
+        update = await request.json()
+        if "message" in update and "text" in update["message"]:
+            chat_id = str(update["message"]["chat"]["id"])
+            text = update["message"]["text"].strip()
+
+            if text == "/status":
+                pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
+                msg = (
+                    "📊 *ENGINE OPERATIONAL STATUS*\n\n"
+                    "• *System Mode:* `HYBRID_SCALPER_15_TRADES_DAY`\n"
+                    "• *Paper Session:* `True`\n"
+                    "• *Data Provider:* `TWELVE_DATA_SPOT`\n"
+                    f"• *Scans Today:* `{SCANS_TODAY}`\n"
+                    f"• *Last Scan:* `{pht_time}`"
+                )
+                send_telegram_msg(msg, chat_id)
+
+            elif text == "/scan":
+                send_telegram_msg("🔍 *Scanning M5 Hybrid Scalp setups (XAUUSD, GBPUSD, EURUSD)... Please wait.*", chat_id)
+                signals_found = []
+                for pair in PAIRS:
+                    data = fetch_m5_data(pair)
+                    if data:
+                        sig = analyze_hybrid_scalp(pair, data)
+                        if sig:
+                            signals_found.append(sig)
+                
+                if signals_found:
+                    for sig in signals_found:
+                        msg = (
+                            f"⚡ *HYBRID SCALP SIGNAL*\n\n"
+                            f"• *Pair:* `{sig['pair']}` | *Action:* `{sig['type']}`\n"
+                            f"• *Entry:* `{sig['entry']}`\n"
+                            f"• *SL:* `{sig['sl']}` | *TP:* `{sig['tp']}`\n"
+                            f"• *Score:* `{sig['score']}/100`"
+                        )
+                        send_telegram_msg(msg, chat_id)
+                else:
+                    send_telegram_msg("ℹ️ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
+
+            elif text == "/help" or text == "/start":
+                msg = (
+                    "🤖 *AI TRADING BOT COMMANDS*\n\n"
+                    "• `/status` - Check active system mode & scan counts\n"
+                    "• `/scan` - Force manual scan for M5 Scalp setups"
+                )
+                send_telegram_msg(msg, chat_id)
+
+    except Exception as e:
+        print(f"Webhook processing error: {e}")
+        
+    return {"status": "ok"}
 
 @app.get("/health")
 def health():
