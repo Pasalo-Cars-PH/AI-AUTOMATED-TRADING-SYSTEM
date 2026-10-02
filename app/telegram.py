@@ -3,16 +3,14 @@ import logging
 import requests
 from typing import Dict, Any
 
-logger = logging.getLogger("telegram_handler")
+logger = logging.getLogger("smc_engine_v5_3")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
-
-def send_telegram_reply(chat_id: str, text: str):
-    """Sends a markdown-formatted message back to the Telegram chat."""
+def send_telegram_reply(chat_id: str, text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not chat_id:
-        logger.warning("Telegram token or chat_id missing. Skipping message send.")
-        return
+        logger.warning("Telegram Bot Token or Chat ID missing. Cannot send reply.")
+        return False
         
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -22,140 +20,153 @@ def send_telegram_reply(chat_id: str, text: str):
     }
     
     try:
-        requests.post(url, json=payload, timeout=5)
+        res = requests.post(url, json=payload, timeout=10)
+        return res.status_code == 200
     except Exception as e:
-        logger.error(f"Failed to send Telegram message: {e}")
+        logger.error(f"Failed to send Telegram reply: {e}")
+        return False
 
 
 def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], daily_stats: Dict[str, Any], last_trade: Any) -> Dict[str, Any]:
-    """Processes incoming Telegram commands for SMC V5.3 Engine."""
+    """Processes incoming Telegram webhook updates and executes bot commands."""
     try:
-        message = data.get("message", {})
-        chat = message.get("chat", {})
-        chat_id = str(chat.get("id", ""))
-        text = message.get("text", "").strip()
-
-        if not text or not chat_id:
-            return {"status": "ignored", "reason": "empty message or chat_id"}
-
-        # Command Parsing Fix: Inaalis ang @bot_username kung mayroon man
-        raw_cmd = text.split()[0].lower()
-        command = raw_cmd.split("@")[0]
-
+        message = data.get("message") or data.get("edited_message")
+        if not message:
+            return {"status": "ignored", "reason": "no_message"}
+            
+        chat_id = str(message.get("chat", {}).get("id"))
+        text = str(message.get("text", "")).strip()
+        
+        if not text.startswith("/"):
+            return {"status": "ignored", "reason": "not_a_command"}
+            
+        command = text.split()[0].lower()
+        
+        # 1. /start OR /help
         if command in ["/start", "/help"]:
             reply = (
-                "🤖 *Institutional SMC V5.3.0 Engine Bot*\n"
+                "🤖 *INSTITUTIONAL SMC V5.3 SPOT ENGINE*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                "Available Commands:\n\n"
-                "🔍 `/scan` or `/scan_all` - Run full market scan across canonical spot pairs\n"
-                "📊 `/signals` or `/journal` - View active/recent paper signals\n"
-                "⚡ `/start_session` or `/enable_paper` - Enable paper trading session\n"
-                "🛑 `/stop_session` or `/disable_paper` - Disable paper trading session\n"
-                "🔒 `/kill` or `/killswitch_off` - Toggle emergency Kill Switch\n"
-                "📈 `/status` - View engine status and statistics"
+                "Available Commands:\n"
+                "• `/start_session` - Enable Paper Session\n"
+                "• `/stop_session` - Disable Paper Session & Enable Kill Switch\n"
+                "• `/status` - Check Engine Health & Operational State\n"
+                "• `/scan` - Execute Manual Multi-Timeframe SMC Scan\n"
+                "• `/last_trade` - View Most Recent Executed Paper Trade\n"
+                "• `/stats` - View Daily Execution Statistics"
             )
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
 
-        elif command in ["/scan", "/scan_all"]:
-            send_telegram_reply(chat_id, "🔍 *Scanning canonical spot pairs with SMC V5.3.0 Engine... Please wait.*")
-            
-            # Import and trigger main scanner directly
-            from app.main import run_smc_v1_pipeline
-            result = run_smc_v1_pipeline()
-            
-            signals_found = result.get("accepted_signals", 0)
-            scanned_count = len(result.get("results", []))
-            
-            reply = (
-                f"✅ *Scan Complete!*\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"• Scanned Pairs: `{scanned_count}`\n"
-                f"• Session Enabled: `{system_state['paper_session_enabled']}`\n"
-                f"• Valid SMC Signals Found: `{signals_found}`\n\n"
-            )
-            
-            if signals_found == 0:
-                reply += "ℹ️ *No A+ SMC setups detected right now (Strict Fail-Closed Protection active).* " \
-                         "The engine will notify you automatically when a valid Sweep + Displacement + FVG forms."
-            else:
-                reply += f"🚀 *{signals_found} Signal(s) generated and logged to Paper Journal!*"
-
-            send_telegram_reply(chat_id, reply)
-            return {"status": "success", "command": command}
-
-        elif command in ["/signals", "/journal"]:
-            from app.main import get_recent_paper_orders
-            
-            try:
-                orders = get_recent_paper_orders()
-            except Exception:
-                orders = []
-
-            if not orders:
-                reply = (
-                    "📜 *SMC V5.3 Paper Signal Journal*\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n"
-                    "ℹ️ *No active paper signals recorded yet today.*\n\n"
-                    "All pending & completed paper orders will be listed here once a valid market setup triggers."
-                )
-            else:
-                formatted_orders = "\n\n".join([f"• `{o}`" for o in orders])
-                reply = f"📜 *SMC V5.3 Paper Signal Journal*\n━━━━━━━━━━━━━━━━━━━━\n{formatted_orders}"
-
-            send_telegram_reply(chat_id, reply)
-            return {"status": "success", "command": command}
-
-        elif command in ["/enable_paper", "/start_session"]:
+        # 2. /start_session
+        elif command in ["/start_session", "/enable_paper"]:
             system_state["paper_session_enabled"] = True
             system_state["kill_switch"] = False
             reply = (
                 "✅ *PAPER SESSION ACTIVATED*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                "• Mode: `PAPER_VALIDATION`\n"
-                "• Session Enabled: `True`\n"
-                "• Kill Switch: `False`\n"
-                "• Provider: `TWELVE_DATA_SPOT`\n\n"
+                f"• Mode: `{system_state['mode']}`\n"
+                f"• Session Enabled: `{system_state['paper_session_enabled']}`\n"
+                f"• Kill Switch: `{system_state['kill_switch']}`\n"
+                f"• Provider: `{system_state['data_provider']}`\n\n"
                 "Ready to collect paper trading samples!"
             )
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
 
-        elif command in ["/disable_paper", "/stop_session"]:
+        # 3. /stop_session
+        elif command in ["/stop_session", "/disable_paper"]:
             system_state["paper_session_enabled"] = False
-            reply = "🛑 *PAPER SESSION DISABLED*\nPaper execution has been locked."
+            system_state["kill_switch"] = True
+            reply = (
+                "🛑 *PAPER SESSION TERMINATED*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "• Paper Trading Session: `DISABLED`\n"
+                "• Safety Kill Switch: `ACTIVE`\n\n"
+                "Engine is locked in Fail-Closed mode."
+            )
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
 
-        elif command in ["/kill", "/killswitch_off"]:
-            current_ks = system_state.get("kill_switch", True)
-            system_state["kill_switch"] = not current_ks
-            status_str = "ACTIVATED (SYSTEM LOCKED)" if system_state["kill_switch"] else "DEACTIVATED (SYSTEM READY)"
-            reply = f"🚨 *KILL SWITCH {status_str}*"
-            send_telegram_reply(chat_id, reply)
-            return {"status": "success", "command": command}
-
+        # 4. /status
         elif command == "/status":
             reply = (
-                "📊 *SYSTEM STATUS - SMC V5.3.0*\n"
+                "📊 *ENGINE OPERATIONAL STATUS*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"• System Mode: `{system_state['mode']}`\n"
                 f"• Paper Session: `{system_state['paper_session_enabled']}`\n"
                 f"• Kill Switch: `{system_state['kill_switch']}`\n"
                 f"• Data Provider: `{system_state['data_provider']}`\n"
-                f"• Strict Canonical: `{system_state['strict_canonical_only']}`\n\n"
-                "📈 *Daily Statistics:*\n"
-                f"• Total Scans: `{daily_stats.get('total_scans', 0)}`\n"
-                f"• Executed Paper Orders: `{daily_stats.get('paper_executions', 0)}`\n"
-                f"• Rejected Candidates: `{daily_stats.get('rejected_candidates', 0)}`\n"
-                f"• Last Scan Time: `{daily_stats.get('last_scan_time', 'N/A')}`"
+                f"• Strict Canonical Only: `{system_state['strict_canonical_only']}`\n"
+                f"• News Gate: `{system_state['news_mode']}`\n"
+                f"• Scans Today: `{daily_stats['total_scans']}`\n"
+                f"• Last Scan: `{daily_stats['last_scan_time']}`"
+            )
+            send_telegram_reply(chat_id, reply)
+            return {"status": "success", "command": command}
+
+        # 5. /scan (MANUAL SCAN)
+        elif command == "/scan":
+            send_telegram_reply(chat_id, "🔍 *Scanning canonical spot pairs with SMC V5.3.0 Engine... Please wait.*")
+            
+            # Trigger internal scanner endpoint
+            try:
+                backend_url = os.getenv("RENDER_EXTERNAL_URL", "http://127.0.0.1:10000").rstrip("/")
+                res = requests.get(f"{backend_url}/scan-all", timeout=120)
+                scan_data = res.json()
+                
+                accepted = scan_data.get("accepted_signals", 0)
+                if accepted == 0:
+                    # SILENT/CLEAN SUMMARY ON MANUAL SCAN ONLY
+                    reply = (
+                        "✅ *Scan Complete!*\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n"
+                        f"• Scanned Pairs: `5`\n"
+                        f"• Session Enabled: `{system_state['paper_session_enabled']}`\n"
+                        f"• Valid SMC Signals Found: `0`\n\n"
+                        "ℹ️ No A+ SMC setups detected right now. Will notify automatically when a trade is accepted."
+                    )
+                    send_telegram_reply(chat_id, reply)
+            except Exception as scan_err:
+                send_telegram_reply(chat_id, f"❌ Scan Execution Failed: `{scan_err}`")
+            return {"status": "success", "command": command}
+
+        # 6. /last_trade
+        elif command == "/last_trade":
+            if not last_trade:
+                reply = "ℹ️ No paper trades executed yet in this active session."
+            else:
+                reply = (
+                    "📝 *LAST EXECUTED PAPER ORDER*\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"• Trade ID: `{last_trade['paper_trade_id']}`\n"
+                    f"• Symbol: `{last_trade['symbol']}`\n"
+                    f"• Direction: `{last_trade['direction']}`\n"
+                    f"• Entry Price: `${last_trade['entry_price']}`\n"
+                    f"• SL: `${last_trade['sl']}` | TP: `${last_trade['tp']}`\n"
+                    f"• Confluence Score: `{last_trade['score']}/100`\n"
+                    f"• Timestamp: `{last_trade['entry_timestamp']}`"
+                )
+            send_telegram_reply(chat_id, reply)
+            return {"status": "success", "command": command}
+
+        # 7. /stats
+        elif command == "/stats":
+            reply = (
+                "📈 *DAILY PERFORMANCE METRICS*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"• Total Market Scans: `{daily_stats['total_scans']}`\n"
+                f"• Setups Analyzed: `{daily_stats['candidate_setups']}`\n"
+                f"• Paper Executions: `{daily_stats['paper_executions']}`\n"
+                f"• Rejected Candidates: `{daily_stats['rejected_candidates']}`\n"
+                f"• Last Scan Time: `{daily_stats['last_scan_time']}`"
             )
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
 
         else:
-            send_telegram_reply(chat_id, "❓ *Unknown command.* Type `/help` to view available commands.")
-            return {"status": "unknown_command"}
+            send_telegram_reply(chat_id, "❓ Unknown command. Type `/help` for available options.")
+            return {"status": "ignored", "reason": "unknown_command"}
 
     except Exception as e:
         logger.error(f"Error handling Telegram command: {e}")
