@@ -11,3 +11,4 @@ numpy
 ta
 httpx
 yfinance
+apscheduler
