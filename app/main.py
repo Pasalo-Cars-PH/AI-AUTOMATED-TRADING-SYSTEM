@@ -84,7 +84,7 @@ def get_recent_paper_orders() -> List[str]:
 # CANONICAL SPOT DATA FETCHING WITH RATE LIMIT PROTECTION
 # ------------------------------------------------------------------
 def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 30) -> Optional[pd.DataFrame]:
-    """Fetches real-time spot time-series candles with safety sleep for free plan limit."""
+    """Fetches real-time spot time-series candles with safe delay to strictly honor Twelve Data 8 credits/min limit."""
     if not TWELVE_DATA_API_KEY:
         return None
         
@@ -92,10 +92,10 @@ def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 
     url = f"https://api.twelvedata.com/time_series?symbol={canonical_symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
     
     try:
-        # Paced delay to keep API calls smooth and within free limits
-        time.sleep(1.2) 
+        # Safe delay: 4.5 seconds pacing per request ensures maximum ~8 requests per 60 seconds
+        time.sleep(4.5) 
         
-        response = requests.get(url, timeout=8)
+        response = requests.get(url, timeout=10)
         data = response.json()
         
         if "values" not in data:
