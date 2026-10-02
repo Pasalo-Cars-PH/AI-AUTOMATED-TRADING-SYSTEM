@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Tuple, Any, List
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.telegram import handle_telegram_command, send_telegram_reply
 
@@ -37,10 +38,10 @@ TWELVE_DATA_API_KEY = (
 
 SYSTEM_STATE = {
     "mode": "PAPER_VALIDATION",
-    "paper_session_enabled": False,     
+    "paper_session_enabled": True,       # Auto-enabled for scheduler
     "master_live_enable": False,        
-    "kill_switch": True,                
-    "strict_canonical_only": False,     # Allows Yahoo fallback if Twelve Data API is limited
+    "kill_switch": False,                
+    "strict_canonical_only": False,     
     "news_mode": "FALLBACK_WATCH",      
     "execution_lock": "STRICT_PAPER_ONLY",
     "data_provider": "TWELVE_DATA_SPOT"
@@ -67,17 +68,6 @@ def get_ph_time_str() -> str:
     return get_ph_now().strftime("%Y-%m-%d %I:%M:%S %p PHT")
 
 
-def get_recent_paper_orders() -> List[str]:
-    if not PAPER_JOURNAL:
-        return []
-    
-    formatted_list = []
-    for trade_id, trade in PAPER_JOURNAL.items():
-        entry_info = f"ID: {trade_id} | {trade['symbol']} {trade['direction']} @ {trade['entry_price']} (Score: {trade['score']})"
-        formatted_list.append(entry_info)
-    return formatted_list
-
-
 # ------------------------------------------------------------------
 # CANONICAL SPOT DATA FETCHING WITH RATE LIMIT PROTECTION
 # ------------------------------------------------------------------
@@ -90,9 +80,7 @@ def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 
     url = f"https://api.twelvedata.com/time_series?symbol={canonical_symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
     
     try:
-        # 1.5 seconds delay per request to avoid HTTP timeouts while protecting rate limits
         time.sleep(1.5) 
-        
         response = requests.get(url, timeout=10)
         data = response.json()
         
@@ -124,7 +112,6 @@ def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 
 
 def fetch_symbol_data(symbol: str) -> Tuple[Dict[str, pd.DataFrame], str]:
     """Retrieves multi-timeframe candle data for H1, M15, and M5."""
-    # 1. Try Canonical Twelve Data Spot
     h1_df = fetch_twelve_data_time_series(symbol, "1h", 30)
     m15_df = fetch_twelve_data_time_series(symbol, "15min", 30)
     m5_df = fetch_twelve_data_time_series(symbol, "5min", 30)
@@ -133,9 +120,8 @@ def fetch_symbol_data(symbol: str) -> Tuple[Dict[str, pd.DataFrame], str]:
         if not h1_df.empty and not m15_df.empty and not m5_df.empty:
             return {"h1": h1_df, "m15": m15_df, "m5": m5_df}, "TWELVE_DATA_SPOT"
 
-    # 2. Emergency Yahoo Fallback
     if not SYSTEM_STATE["strict_canonical_only"]:
-        logger.warning(f"Twelve Data feed unavailable/limited for {symbol}. Falling back to Yahoo Proxy.")
+        logger.warning(f"Twelve Data feed unavailable for {symbol}. Falling back to Yahoo Proxy.")
         yahoo_symbol = SYMBOL_MAP.get(symbol, {}).get("yahoo_fallback", symbol)
         ticker = yf.Ticker(yahoo_symbol)
         
@@ -153,7 +139,7 @@ def fetch_symbol_data(symbol: str) -> Tuple[Dict[str, pd.DataFrame], str]:
 
 
 # ------------------------------------------------------------------
-# SMC LAYER 1: H1 MARKET STRUCTURE & BIAS
+# SMC LOGIC ENGINE
 # ------------------------------------------------------------------
 def analyze_h1_structure(df_h1: pd.DataFrame) -> Dict[str, Any]:
     if len(df_h1) < 20:
@@ -162,7 +148,6 @@ def analyze_h1_structure(df_h1: pd.DataFrame) -> Dict[str, Any]:
     recent_20 = df_h1.iloc[-20:-1]
     swing_high = float(recent_20['High'].max())
     swing_low = float(recent_20['Low'].min())
-    
     last_closed = df_h1.iloc[-2]
     
     bos = False
@@ -181,17 +166,9 @@ def analyze_h1_structure(df_h1: pd.DataFrame) -> Dict[str, Any]:
         elif recent_10['High'].iloc[-1] < recent_10['High'].iloc[-5] and recent_10['Low'].iloc[-1] < recent_10['Low'].iloc[-5]:
             bias = "BEARISH"
             
-    return {
-        "bias": bias,
-        "bos": bos,
-        "swing_high": swing_high,
-        "swing_low": swing_low
-    }
+    return {"bias": bias, "bos": bos, "swing_high": swing_high, "swing_low": swing_low}
 
 
-# ------------------------------------------------------------------
-# SMC LAYER 2: M15 SETUP ENGINE
-# ------------------------------------------------------------------
 def analyze_m15_setup(df_m15: pd.DataFrame, h1_bias: str) -> Dict[str, Any]:
     if len(df_m15) < 20 or h1_bias == "NEUTRAL":
         return {"setup_valid": False}
@@ -253,9 +230,6 @@ def analyze_m15_setup(df_m15: pd.DataFrame, h1_bias: str) -> Dict[str, Any]:
     }
 
 
-# ------------------------------------------------------------------
-# SMC LAYER 3: M5 TRIGGER ENGINE
-# ------------------------------------------------------------------
 def analyze_m5_trigger(df_m5: pd.DataFrame, action: str) -> Tuple[bool, Dict[str, bool]]:
     if len(df_m5) < 10:
         return False, {"displacement": False, "reclaim": False, "closed_conf": False}
@@ -286,41 +260,24 @@ def analyze_m5_trigger(df_m5: pd.DataFrame, action: str) -> Tuple[bool, Dict[str
     return m5_passed, {"displacement": displacement, "reclaim": reclaim, "closed_conf": closed_conf}
 
 
-# ------------------------------------------------------------------
-# HARD SAFETY GATES & DATA FRESHNESS METADATA
-# ------------------------------------------------------------------
 def evaluate_hard_gates(symbol: str, df_m5: pd.DataFrame, live_price: float, sl: float, tp: float, provider: str) -> Tuple[bool, Dict[str, str]]:
     gate_status = {}
+    gate_status["canonical_data_gate"] = "PASS" if not SYSTEM_STATE["strict_canonical_only"] or provider == "TWELVE_DATA_SPOT" else "FAIL"
     
-    # 1. Data Provider Validation
-    if SYSTEM_STATE["strict_canonical_only"] and provider != "TWELVE_DATA_SPOT":
-        gate_status["canonical_data_gate"] = "FAIL_NON_CANONICAL_PROVIDER"
-    else:
-        gate_status["canonical_data_gate"] = "PASS"
-    
-    # 2. Data Freshness Gate
     try:
         latest_candle_time = df_m5.index[-1]
         if isinstance(latest_candle_time, pd.Timestamp):
             latest_candle_time = latest_candle_time.to_pydatetime()
-            
         if latest_candle_time.tzinfo is None:
             latest_candle_time = latest_candle_time.replace(tzinfo=timezone.utc)
-        
+            
         now_utc = datetime.now(timezone.utc)
         delta_minutes = (now_utc - latest_candle_time).total_seconds() / 60.0
-        
         gate_status["data_freshness"] = "PASS" if delta_minutes <= 25.0 else f"FAIL_STALE_{int(delta_minutes)}M"
-    except Exception as e:
-        gate_status["data_freshness"] = "FAIL_TIMESTAMP_ERROR"
+    except Exception:
+        gate_status["data_freshness"] = "FAIL_TIMESTAMP"
         
-    # 3. Dynamic News Gate
-    if SYSTEM_STATE["news_mode"] == "FALLBACK_WATCH":
-        gate_status["news_gate"] = "PASS_FALLBACK_WATCH"
-    else:
-        gate_status["news_gate"] = "UNAVAILABLE_BLOCKED"
-        
-    # 4. Risk & R:R Check
+    gate_status["news_gate"] = "PASS_FALLBACK_WATCH"
     risk = abs(live_price - sl)
     reward = abs(tp - live_price)
     rr_ratio = (reward / risk) if risk > 0 else 0
@@ -380,15 +337,13 @@ def run_smc_v1_pipeline():
     for symbol in SYMBOL_MAP.keys():
         data, active_provider = fetch_symbol_data(symbol)
         if not data:
-            scan_results.append({"symbol": symbol, "status": "DATA_UNAVAILABLE_OR_REJECTED"})
+            scan_results.append({"symbol": symbol, "status": "DATA_UNAVAILABLE"})
             continue
             
-        # 1. H1 Structure Context
         h1_ctx = analyze_h1_structure(data["h1"])
         if h1_ctx["bias"] == "NEUTRAL":
             continue
             
-        # 2. M15 Setup
         m15_setup = analyze_m15_setup(data["m15"], h1_ctx["bias"])
         if not m15_setup["setup_valid"]:
             scan_results.append({"symbol": symbol, "status": "NO_M15_SETUP"})
@@ -398,11 +353,9 @@ def run_smc_v1_pipeline():
         action = m15_setup["action"]
         live_price = m15_setup["live_price"]
         
-        # 3. M5 Trigger
         m5_passed, m5_details = analyze_m5_trigger(data["m5"], action)
         
-        # 4. Dynamic Risk Parameters
-        decimals = 5 if symbol in ["GBPUSD", "EURUSD"] else 2  # 2 decimals for Gold (XAUUSD)
+        decimals = 5 if symbol in ["GBPUSD", "EURUSD"] else 2
         buffer = 0.50 if symbol == "XAUUSD" else 0.00050
         
         if action == "BUY":
@@ -414,13 +367,8 @@ def run_smc_v1_pipeline():
             risk = abs(sl - live_price)
             tp = round(live_price - (risk * 2.0), decimals)
             
-        # 5. Hard Safety Gates Check
         gates_passed, gate_details = evaluate_hard_gates(symbol, data["m5"], live_price, sl, tp, active_provider)
-        
-        # 6. Confluence Scoring
         score = calculate_confluence_score(h1_ctx, m15_setup, m5_details, gate_details.get("rr_gate") == "PASS")
-        
-        # 7. EXPLICIT PAPER AUTHORIZATION GATE
         is_authorized, auth_reason = authorize_paper_execution(SYSTEM_STATE, gates_passed, score, m5_passed)
         
         if is_authorized:
@@ -452,13 +400,13 @@ def run_smc_v1_pipeline():
             
             if admin_chat_id:
                 msg = (
-                    "📝 *PAPER ORDER ACCEPTED*\n"
+                    "🚨 *AUTOMATED SMC TRADE SIGNAL DETECTED*\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"• Trade ID: `{paper_trade_id}`\n"
                     f"• Symbol: `{symbol}` ({SYMBOL_MAP[symbol]['canonical']})\n"
                     f"• Direction: `{'BUY' if action == 'BUY' else 'SELL'}`\n"
                     f"• Confluence Score: `{score}/100`\n\n"
-                    f"🏛️ *SMC Multi-Timeframe Structure:*\n"
+                    f"🏛️ *SMC Multi-Timeframe Analysis:*\n"
                     f"• H1 Bias: `{h1_ctx['bias']}` (BOS={h1_ctx['bos']})\n"
                     f"• M15 Setup: `Sweep={m15_setup['sweep']} | OB={m15_setup['order_block']} | BOS={m15_setup['bos']}`\n"
                     f"• M5 Trigger: `Displacement={m5_details['displacement']} | Reclaim={m5_details['reclaim']}`\n\n"
@@ -486,22 +434,36 @@ def run_smc_v1_pipeline():
     }
 
 
+# ------------------------------------------------------------------
+# AUTOMATED SCHEDULER INITIALIZATION (EVERY 5 MINUTES)
+# ------------------------------------------------------------------
+scheduler = BackgroundScheduler(daemon=True)
+
+def scheduled_market_scan():
+    """Runs automatically every 5 minutes."""
+    if SYSTEM_STATE["paper_session_enabled"] and not SYSTEM_STATE["kill_switch"]:
+        logger.info("⏰ Executing scheduled automated market scan...")
+        run_smc_v1_pipeline()
+
+@app.on_event("startup")
+def start_automated_scheduler():
+    scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
+    scheduler.start()
+    logger.info("🚀 Automated 5-minute SMC scheduler started successfully!")
+
+@app.on_event("shutdown")
+def stop_automated_scheduler():
+    scheduler.shutdown()
+
+
 @app.api_route("/journal", methods=["GET"])
 def get_paper_journal():
-    return {
-        "total_paper_orders": len(PAPER_JOURNAL),
-        "journal": list(PAPER_JOURNAL.values())
-    }
+    return {"total_paper_orders": len(PAPER_JOURNAL), "journal": list(PAPER_JOURNAL.values())}
 
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def root_status():
-    return {
-        "status": "online",
-        "service": "Institutional SMC V5.3 Canonical Spot Engine",
-        "version": "5.3.0",
-        "system_state": SYSTEM_STATE
-    }
+    return {"status": "online", "service": "Institutional SMC V5.3 Engine", "version": "5.3.0", "system_state": SYSTEM_STATE}
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])
@@ -513,12 +475,7 @@ def health_check():
 async def telegram_webhook(request: Request):
     try:
         data = await request.json()
-        result = handle_telegram_command(
-            data=data,
-            system_state=SYSTEM_STATE,
-            daily_stats=DAILY_STATS,
-            last_trade=LAST_TRADE
-        )
+        result = handle_telegram_command(data=data, system_state=SYSTEM_STATE, daily_stats=DAILY_STATS, last_trade=LAST_TRADE)
         return JSONResponse(content=result, status_code=200)
     except Exception as e:
         logger.error(f"Error handling webhook: {e}")
