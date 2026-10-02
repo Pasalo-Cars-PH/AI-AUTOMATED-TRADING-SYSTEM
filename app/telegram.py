@@ -38,8 +38,9 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
         if not text or not chat_id:
             return {"status": "ignored", "reason": "empty message or chat_id"}
 
-        # Command Parsing
-        command = text.split()[0].lower()
+        # Command Parsing Fix: Inaalis ang @bot_username kung mayroon man
+        raw_cmd = text.split()[0].lower()
+        command = raw_cmd.split("@")[0]
 
         if command in ["/start", "/help"]:
             reply = (
