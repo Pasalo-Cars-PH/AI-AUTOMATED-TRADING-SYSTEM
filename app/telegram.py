@@ -47,11 +47,11 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 "Available Commands:\n\n"
                 "🔍 `/scan` or `/scan_all` - Run full market scan across canonical spot pairs\n"
+                "📊 `/signals` or `/journal` - View active/recent paper signals\n"
                 "⚡ `/enable_paper` - Enable paper trading session\n"
                 "🛑 `/disable_paper` - Disable paper trading session\n"
                 "🔒 `/kill` - Toggle emergency Kill Switch\n"
-                "📊 `/status` - View engine status and statistics\n"
-                "📜 `/journal` - View recent paper orders"
+                "📈 `/status` - View engine status and statistics"
             )
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
@@ -63,8 +63,46 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
             from app.main import run_smc_v1_pipeline
             result = run_smc_v1_pipeline()
             
-            summary_msg = f"✅ *Scan Complete!*\nScanned pairs: {len(result.get('results', []))}\nSession Enabled: `{system_state['paper_session_enabled']}`"
-            send_telegram_reply(chat_id, summary_msg)
+            signals_found = result.get("accepted_signals", 0)
+            scanned_count = len(result.get("results", []))
+            
+            reply = (
+                f"✅ *Scan Complete!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"• Scanned Pairs: `{scanned_count}`\n"
+                f"• Session Enabled: `{system_state['paper_session_enabled']}`\n"
+                f"• Valid SMC Signals Found: `{signals_found}`\n\n"
+            )
+            
+            if signals_found == 0:
+                reply += "ℹ️ *No A+ SMC setups detected right now (Strict Fail-Closed Protection active).* " \
+                         "The engine will notify you automatically when a valid Sweep + Displacement + FVG forms."
+            else:
+                reply += f"🚀 *{signals_found} Signal(s) generated and logged to Paper Journal!*"
+
+            send_telegram_reply(chat_id, reply)
+            return {"status": "success", "command": command}
+
+        elif command in ["/signals", "/journal"]:
+            from app.main import get_recent_paper_orders
+            
+            try:
+                orders = get_recent_paper_orders()
+            except Exception:
+                orders = []
+
+            if not orders:
+                reply = (
+                    "📜 *SMC V5.3 Paper Signal Journal*\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "ℹ️ *No active paper signals recorded yet today.*\n\n"
+                    "All pending & completed paper orders will be listed here once a valid market setup triggers."
+                )
+            else:
+                formatted_orders = "\n\n".join([f"• `{o}`" for o in orders])
+                reply = f"📜 *SMC V5.3 Paper Signal Journal*\n━━━━━━━━━━━━━━━━━━━━\n{formatted_orders}"
+
+            send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
 
         elif command == "/enable_paper":
@@ -106,10 +144,10 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
                 f"• Data Provider: `{system_state['data_provider']}`\n"
                 f"• Strict Canonical: `{system_state['strict_canonical_only']}`\n\n"
                 "📈 *Daily Statistics:*\n"
-                f"• Total Scans: `{daily_stats['total_scans']}`\n"
-                f"• Executed Paper Orders: `{daily_stats['paper_executions']}`\n"
-                f"• Rejected Candidates: `{daily_stats['rejected_candidates']}`\n"
-                f"• Last Scan Time: `{daily_stats['last_scan_time']}`"
+                f"• Total Scans: `{daily_stats.get('total_scans', 0)}`\n"
+                f"• Executed Paper Orders: `{daily_stats.get('paper_executions', 0)}`\n"
+                f"• Rejected Candidates: `{daily_stats.get('rejected_candidates', 0)}`\n"
+                f"• Last Scan Time: `{daily_stats.get('last_scan_time', 'N/A')}`"
             )
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
