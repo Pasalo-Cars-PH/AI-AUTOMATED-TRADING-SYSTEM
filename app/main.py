@@ -21,13 +21,11 @@ app = FastAPI(
     description="Multi-Timeframe SMC Engine (H1 Structure -> M15 Setup -> M5 Trigger) utilizing Twelve Data Canonical Spot Feeds"
 )
 
-# TOP 5 HIGH VOLATILITY CANONICAL SPOT PAIR MAP
+# TOP 3 HIGH VOLATILITY CANONICAL SPOT PAIR MAP
 SYMBOL_MAP = {
     "XAUUSD": {"canonical": "XAU/USD", "yahoo_fallback": "GC=F"},
     "GBPUSD": {"canonical": "GBP/USD", "yahoo_fallback": "GBPUSD=X"},
-    "USDJPY": {"canonical": "USD/JPY", "yahoo_fallback": "JPY=X"},
-    "AUDUSD": {"canonical": "AUD/USD", "yahoo_fallback": "AUDUSD=X"},
-    "NZDUSD": {"canonical": "NZD/USD", "yahoo_fallback": "NZDUSD=X"}
+    "EURUSD": {"canonical": "EUR/USD", "yahoo_fallback": "EURUSD=X"}
 }
 
 # FLEXIBLE API KEY READER
@@ -84,7 +82,7 @@ def get_recent_paper_orders() -> List[str]:
 # CANONICAL SPOT DATA FETCHING WITH RATE LIMIT PROTECTION
 # ------------------------------------------------------------------
 def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 30) -> Optional[pd.DataFrame]:
-    """Fetches real-time spot time-series candles with safe delay to strictly honor Twelve Data 8 credits/min limit."""
+    """Fetches real-time spot time-series candles with safe delay."""
     if not TWELVE_DATA_API_KEY:
         return None
         
@@ -92,8 +90,8 @@ def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 
     url = f"https://api.twelvedata.com/time_series?symbol={canonical_symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
     
     try:
-        # Safe delay: 4.5 seconds pacing per request ensures maximum ~8 requests per 60 seconds
-        time.sleep(4.5) 
+        # 1.5 seconds delay per request to avoid HTTP timeouts while protecting rate limits
+        time.sleep(1.5) 
         
         response = requests.get(url, timeout=10)
         data = response.json()
@@ -125,10 +123,7 @@ def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 
 
 
 def fetch_symbol_data(symbol: str) -> Tuple[Dict[str, pd.DataFrame], str]:
-    """
-    Retrieves multi-timeframe candle data for H1, M15, and M5.
-    Prioritizes Twelve Data Spot with failover to Yahoo Proxy if needed.
-    """
+    """Retrieves multi-timeframe candle data for H1, M15, and M5."""
     # 1. Try Canonical Twelve Data Spot
     h1_df = fetch_twelve_data_time_series(symbol, "1h", 30)
     m15_df = fetch_twelve_data_time_series(symbol, "15min", 30)
@@ -407,7 +402,7 @@ def run_smc_v1_pipeline():
         m5_passed, m5_details = analyze_m5_trigger(data["m5"], action)
         
         # 4. Dynamic Risk Parameters
-        decimals = 5 if symbol in ["GBPUSD", "AUDUSD", "NZDUSD"] else (3 if symbol == "USDJPY" else 2)
+        decimals = 5 if symbol in ["GBPUSD", "EURUSD"] else 2  # 2 decimals for Gold (XAUUSD)
         buffer = 0.50 if symbol == "XAUUSD" else 0.00050
         
         if action == "BUY":
@@ -472,11 +467,6 @@ def run_smc_v1_pipeline():
                     f"• Stop Loss (SL): `${sl}`\n"
                     f"• Take Profit (TP): `${tp}`\n"
                     f"• Target R:R: `1:2.0`\n\n"
-                    f"🛡️ *Hard Gates Snapshot:*\n"
-                    f"• Data Freshness: `{gate_details['data_freshness']}`\n"
-                    f"• Canonical Data: `{gate_details['canonical_data_gate']}`\n"
-                    f"• News Gate: `{gate_details['news_gate']}`\n"
-                    f"• R:R Ratio: `{gate_details['rr_gate']}`\n\n"
                     f"📌 *Provider:* `{active_provider}`"
                 )
                 send_telegram_reply(admin_chat_id, msg)
