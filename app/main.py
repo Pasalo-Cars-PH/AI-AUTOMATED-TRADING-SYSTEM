@@ -1,5 +1,6 @@
 import os
 import uuid
+import time
 import logging
 import requests
 import yfinance as yf
@@ -20,33 +21,29 @@ app = FastAPI(
     description="Multi-Timeframe SMC Engine (H1 Structure -> M15 Setup -> M5 Trigger) utilizing Twelve Data Canonical Spot Feeds"
 )
 
-# CANONICAL SPOT PAIR MAP (Twelve Data Primary Format)
+# TOP 5 HIGH VOLATILITY CANONICAL SPOT PAIR MAP
 SYMBOL_MAP = {
     "XAUUSD": {"canonical": "XAU/USD", "yahoo_fallback": "GC=F"},
-    "EURUSD": {"canonical": "EUR/USD", "yahoo_fallback": "EURUSD=X"},
     "GBPUSD": {"canonical": "GBP/USD", "yahoo_fallback": "GBPUSD=X"},
     "USDJPY": {"canonical": "USD/JPY", "yahoo_fallback": "JPY=X"},
     "AUDUSD": {"canonical": "AUD/USD", "yahoo_fallback": "AUDUSD=X"},
-    "USDCAD": {"canonical": "USD/CAD", "yahoo_fallback": "CAD=X"},
-    "USDCHF": {"canonical": "USD/CHF", "yahoo_fallback": "CHF=X"},
     "NZDUSD": {"canonical": "NZD/USD", "yahoo_fallback": "NZDUSD=X"}
 }
 
-# FLEXIBLE API KEY READER (Reads both TWELVE_DATA_API_KEY and TWELVEDATA_API_KEY)
+# FLEXIBLE API KEY READER
 TWELVE_DATA_API_KEY = (
     os.getenv("TWELVE_DATA_API_KEY") or 
     os.getenv("TWELVEDATA_API_KEY") or 
     ""
 ).strip()
 
-# FAIL-CLOSED & STRICT DATA ROUTING CONFIGURATION
 SYSTEM_STATE = {
     "mode": "PAPER_VALIDATION",
-    "paper_session_enabled": False,     # Explicit paper session activation flag
-    "master_live_enable": False,        # Live execution permanently disabled
-    "kill_switch": True,                # Active by default
-    "strict_canonical_only": True,      # If True, rejects emergency Yahoo fallback silently
-    "news_mode": "FALLBACK_WATCH",      # Options: STRICT_BLOCK | FALLBACK_WATCH
+    "paper_session_enabled": False,     
+    "master_live_enable": False,        
+    "kill_switch": True,                
+    "strict_canonical_only": False,     # Allows Yahoo fallback if Twelve Data API is limited
+    "news_mode": "FALLBACK_WATCH",      
     "execution_lock": "STRICT_PAPER_ONLY",
     "data_provider": "TWELVE_DATA_SPOT"
 }
@@ -73,7 +70,6 @@ def get_ph_time_str() -> str:
 
 
 def get_recent_paper_orders() -> List[str]:
-    """Helper function accessed by Telegram command handlers."""
     if not PAPER_JOURNAL:
         return []
     
@@ -85,10 +81,10 @@ def get_recent_paper_orders() -> List[str]:
 
 
 # ------------------------------------------------------------------
-# CANONICAL SPOT DATA FETCHING (Twelve Data Primary + Emergency Fallback)
+# CANONICAL SPOT DATA FETCHING WITH RATE LIMIT PROTECTION
 # ------------------------------------------------------------------
 def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 30) -> Optional[pd.DataFrame]:
-    """Fetches real-time spot time-series candles from Twelve Data API."""
+    """Fetches real-time spot time-series candles with safety sleep for free plan limit."""
     if not TWELVE_DATA_API_KEY:
         return None
         
@@ -96,11 +92,14 @@ def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 
     url = f"https://api.twelvedata.com/time_series?symbol={canonical_symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
     
     try:
+        # Paced delay to keep API calls smooth and within free limits
+        time.sleep(1.2) 
+        
         response = requests.get(url, timeout=8)
         data = response.json()
         
         if "values" not in data:
-            logger.warning(f"Twelve Data error for {symbol}: {data.get('message', 'No values')}")
+            logger.warning(f"Twelve Data limit/error for {symbol}: {data.get('message', 'No values')}")
             return None
             
         df = pd.DataFrame(data["values"])
@@ -128,7 +127,7 @@ def fetch_twelve_data_time_series(symbol: str, interval: str, outputsize: int = 
 def fetch_symbol_data(symbol: str) -> Tuple[Dict[str, pd.DataFrame], str]:
     """
     Retrieves multi-timeframe candle data for H1, M15, and M5.
-    Prioritizes Twelve Data Spot. Rejects if canonical mode is active and API fails.
+    Prioritizes Twelve Data Spot with failover to Yahoo Proxy if needed.
     """
     # 1. Try Canonical Twelve Data Spot
     h1_df = fetch_twelve_data_time_series(symbol, "1h", 30)
@@ -139,26 +138,22 @@ def fetch_symbol_data(symbol: str) -> Tuple[Dict[str, pd.DataFrame], str]:
         if not h1_df.empty and not m15_df.empty and not m5_df.empty:
             return {"h1": h1_df, "m15": m15_df, "m5": m5_df}, "TWELVE_DATA_SPOT"
 
-    # 2. Reject if Strict Canonical Only is ON
-    if SYSTEM_STATE["strict_canonical_only"]:
-        logger.warning(f"Canonical Twelve Data Spot feed unavailable for {symbol}. Rejected due to strict_canonical_only=True.")
-        return {}, "UNAVAILABLE"
-
-    # 3. Emergency Yahoo Fallback (Explicitly Labeled)
-    logger.warning(f"Falling back to Emergency Yahoo Proxy for {symbol}")
-    yahoo_symbol = SYMBOL_MAP.get(symbol, {}).get("yahoo_fallback", symbol)
-    ticker = yf.Ticker(yahoo_symbol)
-    
-    try:
-        h1_fallback = ticker.history(period="10d", interval="60m")
-        m15_fallback = ticker.history(period="5d", interval="15m")
-        m5_fallback = ticker.history(period="2d", interval="5m")
+    # 2. Emergency Yahoo Fallback
+    if not SYSTEM_STATE["strict_canonical_only"]:
+        logger.warning(f"Twelve Data feed unavailable/limited for {symbol}. Falling back to Yahoo Proxy.")
+        yahoo_symbol = SYMBOL_MAP.get(symbol, {}).get("yahoo_fallback", symbol)
+        ticker = yf.Ticker(yahoo_symbol)
         
-        if not h1_fallback.empty and not m15_fallback.empty and not m5_fallback.empty:
-            return {"h1": h1_fallback, "m15": m15_fallback, "m5": m5_fallback}, "EMERGENCY_YAHOO_FALLBACK"
-    except Exception as e:
-        logger.error(f"Yahoo Fallback error for {symbol}: {e}")
-        
+        try:
+            h1_fallback = ticker.history(period="10d", interval="60m")
+            m15_fallback = ticker.history(period="5d", interval="15m")
+            m5_fallback = ticker.history(period="2d", interval="5m")
+            
+            if not h1_fallback.empty and not m15_fallback.empty and not m5_fallback.empty:
+                return {"h1": h1_fallback, "m15": m15_fallback, "m5": m5_fallback}, "EMERGENCY_YAHOO_FALLBACK"
+        except Exception as e:
+            logger.error(f"Yahoo Fallback error for {symbol}: {e}")
+            
     return {}, "UNAVAILABLE"
 
 
@@ -320,7 +315,7 @@ def evaluate_hard_gates(symbol: str, df_m5: pd.DataFrame, live_price: float, sl:
         now_utc = datetime.now(timezone.utc)
         delta_minutes = (now_utc - latest_candle_time).total_seconds() / 60.0
         
-        gate_status["data_freshness"] = "PASS" if delta_minutes <= 20.0 else f"FAIL_STALE_{int(delta_minutes)}M"
+        gate_status["data_freshness"] = "PASS" if delta_minutes <= 25.0 else f"FAIL_STALE_{int(delta_minutes)}M"
     except Exception as e:
         gate_status["data_freshness"] = "FAIL_TIMESTAMP_ERROR"
         
@@ -412,7 +407,7 @@ def run_smc_v1_pipeline():
         m5_passed, m5_details = analyze_m5_trigger(data["m5"], action)
         
         # 4. Dynamic Risk Parameters
-        decimals = 5 if symbol in ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDCAD", "USDCHF"] else (3 if symbol == "USDJPY" else 2)
+        decimals = 5 if symbol in ["GBPUSD", "AUDUSD", "NZDUSD"] else (3 if symbol == "USDJPY" else 2)
         buffer = 0.50 if symbol == "XAUUSD" else 0.00050
         
         if action == "BUY":
