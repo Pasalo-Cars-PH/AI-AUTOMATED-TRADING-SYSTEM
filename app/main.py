@@ -14,8 +14,8 @@ logger = logging.getLogger("main_app")
 
 app = FastAPI(
     title="AI Trading Bot Engine",
-    version="4.2.0",
-    description="Fixed Spot Price Alignment & Strict M15 SMC Pattern Logic"
+    version="4.3.0",
+    description="Fixed Risk Math (SL/TP) & Strict M15 SMC Pattern Engine"
 )
 
 SYMBOL_MAP = {
@@ -53,12 +53,10 @@ def get_ph_time_str() -> str:
 
 
 def fetch_live_price(symbol: str) -> Optional[float]:
-    """
-    Fetches real-time price using direct Gold Spot API or yfinance without hardcoded subtractions.
-    """
+    """Fetches real-time price using direct Gold Spot API or yfinance."""
     decimals = 5 if symbol in ["EURUSD", "GBPUSD"] else (3 if symbol == "USDJPY" else 2)
 
-    # 1. Primary: Direct Exchange Rate API for Spot Gold
+    # Primary: Direct Exchange Rate API for Spot Gold
     try:
         if symbol == "XAUUSD":
             res = requests.get("https://open.er-api.com/v6/latest/XAU", timeout=4)
@@ -70,7 +68,7 @@ def fetch_live_price(symbol: str) -> Optional[float]:
     except Exception as e:
         logger.warning(f"Spot API failed for {symbol}: {e}")
 
-    # 2. Fallback: Yahoo Finance
+    # Fallback: Yahoo Finance
     yf_ticker = SYMBOL_MAP.get(symbol, symbol)
     try:
         ticker = yf.Ticker(yf_ticker)
@@ -168,7 +166,7 @@ def analyze_last_pinbar(symbol: str, live_spot_price: float) -> Tuple[str, Optio
         if len(hist) < 20:
             return "NO_PINBAR", None, smc_analysis
 
-        # Strict check on the last fully closed M15 candle
+        # Analyze last completed bar
         last_candle = hist.iloc[-2]
         c_open = float(last_candle['Open'])
         c_high = float(last_candle['High'])
@@ -195,7 +193,7 @@ def analyze_last_pinbar(symbol: str, live_spot_price: float) -> Tuple[str, Optio
             "lower_wick_pct": round((lower_wick / total_range) * 100, 1)
         }
 
-        # Strict Pinbar Logic: Wick must be at least 60% of total range, Body max 25%
+        # Strict Pinbar Logic: Wick must be >= 60% of candle range, Body <= 25%
         if lower_wick / total_range >= 0.60 and body_size / total_range <= 0.25:
             smc_analysis = check_full_smc_confluence(hist, "BUY", live_spot_price)
             return "BULLISH_PINBAR", candle_details, smc_analysis
@@ -215,7 +213,7 @@ def root_status():
     return {
         "status": "online",
         "service": "AI Trading Bot Engine",
-        "version": "4.2.0",
+        "version": "4.3.0",
         "supported_pairs": list(SYMBOL_MAP.keys()),
         "server_ph_time": get_ph_time_str()
     }
@@ -264,23 +262,32 @@ def scan_all_pairs():
         if pinbar_type in ["BULLISH_PINBAR", "BEARISH_PINBAR"]:
             action = "BUY" if pinbar_type == "BULLISH_PINBAR" else "SELL"
             
-            # Additional SMC Filter: Must have Liquidity Sweep or OB/FVG to trigger
+            # Reject signal if there's no Liquidity Sweep or Order Block
             if smc_analysis["liquidity_sweep"] == "NO" and smc_analysis["order_block"] == "NO":
                 DAILY_STATS["rejected_candidates"] += 1
                 continue
 
-            signals_found += 1
             decimals = 5 if symbol in ["EURUSD", "GBPUSD"] else (3 if symbol == "USDJPY" else 2)
-            buffer = 0.50 if symbol == "XAUUSD" else 0.00050
+            
+            # Dynamic buffer allocation
+            if symbol == "XAUUSD":
+                buffer = 0.50
+            elif symbol == "BTCUSD":
+                buffer = 50.00
+            else:
+                buffer = 0.00050
 
+            # CORRECTED RISK MATH FOR BUY & SELL TRADES
             if action == "BUY":
                 sl_price = round(candle_meta['low'] - buffer, decimals)
-                risk_distance = round(live_price - sl_price, decimals)
+                risk_distance = abs(live_price - sl_price)
                 tp_price = round(live_price + (risk_distance * 2.0), decimals)
-            else:
+            else: # SELL ACTION
                 sl_price = round(candle_meta['high'] + buffer, decimals)
-                risk_distance = round(sl_price - live_price, decimals)
+                risk_distance = abs(sl_price - live_price)
                 tp_price = round(live_price - (risk_distance * 2.0), decimals)
+
+            signals_found += 1
 
             score = 60.0
             if "DISCOUNT" in smc_analysis["zone"] and action == "BUY": score += 10.0
