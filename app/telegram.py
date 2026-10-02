@@ -48,9 +48,9 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
                 "Available Commands:\n\n"
                 "🔍 `/scan` or `/scan_all` - Run full market scan across canonical spot pairs\n"
                 "📊 `/signals` or `/journal` - View active/recent paper signals\n"
-                "⚡ `/enable_paper` - Enable paper trading session\n"
-                "🛑 `/disable_paper` - Disable paper trading session\n"
-                "🔒 `/kill` - Toggle emergency Kill Switch\n"
+                "⚡ `/start_session` or `/enable_paper` - Enable paper trading session\n"
+                "🛑 `/stop_session` or `/disable_paper` - Disable paper trading session\n"
+                "🔒 `/kill` or `/killswitch_off` - Toggle emergency Kill Switch\n"
                 "📈 `/status` - View engine status and statistics"
             )
             send_telegram_reply(chat_id, reply)
@@ -105,7 +105,7 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
 
-        elif command == "/enable_paper":
+        elif command in ["/enable_paper", "/start_session"]:
             system_state["paper_session_enabled"] = True
             system_state["kill_switch"] = False
             reply = (
@@ -120,13 +120,13 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
 
-        elif command == "/disable_paper":
+        elif command in ["/disable_paper", "/stop_session"]:
             system_state["paper_session_enabled"] = False
             reply = "🛑 *PAPER SESSION DISABLED*\nPaper execution has been locked."
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
 
-        elif command == "/kill":
+        elif command in ["/kill", "/killswitch_off"]:
             current_ks = system_state.get("kill_switch", True)
             system_state["kill_switch"] = not current_ks
             status_str = "ACTIVATED (SYSTEM LOCKED)" if system_state["kill_switch"] else "DEACTIVATED (SYSTEM READY)"
