@@ -3,126 +3,121 @@ import logging
 import requests
 from typing import Dict, Any
 
-logger = logging.getLogger("telegram_module")
+logger = logging.getLogger("telegram_handler")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_ALLOWED_CHAT_IDS = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",")
 
 
-def send_telegram_reply(chat_id: str, text: str) -> bool:
-    """Sends a formatted Markdown reply back to the Telegram chat."""
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("Missing TELEGRAM_BOT_TOKEN environment variable.")
-        return False
-
+def send_telegram_reply(chat_id: str, text: str):
+    """Sends a markdown-formatted message back to the Telegram chat."""
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        logger.warning("Telegram token or chat_id missing. Skipping message send.")
+        return
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "Markdown"
     }
-
+    
     try:
-        res = requests.post(url, json=payload, timeout=5)
-        return res.status_code == 200
+        requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        logger.error(f"Error sending Telegram message: {e}")
-        return False
+        logger.error(f"Failed to send Telegram message: {e}")
 
 
 def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], daily_stats: Dict[str, Any], last_trade: Any) -> Dict[str, Any]:
-    """Handles incoming Telegram commands from Webhook."""
-    message = data.get("message", {})
-    chat = message.get("chat", {})
-    chat_id = str(chat.get("id", ""))
-    text = message.get("text", "").strip()
+    """Processes incoming Telegram commands for SMC V5.3 Engine."""
+    try:
+        message = data.get("message", {})
+        chat = message.get("chat", {})
+        chat_id = str(chat.get("id", ""))
+        text = message.get("text", "").strip()
 
-    if not chat_id:
-        return {"status": "ignored", "reason": "no_chat_id"}
+        if not text or not chat_id:
+            return {"status": "ignored", "reason": "empty message or chat_id"}
 
-    # Basic authorization check
-    allowed_ids = [c.strip() for c in TELEGRAM_ALLOWED_CHAT_IDS if c.strip()]
-    if allowed_ids and chat_id not in allowed_ids:
-        send_telegram_reply(chat_id, "⛔ *Access Denied:* Unauthorized Telegram ID.")
-        return {"status": "unauthorized"}
+        # Command Parsing
+        command = text.split()[0].lower()
 
-    command = text.lower().split()[0] if text else ""
-
-    if command in ["/start", "/help"]:
-        menu_msg = (
-            "🤖 *AI TRADING BOT SYSTEM MENU*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "📌 *Available Commands:*\n\n"
-            "• `/scan` or `/signals` - Scan all market pairs for SMC signals\n"
-            "• `/status` - Check bot status & system settings\n"
-            "• `/stats` - View daily scanning performance\n"
-            "• `/last` - Show last generated trade signal\n"
-            "• `/help` - Show this menu\n"
-        )
-        send_telegram_reply(chat_id, menu_msg)
-
-    elif command in ["/scan", "/signals"]:
-        send_telegram_reply(chat_id, "🔍 *Scanning market pairs with Version 4.2.0 Engine... Please wait.*")
-        
-        # Trigger internal scan endpoint
-        try:
-            from app.main import scan_all_pairs
-            scan_result = scan_all_pairs()
-            signals_count = scan_result.get("signals_detected", 0)
-
-            if signals_count == 0:
-                send_telegram_reply(
-                    chat_id,
-                    "📊 *SCAN COMPLETE*\n\n"
-                    "• *Result:* `NO_VALID_SIGNAL`\n"
-                    "• *Reason:* No strict M15 Pinbar or SMC Confluence (Sweep/OB) found on Spot market right now.\n\n"
-                    "💡 *Tip:* Stay patient. The engine rejects low-quality setups automatically."
-                )
-        except Exception as e:
-            logger.error(f"Scan command error: {e}")
-            send_telegram_reply(chat_id, f"❌ *Scan Failed:* `{str(e)}`")
-
-    elif command == "/status":
-        status_msg = (
-            "⚙️ *SYSTEM ENGINE STATUS*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"• *Version:* `4.2.0 (Spot Calibrated)`\n"
-            f"• *Execution Mode:* `{system_state.get('execution_lock', 'SEMI_AUTOMATED')}`\n"
-            f"• *Master Enable:* `{system_state.get('master_enable', True)}`\n"
-            f"• *Kill Switch:* `{system_state.get('kill_switch', False)}`\n"
-            f"• *Server Time:* `{daily_stats.get('last_scan_time', 'N/A')}`\n"
-        )
-        send_telegram_reply(chat_id, status_msg)
-
-    elif command == "/stats":
-        stats_msg = (
-            "📈 *DAILY SCAN PERFORMANCE*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"• *Total Scans:* `{daily_stats.get('total_scans', 0)}`\n"
-            f"• *Candidate Setups:* `{daily_stats.get('candidate_setups', 0)}`\n"
-            f"• *Rejected Setups:* `{daily_stats.get('rejected_candidates', 0)}`\n"
-            f"• *Last Scan Time:* `{daily_stats.get('last_scan_time', 'N/A')}`\n"
-        )
-        send_telegram_reply(chat_id, stats_msg)
-
-    elif command == "/last":
-        if last_trade:
-            last_msg = (
-                "📍 *LAST DETECTED TRADE SIGNAL*\n"
+        if command in ["/start", "/help"]:
+            reply = (
+                "🤖 *Institutional SMC V5.3.0 Engine Bot*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                f"• Symbol: `{last_trade.get('symbol')}`\n"
-                f"• Action: `{last_trade.get('action')}`\n"
-                f"• Entry: `${last_trade.get('entry')}`\n"
-                f"• Stop Loss: `${last_trade.get('sl')}`\n"
-                f"• Take Profit: `${last_trade.get('tp')}`\n"
-                f"• Score: `{last_trade.get('score')}/100`\n"
-                f"• Timestamp: `{last_trade.get('timestamp')}`"
+                "Available Commands:\n\n"
+                "🔍 `/scan` or `/scan_all` - Run full market scan across canonical spot pairs\n"
+                "⚡ `/enable_paper` - Enable paper trading session\n"
+                "🛑 `/disable_paper` - Disable paper trading session\n"
+                "🔒 `/kill` - Toggle emergency Kill Switch\n"
+                "📊 `/status` - View engine status and statistics\n"
+                "📜 `/journal` - View recent paper orders"
             )
-            send_telegram_reply(chat_id, last_msg)
+            send_telegram_reply(chat_id, reply)
+            return {"status": "success", "command": command}
+
+        elif command in ["/scan", "/scan_all"]:
+            send_telegram_reply(chat_id, "🔍 *Scanning canonical spot pairs with SMC V5.3.0 Engine... Please wait.*")
+            
+            # Import and trigger main scanner directly
+            from app.main import run_smc_v1_pipeline
+            result = run_smc_v1_pipeline()
+            
+            summary_msg = f"✅ *Scan Complete!*\nScanned pairs: {len(result.get('results', []))}\nSession Enabled: `{system_state['paper_session_enabled']}`"
+            send_telegram_reply(chat_id, summary_msg)
+            return {"status": "success", "command": command}
+
+        elif command == "/enable_paper":
+            system_state["paper_session_enabled"] = True
+            system_state["kill_switch"] = False
+            reply = (
+                "✅ *PAPER SESSION ACTIVATED*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "• Mode: `PAPER_VALIDATION`\n"
+                "• Session Enabled: `True`\n"
+                "• Kill Switch: `False`\n"
+                "• Provider: `TWELVE_DATA_SPOT`\n\n"
+                "Ready to collect paper trading samples!"
+            )
+            send_telegram_reply(chat_id, reply)
+            return {"status": "success", "command": command}
+
+        elif command == "/disable_paper":
+            system_state["paper_session_enabled"] = False
+            reply = "🛑 *PAPER SESSION DISABLED*\nPaper execution has been locked."
+            send_telegram_reply(chat_id, reply)
+            return {"status": "success", "command": command}
+
+        elif command == "/kill":
+            current_ks = system_state.get("kill_switch", True)
+            system_state["kill_switch"] = not current_ks
+            status_str = "ACTIVATED (SYSTEM LOCKED)" if system_state["kill_switch"] else "DEACTIVATED (SYSTEM READY)"
+            reply = f"🚨 *KILL SWITCH {status_str}*"
+            send_telegram_reply(chat_id, reply)
+            return {"status": "success", "command": command}
+
+        elif command == "/status":
+            reply = (
+                "📊 *SYSTEM STATUS - SMC V5.3.0*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"• System Mode: `{system_state['mode']}`\n"
+                f"• Paper Session: `{system_state['paper_session_enabled']}`\n"
+                f"• Kill Switch: `{system_state['kill_switch']}`\n"
+                f"• Data Provider: `{system_state['data_provider']}`\n"
+                f"• Strict Canonical: `{system_state['strict_canonical_only']}`\n\n"
+                "📈 *Daily Statistics:*\n"
+                f"• Total Scans: `{daily_stats['total_scans']}`\n"
+                f"• Executed Paper Orders: `{daily_stats['paper_executions']}`\n"
+                f"• Rejected Candidates: `{daily_stats['rejected_candidates']}`\n"
+                f"• Last Scan Time: `{daily_stats['last_scan_time']}`"
+            )
+            send_telegram_reply(chat_id, reply)
+            return {"status": "success", "command": command}
+
         else:
-            send_telegram_reply(chat_id, "ℹ️ No recent signal recorded for today yet.")
+            send_telegram_reply(chat_id, "❓ *Unknown command.* Type `/help` to view available commands.")
+            return {"status": "unknown_command"}
 
-    else:
-        send_telegram_reply(chat_id, "❓ *Unknown command.* Type `/help` or `/start` to see available commands.")
-
-    return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Error handling Telegram command: {e}")
+        return {"status": "error", "message": str(e)}
