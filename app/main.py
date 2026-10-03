@@ -13,7 +13,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 
 PAIRS = ["XAUUSD", "GBPUSD", "EURUSD"]
-FETCH_SIZE = 5000  # Pull deep history for 90 days
 
 SCANS_TODAY = 0
 SCAN_DATE = None
@@ -37,7 +36,36 @@ def send_telegram_msg(message: str, target_chat_id: str = None):
     except Exception as e:
         print(f"Error sending Telegram alert: {e}")
 
-def fetch_historical_m5_clean(symbol: str, outputsize: int = 5000):
+def fetch_m5_live(symbol: str):
+    """Fetches recent M5 candles for live market scanning."""
+    sym = f"{symbol[:3]}/{symbol[3:]}"
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        "symbol": sym,
+        "interval": "5min",
+        "outputsize": 100,
+        "timezone": "UTC",
+        "apikey": TWELVE_DATA_API_KEY,
+    }
+    try:
+        res = requests.get(url, params=params, timeout=10).json()
+        if "values" not in res:
+            return None
+        values = res["values"]
+        # Tanggalin ang hindi pa saradong candle
+        if values:
+            try:
+                dt = datetime.datetime.strptime(values[0]["datetime"], "%Y-%m-%d %H:%M:%S")
+                if datetime.datetime.utcnow() < dt + datetime.timedelta(minutes=5):
+                    values = values[1:]
+            except Exception:
+                pass
+        return values
+    except Exception as e:
+        print(f"Live fetch error for {symbol}: {e}")
+        return None
+
+def fetch_historical_m5_clean(symbol: str, outputsize: int = 2000):
     """Fetches M5 data from Twelve Data and strictly filters weekends and flat candles."""
     sym = f"{symbol[:3]}/{symbol[3:]}"
     url = "https://api.twelvedata.com/time_series"
@@ -51,6 +79,7 @@ def fetch_historical_m5_clean(symbol: str, outputsize: int = 5000):
     try:
         res = requests.get(url, params=params, timeout=15).json()
         if "values" not in res:
+            print(f"Twelve Data Error for {symbol}: {res.get('message', res)}")
             return None
         
         raw_values = res["values"]
@@ -58,16 +87,14 @@ def fetch_historical_m5_clean(symbol: str, outputsize: int = 5000):
         df['datetime'] = pd.to_datetime(df['datetime'])
         df = df.sort_values('datetime').reset_index(drop=True)
         
-        # Convert numeric columns
         for col in ['open', 'high', 'low', 'close']:
             df[col] = df[col].astype(float)
 
-        # 1. Tanggalin ang Weekend Candles (Saturday=5, Sunday=6)
-        # Note: Pinapayagan ang Sunday late open (21:00 UTC pataas) kung kinakailangan, pero ide-date filter dito
+        # Filter Weekend Candles
         df['weekday'] = df['datetime'].dt.weekday
-        df = df[df['weekday'] < 5] # Monday (0) to Friday (4)
+        df = df[df['weekday'] < 5]
 
-        # 2. Tanggalin ang Flat/Zero-Range Candles (High == Low)
+        # Filter Flat/Zero-Range Candles
         df = df[df['high'] > df['low']]
 
         return df.to_dict('records')
@@ -97,16 +124,13 @@ def calculate_atr(candles_oldest_first, period=14):
     return sum(trs[-period:]) / period
 
 def analyze_variant(symbol, window_newest_first, variant_id=1):
-    """
-    window_newest_first: slice ng candles na ang index 0 ay ang kasalukuyang candle.
-    """
     if len(window_newest_first) < 60:
         return None
 
     dt = pd.to_datetime(window_newest_first[0]['datetime'])
     hour_utc = dt.hour
 
-    # Killzone Filter (London + NY overlap: 07:00 UTC to 19:00 UTC)
+    # Session Killzone Filter (07:00 UTC - 19:00 UTC)
     if hour_utc < 7 or hour_utc > 19:
         return None
 
@@ -118,7 +142,7 @@ def analyze_variant(symbol, window_newest_first, variant_id=1):
     if not ema20 or not ema50:
         return None
 
-    c0, o0, h0, l0 = window_newest_first[0]['close'], window_newest_first[0]['open'], window_newest_first[0]['high'], window_newest_first[0]['low']
+    c0, o0 = window_newest_first[0]['close'], window_newest_first[0]['open']
     c1, o1 = window_newest_first[1]['close'], window_newest_first[1]['open']
 
     body_size = abs(c0 - o0)
@@ -138,24 +162,23 @@ def analyze_variant(symbol, window_newest_first, variant_id=1):
     spread_pips = 3.0 if symbol == "XAUUSD" else (1.5 if symbol == "GBPUSD" else 1.2)
     spread = spread_pips * pip_factor
 
-    # Dynamic Parameter Selection base sa Variant
-    if variant_id == 1:  # Base Fixed + Killzone + 36 TO
+    if variant_id == 1:
         if symbol == "XAUUSD": sl_pips, tp_pips = 18.0, 36.0
         elif symbol == "GBPUSD": sl_pips, tp_pips = 12.0, 24.0
         else: sl_pips, tp_pips = 10.0, 20.0
-    else:  # Variant 2 & 3: ATR-based SL/TP
+    else:
         atr = calculate_atr(oldest_first, 14)
         if not atr: return None
         sl_pips = round((atr * 1.5) / pip_factor, 1)
         tp_pips = round((atr * 3.0) / pip_factor, 1)
-        sl_pips = max(8.0, min(sl_pips, 25.0)) # Safety bounds
+        sl_pips = max(8.0, min(sl_pips, 25.0))
 
     if signal_type == "BUY":
-        sl = c0 - (sl_pips * pip_factor)
-        tp = c0 + (tp_pips * pip_factor)
+        sl = round(c0 - (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
+        tp = round(c0 + (tp_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
     else:
-        sl = c0 + (sl_pips * pip_factor)
-        tp = c0 - (tp_pips * pip_factor)
+        sl = round(c0 + (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
+        tp = round(c0 - (tp_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
 
     return {
         "pair": symbol, "type": signal_type, "entry": c0,
@@ -182,9 +205,7 @@ def run_variant_simulation(records, pair, variant_id=1, timeout_candles=36):
         sl, tp, spread = sig['sl'], sig['tp'], sig['spread']
         sig_type = sig['type']
 
-        # Entry Price Adjust with Spread
         effective_entry = entry_price + spread if sig_type == "BUY" else entry_price - spread
-        
         result = None
         exit_offset = timeout_candles
 
@@ -215,12 +236,11 @@ def run_variant_simulation(records, pair, variant_id=1, timeout_candles=36):
             losses += 1
             net_r -= 1.0
         else:
-            # Check for Spread Cut on Timeout
             last_close = records[i + timeout_candles - 1]['close']
             pnl = (last_close - effective_entry) if sig_type == "BUY" else (effective_entry - last_close)
             if pnl <= 0:
                 spread_cuts += 1
-                net_r -= 0.5  # Partial penalty for drag cut
+                net_r -= 0.5
             else:
                 timeouts += 1
 
@@ -229,23 +249,21 @@ def run_variant_simulation(records, pair, variant_id=1, timeout_candles=36):
     return total_trades, wins, losses, timeouts, spread_cuts, round(net_r, 1)
 
 def run_walkforward_backtest_task(chat_id: str):
-    send_telegram_msg("⏳ *Fetching 90-Day Real Data & Cleaning Weekend/Flat Candles...*", chat_id)
+    send_telegram_msg("⏳ *Fetching Clean M5 Historical Data & Running Backtest...*", chat_id)
     try:
-        report = "📊 *WALK-FORWARD IN-SAMPLE BENCHMARK (60-DAY CLEANED DATA)*\n\n"
+        report = "📊 *WALK-FORWARD IN-SAMPLE BENCHMARK (CLEANED M5 DATA)*\n\n"
         
         for pair in PAIRS:
-            records = fetch_historical_m5_clean(pair, outputsize=5000)
-            if not records or len(records) < 2000:
-                report += f"• *{pair}*: Data Unavailable or Insufficient.\n\n"
+            records = fetch_historical_m5_clean(pair, outputsize=2000)
+            if not records or len(records) < 500:
+                report += f"• *{pair}*: Data Fetch Failed or Insufficient.\n\n"
                 continue
 
-            # Split Data: First 60 Days (~1200-1500 clean M5 candles per month x 2 = ~3000 candles) for In-Sample
             total_clean = len(records)
-            split_idx = int(total_clean * 0.66) # 66% In-Sample (~60 Days), 33% Out-of-Sample (~30 Days)
-            
+            split_idx = int(total_clean * 0.66)
             in_sample_records = records[:split_idx]
 
-            report += f"🔹 *{pair}* (IS Clean Candles: `{len(in_sample_records)}`):\n"
+            report += f"🔹 *{pair}* (Clean In-Sample Candles: `{len(in_sample_records)}`):\n"
             
             for v_id in [1, 2]:
                 v_name = "V1 (Fixed + Killzone + 36TO)" if v_id == 1 else "V2 (ATR Dynamic + Killzone)"
@@ -260,10 +278,44 @@ def run_walkforward_backtest_task(chat_id: str):
                 )
             report += "\n"
 
-        report += "⚠️ _In-Sample Tuning Phase. Out-of-Sample (OOS) testing will only run once on the best variant._"
+        report += "⚠️ _Clean Data Benchmark Phase._"
         send_telegram_msg(report, chat_id)
     except Exception as err:
         send_telegram_msg(f"❌ Backtest Error: {err}", chat_id)
+
+def manual_scan_task(chat_id: str):
+    send_telegram_msg("🔍 *Scanning M5 setups on Live Market Data...*", chat_id)
+    found = False
+    for pair in PAIRS:
+        data = fetch_m5_live(pair)
+        if not data:
+            continue
+        # Convert to dict format suitable for analyze_variant
+        clean_data = []
+        for d in data:
+            try:
+                clean_data.append({
+                    "open": float(d["open"]), "high": float(d["high"]),
+                    "low": float(d["low"]), "close": float(d["close"]),
+                    "datetime": d["datetime"]
+                })
+            except Exception:
+                pass
+        
+        if len(clean_data) >= 60:
+            sig = analyze_variant(pair, clean_data, variant_id=1)
+            if sig:
+                found = True
+                msg = (
+                    f"⚡ *M5 SMC SIGNAL DETECTED*\n\n"
+                    f"• *Pair:* `{sig['pair']}` | *Action:* `{sig['type']}`\n"
+                    f"• *Entry:* `{sig['entry']}`\n"
+                    f"• *SL:* `{sig['sl']}` | *TP:* `{sig['tp']}`\n"
+                    f"• *Time:* `{sig['time']}`"
+                )
+                send_telegram_msg(msg, chat_id)
+    if not found:
+        send_telegram_msg("ℹ️ *No active Killzone M5 setups detected right now.*", chat_id)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -287,10 +339,31 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
                 return {"status": "ok"}
 
-            if text == "/backtest":
+            if text == "/status":
+                pht_time = pht_now().strftime("%Y-%m-%d %I:%M:%S %p PHT")
+                msg = (
+                    "📊 *ENGINE OPERATIONAL STATUS*\n\n"
+                    "• *System Mode:* `SMC_CLEANED_WALKFORWARD_V2.3`\n"
+                    "• *Paper Session:* `True`\n"
+                    "• *Data Provider:* `TWELVE_DATA_SPOT`\n"
+                    f"• *Current Time:* `{pht_time}`"
+                )
+                send_telegram_msg(msg, chat_id)
+
+            elif text == "/scan":
+                background_tasks.add_task(manual_scan_task, chat_id)
+
+            elif text == "/backtest":
                 background_tasks.add_task(run_walkforward_backtest_task, chat_id)
+
             elif text in ["/help", "/start"]:
-                send_telegram_msg("🤖 *Bot Ready.* Use `/backtest` for 60-Day In-Sample Clean Data Benchmark.", chat_id)
+                msg = (
+                    "🤖 *AI TRADING BOT COMMANDS*\n\n"
+                    "• `/status` - System status\n"
+                    "• `/scan` - Force manual scan for live M5 setups\n"
+                    "• `/backtest` - Run 60-Day In-Sample Clean Data Benchmark"
+                )
+                send_telegram_msg(msg, chat_id)
     except Exception as e:
         print(f"Webhook error: {e}")
     return {"status": "ok"}
