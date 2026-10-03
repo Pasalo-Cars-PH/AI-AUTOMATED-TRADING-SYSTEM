@@ -182,11 +182,11 @@ async def process_telegram_update(request: Request):
             elif text == "/backtest":
                 send_telegram_msg("⏳ *Running Phase C Backtest Simulation... Please wait 5 seconds.*", chat_id)
                 try:
-                    summary_msg = "📊 *PHASE C BACKTEST RESULTS (1-Day Replay)*\n\n"
+                    summary_msg = "📊 *PHASE C BACKTEST RESULTS (3-Day Replay | Score Threshold: 45)*\n\n"
                     for pair in PAIRS:
-                        df_h1, df_m15, df_m5, df_m1 = generate_spot_ohlc(pair, days=1)
+                        df_h1, df_m15, df_m5, df_m1 = generate_spot_ohlc(pair, days=3)
                         runner = PhaseCReplayRunner(pair, df_h1, df_m15, df_m5, df_m1)
-                        m = runner.execute_replay(min_score_threshold=70)
+                        m = runner.execute_replay(min_score_threshold=45)
                         
                         summary_msg += (
                             f"• *{pair}*:\n"
@@ -234,7 +234,7 @@ def status():
 
 # FAST PHASE C REPLAY BACKTEST ENDPOINT
 @app.get("/run-backtest")
-def trigger_phase_c_backtest(min_score: int = 70, days: int = 1):
+def trigger_phase_c_backtest(min_score: int = 45, days: int = 3):
     """
     Fast HTTP Endpoint for Phase C Replay Simulation.
     """
