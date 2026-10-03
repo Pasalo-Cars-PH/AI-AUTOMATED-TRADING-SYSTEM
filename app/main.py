@@ -126,7 +126,7 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
 scheduler.start()
 
-# Webhook Route for Telegram (GET & POST)
+# Telegram Webhook Endpoint (Supports GET & POST)
 @app.api_route("/telegram-webhook", methods=["GET", "POST"])
 async def telegram_webhook(request: Request):
     if request.method == "GET":
@@ -186,7 +186,7 @@ async def telegram_webhook(request: Request):
         
     return {"status": "ok"}
 
-# Health Endpoint (Supports GET & HEAD for UptimeRobot)
+# Health Endpoint (Supports GET & HEAD)
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok", "mode": "HYBRID_SCALPER"}
