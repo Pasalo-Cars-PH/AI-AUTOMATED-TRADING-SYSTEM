@@ -46,7 +46,7 @@ def analyze_hybrid_scalp(symbol, candles):
         return None
     
     closes = [float(c["close"]) for c in candles]
-    ema20 = sum(closes[:20]) / 20  # Trend Filter Proxy
+    ema20 = sum(closes[:20]) / 20
 
     c0 = float(candles[0]["close"])
     o0 = float(candles[0]["open"])
@@ -65,29 +65,37 @@ def analyze_hybrid_scalp(symbol, candles):
     score = 0
     signal_type = None
     
-    # Bullish Criteria with Trend Confluence
-    if c0 > o0 and c0 > ema20 and (body_size > prev_body * 1.2 or bullish_gap):
+    # Bullish Logic
+    if c0 > o0 and c0 > ema20 and (body_size > prev_body * 1.3 or bullish_gap):
         score += 35
         if bullish_gap:
-            score += 20
+            score += 25
         if c0 > float(candles[1]["high"]):
             score += 15
         signal_type = "BUY"
         
-    # Bearish Criteria with Trend Confluence
-    elif c0 < o0 and c0 < ema20 and (body_size > prev_body * 1.2 or bearish_gap):
+    # Bearish Logic
+    elif c0 < o0 and c0 < ema20 and (body_size > prev_body * 1.3 or bearish_gap):
         score += 35
         if bearish_gap:
-            score += 20
+            score += 25
         if c0 < float(candles[1]["low"]):
             score += 15
         signal_type = "SELL"
 
-    # High Confluence Quality Gate (Score >= 65)
-    if score >= 65 and signal_type:
+    # Pair-Specific Quality Threshold
+    required_score = 70 if symbol == "EURUSD" else 65
+
+    if score >= required_score and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
-        sl_pips = 15 if symbol == "XAUUSD" else 8
-        tp_pips = 30 if symbol == "XAUUSD" else 16  # 1:2 RR Target
+        
+        # Optimized SL/TP per asset
+        if symbol == "XAUUSD":
+            sl_pips, tp_pips = 15, 30  # 1:2 RR
+        elif symbol == "GBPUSD":
+            sl_pips, tp_pips = 8, 16    # 1:2 RR
+        else: # EURUSD
+            sl_pips, tp_pips = 6, 15    # 1:2.5 RR for tighter range
         
         if signal_type == "BUY":
             sl = round(c0 - (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
@@ -107,9 +115,9 @@ def analyze_hybrid_scalp(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    send_telegram_msg("⏳ *Running High-Confluence Hybrid Backtest (Threshold 65)... Please wait.*", chat_id)
+    send_telegram_msg("⏳ *Running Tuned Hybrid Backtest... Please wait.*", chat_id)
     try:
-        summary_msg = "📊 *OPTIMIZED HYBRID SCALPER BACKTEST (3-Day Replay | Threshold: 65)*\n\n"
+        summary_msg = "📊 *FINE-TUNED HYBRID SCALPER BACKTEST (3-Day Replay)*\n\n"
         for pair in PAIRS:
             _, _, df_m5, _ = generate_spot_ohlc(pair, days=3)
             
@@ -134,9 +142,10 @@ def run_hybrid_backtest_task(chat_id: str):
                             win = True
                             break
                     
+                    rr_multiplier = 2.5 if pair == "EURUSD" else 2.0
                     if win:
                         wins += 1
-                        net_r += 2.0  # 1:2 RR
+                        net_r += rr_multiplier
                     else:
                         losses += 1
                         net_r -= 1.0
