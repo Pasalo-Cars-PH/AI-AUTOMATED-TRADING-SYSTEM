@@ -1,10 +1,18 @@
 import os
 import datetime
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
+import pandas as pd
 
-app = FastAPI(title="SMC Hybrid Scalper Engine")
+# Multi-Timeframe and Backtesting Engine Imports
+from app.structure.multi_timeframe import analyze_h1_structure_v2, analyze_m15_setup_v2
+from app.journal.intrabar_lifecycle import evaluate_intrabar_lifecycle
+from scripts.generate_synthetic_data import generate_spot_ohlc
+from scripts.run_phase_c_backtest import PhaseCReplayRunner
+
+app = FastAPI(title="SMC Hybrid Scalper & Phase C Engine")
 
 # Environment Variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -13,6 +21,8 @@ TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 
 PAIRS = ["XAUUSD", "GBPUSD", "EURUSD"]
 SCANS_TODAY = 0
+
+scheduler = BackgroundScheduler()
 
 def send_telegram_msg(message: str, target_chat_id: str = None):
     chat_id = target_chat_id or TELEGRAM_CHAT_ID
@@ -122,11 +132,14 @@ def scheduled_market_scan():
                 )
                 send_telegram_msg(msg)
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
-scheduler.start()
+@app.on_event("startup")
+def startup_event():
+    # Safe scheduler start on app launch
+    if not scheduler.running:
+        scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
+        scheduler.start()
 
-# Generic Handler Function
+# Generic Handler Function for Telegram Commands
 async def process_telegram_update(request: Request):
     try:
         update = await request.json()
@@ -167,7 +180,7 @@ async def process_telegram_update(request: Request):
                         )
                         send_telegram_msg(msg, chat_id)
                 else:
-                    send_telegram_msg("ℹ️️ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
+                    send_telegram_msg("ℹ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
 
             elif text in ["/help", "/start"]:
                 msg = (
@@ -182,13 +195,13 @@ async def process_telegram_update(request: Request):
         
     return {"status": "ok"}
 
-# Support pareho ang /telegram-webhook AT /telegram/webhook (GET & POST)
+# Support Telegram Webhook GET & POST
 @app.api_route("/telegram-webhook", methods=["GET", "POST"])
 @app.api_route("/telegram/webhook", methods=["GET", "POST"])
 async def telegram_webhook(request: Request):
     return await process_telegram_update(request)
 
-# Health Endpoint (Supports GET & HEAD)
+# Health Endpoint
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok", "mode": "HYBRID_SCALPER"}
@@ -202,3 +215,35 @@ def status():
         "scans_today": SCANS_TODAY,
         "last_scan_pht": pht_time
     }
+
+# NEW PHASE C REPLAY BACKTEST ENDPOINT
+@app.get("/run-backtest")
+def trigger_phase_c_backtest(min_score: int = 70, days: int = 15):
+    """
+    HTTP Endpoint for Phase C Replay Simulation.
+    Runs without needing Render Web Shell access.
+    """
+    try:
+        results = {}
+        for pair in PAIRS:
+            # 1. Generate multi-timeframe synthetic candle dataset
+            df_h1, df_m15, df_m5, df_m1 = generate_spot_ohlc(pair, days=days)
+
+            # 2. Run deterministic replay engine
+            runner = PhaseCReplayRunner(pair, df_h1, df_m15, df_m5, df_m1)
+            metrics = runner.execute_replay(min_score_threshold=min_score)
+
+            results[pair] = metrics
+
+        return JSONResponse(status_code=200, content={
+            "status": "SUCCESS",
+            "execution_timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "simulation_parameters": {
+                "min_score_threshold": min_score,
+                "days_simulated": days
+            },
+            "phase_c_metrics": results
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backtest execution error: {str(e)}")
