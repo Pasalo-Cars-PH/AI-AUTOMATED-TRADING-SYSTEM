@@ -10,7 +10,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY") or os.getenv("TWELVEDATA_API_KEY", "")
 
 PAIRS = ["XAUUSD", "GBPUSD", "EURUSD"]
 MIN_CANDLES = 60            # kailangan para sa totoong EMA50
