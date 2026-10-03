@@ -9,7 +9,7 @@ import numpy as np
 
 from scripts.generate_synthetic_data import generate_spot_ohlc
 
-app = FastAPI(title="SMC Scalp Engine V2.1")
+app = FastAPI(title="SMC Scalp Engine V2.2 - Dynamic EURUSD Filter")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -67,9 +67,12 @@ def analyze_hybrid_scalp(symbol, candles):
     score = 0
     signal_type = None
     
+    # EURUSD Requires Stronger Momentum Expansion (1.5x Body Size)
+    body_multiplier = 1.5 if symbol == "EURUSD" else 1.2
+    
     # Bullish SMC Setup
     if c0 > ema20 and ema20 > ema50:
-        if c0 > o0 and body_size > prev_body * 1.2:
+        if c0 > o0 and body_size > prev_body * body_multiplier:
             score += 35
             if l0 < recent_low:  # Sweep Liquidity
                 score += 25
@@ -79,7 +82,7 @@ def analyze_hybrid_scalp(symbol, candles):
         
     # Bearish SMC Setup
     elif c0 < ema20 and ema20 < ema50:
-        if c0 < o0 and body_size > prev_body * 1.2:
+        if c0 < o0 and body_size > prev_body * body_multiplier:
             score += 35
             if h0 > recent_high:  # Sweep Liquidity
                 score += 25
@@ -87,8 +90,8 @@ def analyze_hybrid_scalp(symbol, candles):
                 score += 15
             signal_type = "SELL"
 
-    # Strict Quality Gate
-    required_score = 65
+    # Strict Quality Gate (EURUSD requires higher score to eliminate chop)
+    required_score = 70 if symbol == "EURUSD" else 65
 
     if score >= required_score and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
@@ -97,8 +100,14 @@ def analyze_hybrid_scalp(symbol, candles):
             sl_pips, tp_pips = 18, 36   # 1:2 RR
         elif symbol == "GBPUSD":
             sl_pips, tp_pips = 12, 24   # 1:2 RR
-        else: # EURUSD Calibrated to 1:2 RR
-            sl_pips, tp_pips = 10, 20   # 1:2 RR
+        else: # EURUSD Dynamic Swing SL + Buffer
+            if signal_type == "BUY":
+                calculated_sl = round(abs(c0 - recent_low) / pip_factor, 1) + 2.0
+            else:
+                calculated_sl = round(abs(recent_high - c0) / pip_factor, 1) + 2.0
+            
+            sl_pips = max(8.0, min(calculated_sl, 12.0))
+            tp_pips = sl_pips * 2.0  # Strict 1:2 RR based on Dynamic SL
         
         if signal_type == "BUY":
             sl = round(c0 - (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
@@ -118,11 +127,11 @@ def analyze_hybrid_scalp(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    send_telegram_msg("⏳ *Running Final Calibrated SMC Backtest (7-Day Replay)...*", chat_id)
+    send_telegram_msg("⏳ *Running Optimized Dynamic SMC Backtest (7-Day Replay)...*", chat_id)
     try:
         np.random.seed(42)
         
-        summary_msg = "📊 *FINAL CALIBRATED SMC HYBRID BACKTEST (7-Day Replay)*\n\n"
+        summary_msg = "📊 *DYNAMIC FILTER SMC HYBRID BACKTEST (7-Day Replay)*\n\n"
         for pair in PAIRS:
             _, _, df_m5, _ = generate_spot_ohlc(pair, days=7)
             
@@ -164,7 +173,7 @@ def run_hybrid_backtest_task(chat_id: str):
                     
                     if win:
                         wins += 1
-                        net_r += 2.0  # Standardized 1:2 RR Across All Pairs
+                        net_r += 2.0  # 1:2 RR across all setups
                     else:
                         losses += 1
                         net_r -= 1.0
@@ -221,7 +230,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
                 msg = (
                     "📊 *ENGINE OPERATIONAL STATUS*\n\n"
-                    "• *System Mode:* `SMC_KILLZONE_V2.1`\n"
+                    "• *System Mode:* `SMC_KILLZONE_V2.2`\n"
                     "• *Paper Session:* `True`\n"
                     "• *Data Provider:* `TWELVE_DATA_SPOT`\n"
                     f"• *Scans Today:* `{SCANS_TODAY}`\n"
@@ -271,13 +280,13 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
-    return {"status": "ok", "mode": "SMC_KILLZONE_V2.1"}
+    return {"status": "ok", "mode": "SMC_KILLZONE_V2.2"}
 
 @app.get("/status")
 def status():
     pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
     return {
-        "system_mode": "SMC_KILLZONE_V2.1",
+        "system_mode": "SMC_KILLZONE_V2.2",
         "paper_session": True,
         "scans_today": SCANS_TODAY,
         "last_scan_pht": pht_time
