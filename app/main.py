@@ -62,11 +62,14 @@ def analyze_hybrid_scalp(symbol, candles):
     body_size = abs(c0 - o0)
     prev_body = abs(c1 - o1)
     
+    # Pair Specific Body Multiplier
+    body_mult = 1.5 if symbol == "GBPUSD" else 1.3
+    
     score = 0
     signal_type = None
     
     # Bullish Logic
-    if c0 > o0 and c0 > ema20 and (body_size > prev_body * 1.3 or bullish_gap):
+    if c0 > o0 and c0 > ema20 and (body_size > prev_body * body_mult or bullish_gap):
         score += 35
         if bullish_gap:
             score += 25
@@ -75,7 +78,7 @@ def analyze_hybrid_scalp(symbol, candles):
         signal_type = "BUY"
         
     # Bearish Logic
-    elif c0 < o0 and c0 < ema20 and (body_size > prev_body * 1.3 or bearish_gap):
+    elif c0 < o0 and c0 < ema20 and (body_size > prev_body * body_mult or bearish_gap):
         score += 35
         if bearish_gap:
             score += 25
@@ -83,19 +86,24 @@ def analyze_hybrid_scalp(symbol, candles):
             score += 15
         signal_type = "SELL"
 
-    # Pair-Specific Quality Threshold
-    required_score = 70 if symbol == "EURUSD" else 65
+    # Strict Pair Specific Gates
+    if symbol == "XAUUSD":
+        required_score = 65
+    elif symbol == "EURUSD":
+        required_score = 68
+    else: # GBPUSD (Higher strictness to filter false breakouts)
+        required_score = 72
 
     if score >= required_score and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
         
-        # Optimized SL/TP per asset
+        # SL and TP Configurations
         if symbol == "XAUUSD":
             sl_pips, tp_pips = 15, 30  # 1:2 RR
         elif symbol == "GBPUSD":
-            sl_pips, tp_pips = 8, 16    # 1:2 RR
+            sl_pips, tp_pips = 12, 24  # 1:2 RR (Wider buffer)
         else: # EURUSD
-            sl_pips, tp_pips = 6, 15    # 1:2.5 RR for tighter range
+            sl_pips, tp_pips = 6, 15   # 1:2.5 RR
         
         if signal_type == "BUY":
             sl = round(c0 - (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
@@ -115,9 +123,9 @@ def analyze_hybrid_scalp(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    send_telegram_msg("⏳ *Running Tuned Hybrid Backtest... Please wait.*", chat_id)
+    send_telegram_msg("⏳ *Running Final GBPUSD-Isolated Backtest... Please wait.*", chat_id)
     try:
-        summary_msg = "📊 *FINE-TUNED HYBRID SCALPER BACKTEST (3-Day Replay)*\n\n"
+        summary_msg = "📊 *OPTIMIZED HYBRID SCALPER BACKTEST (3-Day Replay)*\n\n"
         for pair in PAIRS:
             _, _, df_m5, _ = generate_spot_ohlc(pair, days=3)
             
@@ -202,7 +210,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
                 msg = (
                     "📊 *ENGINE OPERATIONAL STATUS*\n\n"
-                    "• *System Mode:* `HYBRID_SCALPER_HIGH_CONFLUENCE`\n"
+                    "• *System Mode:* `HYBRID_SCALPER_PRODUCTION`\n"
                     "• *Paper Session:* `True`\n"
                     "• *Data Provider:* `TWELVE_DATA_SPOT`\n"
                     f"• *Scans Today:* `{SCANS_TODAY}`\n"
@@ -231,7 +239,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                         )
                         send_telegram_msg(msg, chat_id)
                 else:
-                    send_telegram_msg("ℹ *No high-confluence M5 setups detected.*", chat_id)
+                    send_telegram_msg("ℹ *No high-confluence M5 setups detected right now.*", chat_id)
 
             elif text == "/backtest":
                 background_tasks.add_task(run_hybrid_backtest_task, chat_id)
@@ -258,7 +266,7 @@ def health():
 def status():
     pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
     return {
-        "system_mode": "HYBRID_SCALPER_HIGH_CONFLUENCE",
+        "system_mode": "HYBRID_SCALPER_PRODUCTION",
         "paper_session": True,
         "scans_today": SCANS_TODAY,
         "last_scan_pht": pht_time
