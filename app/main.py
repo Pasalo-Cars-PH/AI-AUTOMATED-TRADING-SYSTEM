@@ -1,6 +1,6 @@
 import os
 import datetime
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
@@ -8,7 +8,6 @@ import pandas as pd
 
 # Direct Script Imports
 from scripts.generate_synthetic_data import generate_spot_ohlc
-from scripts.run_phase_c_backtest import PhaseCReplayRunner
 
 app = FastAPI(title="SMC Hybrid Scalper & Phase C Engine")
 
@@ -48,7 +47,6 @@ def analyze_hybrid_scalp(symbol, candles):
     if not candles or len(candles) < 5:
         return None
     
-    # Latest Candles (0 is most recent)
     c0 = float(candles[0]["close"])
     o0 = float(candles[0]["open"])
     h0 = float(candles[0]["high"])
@@ -57,18 +55,15 @@ def analyze_hybrid_scalp(symbol, candles):
     c1 = float(candles[1]["close"])
     o1 = float(candles[1]["open"])
     
-    # 1. Micro-FVG / Gap Detection
     bullish_gap = l0 > float(candles[2]["high"])
     bearish_gap = h0 < float(candles[2]["low"])
     
-    # 2. Momentum / Displacement Body
     body_size = abs(c0 - o0)
     prev_body = abs(c1 - o1)
     
     score = 0
     signal_type = None
     
-    # Bullish Logic
     if c0 > o0 and (body_size > prev_body or bullish_gap):
         score += 30
         if bullish_gap:
@@ -77,7 +72,6 @@ def analyze_hybrid_scalp(symbol, candles):
             score += 15
         signal_type = "BUY"
         
-    # Bearish Logic
     elif c0 < o0 and (body_size > prev_body or bearish_gap):
         score += 30
         if bearish_gap:
@@ -86,7 +80,6 @@ def analyze_hybrid_scalp(symbol, candles):
             score += 15
         signal_type = "SELL"
 
-    # Scalper Gate Threshold: Score >= 45
     if score >= 45 and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
         sl_pips = 15 if symbol == "XAUUSD" else 7
@@ -108,6 +101,56 @@ def analyze_hybrid_scalp(symbol, candles):
             "score": score
         }
     return None
+
+def run_hybrid_backtest_task(chat_id: str):
+    """Background task to run backtest without causing Telegram timeouts/loops."""
+    send_telegram_msg("⏳ *Running Hybrid Scalp Backtest... Please wait 5 seconds.*", chat_id)
+    try:
+        summary_msg = "📊 *HYBRID SCALPER BACKTEST RESULTS (3-Day Simulation)*\n\n"
+        for pair in PAIRS:
+            _, _, df_m5, _ = generate_spot_ohlc(pair, days=3)
+            
+            total_trades = 0
+            wins = 0
+            losses = 0
+            net_r = 0.0
+            
+            # Fast scan over M5 historical slices
+            records = df_m5.to_dict('records')
+            for i in range(len(records) - 10, 5, -1):
+                window = records[i:i+5]
+                sig = analyze_hybrid_scalp(pair, window)
+                if sig:
+                    total_trades += 1
+                    # Replay outcomes based on future candle moves
+                    future_candles = records[max(0, i-5):i]
+                    win = False
+                    for fc in future_candles:
+                        if sig['type'] == "BUY" and float(fc['high']) >= sig['tp']:
+                            win = True
+                            break
+                        elif sig['type'] == "SELL" and float(fc['low']) <= sig['tp']:
+                            win = True
+                            break
+                    
+                    if win:
+                        wins += 1
+                        net_r += 1.67
+                    else:
+                        losses += 1
+                        net_r -= 1.0
+            
+            win_rate = round((wins / total_trades * 100), 1) if total_trades > 0 else 0.0
+            expectancy = round(net_r / total_trades, 2) if total_trades > 0 else 0.0
+            
+            summary_msg += (
+                f"• *{pair}*:\n"
+                f"  - Trades: `{total_trades}` | Win Rate: `{win_rate}%`\n"
+                f"  - Net R: `{round(net_r, 1)}R` | Expectancy: `{expectancy}R`\n\n"
+            )
+        send_telegram_msg(summary_msg, chat_id)
+    except Exception as err:
+        send_telegram_msg(f"❌ Backtest Error: {err}", chat_id)
 
 def scheduled_market_scan():
     global SCANS_TODAY
@@ -136,8 +179,9 @@ def startup_event():
         scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
         scheduler.start()
 
-# Generic Handler Function for Telegram Commands
-async def process_telegram_update(request: Request):
+@app.api_route("/telegram-webhook", methods=["GET", "POST"])
+@app.api_route("/telegram/webhook", methods=["GET", "POST"])
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         update = await request.json()
         if "message" in update and "text" in update["message"]:
@@ -180,22 +224,8 @@ async def process_telegram_update(request: Request):
                     send_telegram_msg("ℹ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
 
             elif text == "/backtest":
-                send_telegram_msg("⏳ *Running Phase C Backtest Simulation... Please wait 5 seconds.*", chat_id)
-                try:
-                    summary_msg = "📊 *PHASE C BACKTEST RESULTS (3-Day Replay | Score Threshold: 45)*\n\n"
-                    for pair in PAIRS:
-                        df_h1, df_m15, df_m5, df_m1 = generate_spot_ohlc(pair, days=3)
-                        runner = PhaseCReplayRunner(pair, df_h1, df_m15, df_m5, df_m1)
-                        m = runner.execute_replay(min_score_threshold=45)
-                        
-                        summary_msg += (
-                            f"• *{pair}*:\n"
-                            f"  - Trades: `{m.get('total_samples', 0)}` | Win Rate: `{m.get('win_rate_percent', 0)}%`\n"
-                            f"  - Net R: `{m.get('net_r_profit', 0)}R` | Expectancy: `{m.get('expectancy_r', 0)}R`\n\n"
-                        )
-                    send_telegram_msg(summary_msg, chat_id)
-                except Exception as err:
-                    send_telegram_msg(f"❌ Backtest Error: {err}", chat_id)
+                # Run backtest as background task to prevent Telegram message loops/retries
+                background_tasks.add_task(run_hybrid_backtest_task, chat_id)
 
             elif text in ["/help", "/start"]:
                 msg = (
@@ -211,13 +241,6 @@ async def process_telegram_update(request: Request):
         
     return {"status": "ok"}
 
-# Support Telegram Webhook GET & POST
-@app.api_route("/telegram-webhook", methods=["GET", "POST"])
-@app.api_route("/telegram/webhook", methods=["GET", "POST"])
-async def telegram_webhook(request: Request):
-    return await process_telegram_update(request)
-
-# Health Endpoint
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok", "mode": "HYBRID_SCALPER"}
@@ -231,30 +254,3 @@ def status():
         "scans_today": SCANS_TODAY,
         "last_scan_pht": pht_time
     }
-
-# FAST PHASE C REPLAY BACKTEST ENDPOINT
-@app.get("/run-backtest")
-def trigger_phase_c_backtest(min_score: int = 45, days: int = 3):
-    """
-    Fast HTTP Endpoint for Phase C Replay Simulation.
-    """
-    try:
-        results = {}
-        for pair in PAIRS:
-            df_h1, df_m15, df_m5, df_m1 = generate_spot_ohlc(pair, days=days)
-            runner = PhaseCReplayRunner(pair, df_h1, df_m15, df_m5, df_m1)
-            metrics = runner.execute_replay(min_score_threshold=min_score)
-            results[pair] = metrics
-
-        return JSONResponse(status_code=200, content={
-            "status": "SUCCESS",
-            "execution_timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "simulation_parameters": {
-                "min_score_threshold": min_score,
-                "days_simulated": days
-            },
-            "phase_c_metrics": results
-        })
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Backtest execution error: {str(e)}")
