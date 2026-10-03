@@ -6,7 +6,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import pandas as pd
 
-# Direct Script Imports
+# Direct Script Imports (Render Free Tier Safe)
 from scripts.generate_synthetic_data import generate_spot_ohlc
 
 app = FastAPI(title="SMC Hybrid Scalper & Phase C Engine")
@@ -64,6 +64,7 @@ def analyze_hybrid_scalp(symbol, candles):
     score = 0
     signal_type = None
     
+    # Bullish Logic
     if c0 > o0 and (body_size > prev_body or bullish_gap):
         score += 30
         if bullish_gap:
@@ -72,6 +73,7 @@ def analyze_hybrid_scalp(symbol, candles):
             score += 15
         signal_type = "BUY"
         
+    # Bearish Logic
     elif c0 < o0 and (body_size > prev_body or bearish_gap):
         score += 30
         if bearish_gap:
@@ -80,10 +82,11 @@ def analyze_hybrid_scalp(symbol, candles):
             score += 15
         signal_type = "SELL"
 
-    if score >= 45 and signal_type:
+    # Scalper Gate Threshold: Score >= 50
+    if score >= 50 and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
-        sl_pips = 15 if symbol == "XAUUSD" else 7
-        tp_pips = 25 if symbol == "XAUUSD" else 12
+        sl_pips = 15 if symbol == "XAUUSD" else 8
+        tp_pips = 25 if symbol == "XAUUSD" else 15
         
         if signal_type == "BUY":
             sl = round(c0 - (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
@@ -103,10 +106,10 @@ def analyze_hybrid_scalp(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    """Background task to run backtest without causing Telegram timeouts/loops."""
-    send_telegram_msg("⏳ *Running Hybrid Scalp Backtest... Please wait 5 seconds.*", chat_id)
+    """Background task for 3-day simulation to prevent Telegram loops."""
+    send_telegram_msg("⏳ *Running Hybrid Scalp Backtest (Threshold 50)... Please wait 5 seconds.*", chat_id)
     try:
-        summary_msg = "📊 *HYBRID SCALPER BACKTEST RESULTS (3-Day Simulation)*\n\n"
+        summary_msg = "📊 *HYBRID SCALPER BACKTEST RESULTS (3-Day Replay | Threshold: 50)*\n\n"
         for pair in PAIRS:
             _, _, df_m5, _ = generate_spot_ohlc(pair, days=3)
             
@@ -115,14 +118,12 @@ def run_hybrid_backtest_task(chat_id: str):
             losses = 0
             net_r = 0.0
             
-            # Fast scan over M5 historical slices
             records = df_m5.to_dict('records')
             for i in range(len(records) - 10, 5, -1):
                 window = records[i:i+5]
                 sig = analyze_hybrid_scalp(pair, window)
                 if sig:
                     total_trades += 1
-                    # Replay outcomes based on future candle moves
                     future_candles = records[max(0, i-5):i]
                     win = False
                     for fc in future_candles:
@@ -224,7 +225,6 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                     send_telegram_msg("ℹ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
 
             elif text == "/backtest":
-                # Run backtest as background task to prevent Telegram message loops/retries
                 background_tasks.add_task(run_hybrid_backtest_task, chat_id)
 
             elif text in ["/help", "/start"]:
