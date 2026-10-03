@@ -6,12 +6,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import pandas as pd
 
-# Direct Script Imports (Render Free Tier Safe)
 from scripts.generate_synthetic_data import generate_spot_ohlc
 
 app = FastAPI(title="SMC Hybrid Scalper & Phase C Engine")
 
-# Environment Variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
@@ -34,7 +32,7 @@ def send_telegram_msg(message: str, target_chat_id: str = None):
         print(f"Error sending Telegram alert: {e}")
 
 def fetch_m5_data(symbol: str):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=5min&outputsize=20&apikey={TWELVE_DATA_API_KEY}"
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=5min&outputsize=30&apikey={TWELVE_DATA_API_KEY}"
     try:
         res = requests.get(url, timeout=5).json()
         if "values" in res:
@@ -44,9 +42,12 @@ def fetch_m5_data(symbol: str):
     return None
 
 def analyze_hybrid_scalp(symbol, candles):
-    if not candles or len(candles) < 5:
+    if not candles or len(candles) < 20:
         return None
     
+    closes = [float(c["close"]) for c in candles]
+    ema20 = sum(closes[:20]) / 20  # Trend Filter Proxy
+
     c0 = float(candles[0]["close"])
     o0 = float(candles[0]["open"])
     h0 = float(candles[0]["high"])
@@ -64,29 +65,29 @@ def analyze_hybrid_scalp(symbol, candles):
     score = 0
     signal_type = None
     
-    # Bullish Logic
-    if c0 > o0 and (body_size > prev_body or bullish_gap):
-        score += 30
+    # Bullish Criteria with Trend Confluence
+    if c0 > o0 and c0 > ema20 and (body_size > prev_body * 1.2 or bullish_gap):
+        score += 35
         if bullish_gap:
             score += 20
         if c0 > float(candles[1]["high"]):
             score += 15
         signal_type = "BUY"
         
-    # Bearish Logic
-    elif c0 < o0 and (body_size > prev_body or bearish_gap):
-        score += 30
+    # Bearish Criteria with Trend Confluence
+    elif c0 < o0 and c0 < ema20 and (body_size > prev_body * 1.2 or bearish_gap):
+        score += 35
         if bearish_gap:
             score += 20
         if c0 < float(candles[1]["low"]):
             score += 15
         signal_type = "SELL"
 
-    # Scalper Gate Threshold: Score >= 50
-    if score >= 50 and signal_type:
+    # High Confluence Quality Gate (Score >= 65)
+    if score >= 65 and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
         sl_pips = 15 if symbol == "XAUUSD" else 8
-        tp_pips = 25 if symbol == "XAUUSD" else 15
+        tp_pips = 30 if symbol == "XAUUSD" else 16  # 1:2 RR Target
         
         if signal_type == "BUY":
             sl = round(c0 - (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
@@ -106,10 +107,9 @@ def analyze_hybrid_scalp(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    """Background task for 3-day simulation to prevent Telegram loops."""
-    send_telegram_msg("⏳ *Running Hybrid Scalp Backtest (Threshold 50)... Please wait 5 seconds.*", chat_id)
+    send_telegram_msg("⏳ *Running High-Confluence Hybrid Backtest (Threshold 65)... Please wait.*", chat_id)
     try:
-        summary_msg = "📊 *HYBRID SCALPER BACKTEST RESULTS (3-Day Replay | Threshold: 50)*\n\n"
+        summary_msg = "📊 *OPTIMIZED HYBRID SCALPER BACKTEST (3-Day Replay | Threshold: 65)*\n\n"
         for pair in PAIRS:
             _, _, df_m5, _ = generate_spot_ohlc(pair, days=3)
             
@@ -119,12 +119,12 @@ def run_hybrid_backtest_task(chat_id: str):
             net_r = 0.0
             
             records = df_m5.to_dict('records')
-            for i in range(len(records) - 10, 5, -1):
-                window = records[i:i+5]
+            for i in range(len(records) - 25, 5, -1):
+                window = records[i:i+20]
                 sig = analyze_hybrid_scalp(pair, window)
                 if sig:
                     total_trades += 1
-                    future_candles = records[max(0, i-5):i]
+                    future_candles = records[max(0, i-10):i]
                     win = False
                     for fc in future_candles:
                         if sig['type'] == "BUY" and float(fc['high']) >= sig['tp']:
@@ -136,7 +136,7 @@ def run_hybrid_backtest_task(chat_id: str):
                     
                     if win:
                         wins += 1
-                        net_r += 1.67
+                        net_r += 2.0  # 1:2 RR
                     else:
                         losses += 1
                         net_r -= 1.0
@@ -193,7 +193,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
                 msg = (
                     "📊 *ENGINE OPERATIONAL STATUS*\n\n"
-                    "• *System Mode:* `HYBRID_SCALPER_15_TRADES_DAY`\n"
+                    "• *System Mode:* `HYBRID_SCALPER_HIGH_CONFLUENCE`\n"
                     "• *Paper Session:* `True`\n"
                     "• *Data Provider:* `TWELVE_DATA_SPOT`\n"
                     f"• *Scans Today:* `{SCANS_TODAY}`\n"
@@ -202,7 +202,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 send_telegram_msg(msg, chat_id)
 
             elif text == "/scan":
-                send_telegram_msg("🔍 *Scanning M5 Hybrid Scalp setups (XAUUSD, GBPUSD, EURUSD)... Please wait.*", chat_id)
+                send_telegram_msg("🔍 *Scanning M5 High-Confluence setups... Please wait.*", chat_id)
                 signals_found = []
                 for pair in PAIRS:
                     data = fetch_m5_data(pair)
@@ -222,7 +222,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                         )
                         send_telegram_msg(msg, chat_id)
                 else:
-                    send_telegram_msg("ℹ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
+                    send_telegram_msg("ℹ *No high-confluence M5 setups detected.*", chat_id)
 
             elif text == "/backtest":
                 background_tasks.add_task(run_hybrid_backtest_task, chat_id)
@@ -249,7 +249,7 @@ def health():
 def status():
     pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
     return {
-        "system_mode": "HYBRID_SCALPER_15_TRADES_DAY",
+        "system_mode": "HYBRID_SCALPER_HIGH_CONFLUENCE",
         "paper_session": True,
         "scans_today": SCANS_TODAY,
         "last_scan_pht": pht_time
