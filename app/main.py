@@ -6,7 +6,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import pandas as pd
 
-# Direct Script Imports (Prevents ModuleNotFoundError in Render)
+# Direct Script Imports
 from scripts.generate_synthetic_data import generate_spot_ohlc
 from scripts.run_phase_c_backtest import PhaseCReplayRunner
 
@@ -179,11 +179,30 @@ async def process_telegram_update(request: Request):
                 else:
                     send_telegram_msg("ℹ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
 
+            elif text == "/backtest":
+                send_telegram_msg("⏳ *Running Phase C Backtest Simulation... Please wait 5 seconds.*", chat_id)
+                try:
+                    summary_msg = "📊 *PHASE C BACKTEST RESULTS (1-Day Replay)*\n\n"
+                    for pair in PAIRS:
+                        df_h1, df_m15, df_m5, df_m1 = generate_spot_ohlc(pair, days=1)
+                        runner = PhaseCReplayRunner(pair, df_h1, df_m15, df_m5, df_m1)
+                        m = runner.execute_replay(min_score_threshold=70)
+                        
+                        summary_msg += (
+                            f"• *{pair}*:\n"
+                            f"  - Trades: `{m.get('total_samples', 0)}` | Win Rate: `{m.get('win_rate_percent', 0)}%`\n"
+                            f"  - Net R: `{m.get('net_r_profit', 0)}R` | Expectancy: `{m.get('expectancy_r', 0)}R`\n\n"
+                        )
+                    send_telegram_msg(summary_msg, chat_id)
+                except Exception as err:
+                    send_telegram_msg(f"❌ Backtest Error: {err}", chat_id)
+
             elif text in ["/help", "/start"]:
                 msg = (
                     "🤖 *AI TRADING BOT COMMANDS*\n\n"
                     "• `/status` - Check active system mode & scan counts\n"
-                    "• `/scan` - Force manual scan for M5 Scalp setups"
+                    "• `/scan` - Force manual scan for M5 Scalp setups\n"
+                    "• `/backtest` - Run instant Phase C strategy simulation"
                 )
                 send_telegram_msg(msg, chat_id)
 
@@ -213,23 +232,18 @@ def status():
         "last_scan_pht": pht_time
     }
 
-# PHASE C REPLAY BACKTEST ENDPOINT
+# FAST PHASE C REPLAY BACKTEST ENDPOINT
 @app.get("/run-backtest")
-def trigger_phase_c_backtest(min_score: int = 70, days: int = 15):
+def trigger_phase_c_backtest(min_score: int = 70, days: int = 1):
     """
-    HTTP Endpoint for Phase C Replay Simulation.
-    Runs without external module import dependencies.
+    Fast HTTP Endpoint for Phase C Replay Simulation.
     """
     try:
         results = {}
         for pair in PAIRS:
-            # 1. Generate multi-timeframe candle datasets
             df_h1, df_m15, df_m5, df_m1 = generate_spot_ohlc(pair, days=days)
-
-            # 2. Run self-contained replay runner
             runner = PhaseCReplayRunner(pair, df_h1, df_m15, df_m5, df_m1)
             metrics = runner.execute_replay(min_score_threshold=min_score)
-
             results[pair] = metrics
 
         return JSONResponse(status_code=200, content={
