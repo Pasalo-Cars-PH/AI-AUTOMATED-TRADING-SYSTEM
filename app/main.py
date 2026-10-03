@@ -6,11 +6,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import pandas as pd
 
-# Multi-Timeframe and Backtesting Engine Imports
-from app.structure.multi_timeframe import analyze_h1_structure_v2, analyze_m15_setup_v2
-from app.journal.intrabar_lifecycle import evaluate_intrabar_lifecycle
-from scripts.generate_synthetic_data import generate_spot_ohlc
-from scripts.run_phase_c_backtest import PhaseCReplayRunner
+# Safe Fallback Engine Import
+try:
+    from scripts.generate_synthetic_data import generate_spot_ohlc
+    from scripts.run_phase_c_backtest import PhaseCReplayRunner
+    BACKTEST_ENGINE_READY = True
+except Exception as err:
+    BACKTEST_ENGINE_READY = False
+    BACKTEST_ERROR_MSG = str(err)
 
 app = FastAPI(title="SMC Hybrid Scalper & Phase C Engine")
 
@@ -50,7 +53,6 @@ def analyze_hybrid_scalp(symbol, candles):
     if not candles or len(candles) < 5:
         return None
     
-    # Latest Candles (0 is most recent)
     c0 = float(candles[0]["close"])
     o0 = float(candles[0]["open"])
     h0 = float(candles[0]["high"])
@@ -59,18 +61,15 @@ def analyze_hybrid_scalp(symbol, candles):
     c1 = float(candles[1]["close"])
     o1 = float(candles[1]["open"])
     
-    # 1. Micro-FVG / Gap Detection
     bullish_gap = l0 > float(candles[2]["high"])
     bearish_gap = h0 < float(candles[2]["low"])
     
-    # 2. Momentum / Displacement Body
     body_size = abs(c0 - o0)
     prev_body = abs(c1 - o1)
     
     score = 0
     signal_type = None
     
-    # Bullish Logic
     if c0 > o0 and (body_size > prev_body or bullish_gap):
         score += 30
         if bullish_gap:
@@ -79,7 +78,6 @@ def analyze_hybrid_scalp(symbol, candles):
             score += 15
         signal_type = "BUY"
         
-    # Bearish Logic
     elif c0 < o0 and (body_size > prev_body or bearish_gap):
         score += 30
         if bearish_gap:
@@ -88,7 +86,6 @@ def analyze_hybrid_scalp(symbol, candles):
             score += 15
         signal_type = "SELL"
 
-    # Scalper Gate Threshold: Score >= 45
     if score >= 45 and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
         sl_pips = 15 if symbol == "XAUUSD" else 7
@@ -134,12 +131,10 @@ def scheduled_market_scan():
 
 @app.on_event("startup")
 def startup_event():
-    # Safe scheduler start on app launch
     if not scheduler.running:
         scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
         scheduler.start()
 
-# Generic Handler Function for Telegram Commands
 async def process_telegram_update(request: Request):
     try:
         update = await request.json()
@@ -195,13 +190,11 @@ async def process_telegram_update(request: Request):
         
     return {"status": "ok"}
 
-# Support Telegram Webhook GET & POST
 @app.api_route("/telegram-webhook", methods=["GET", "POST"])
 @app.api_route("/telegram/webhook", methods=["GET", "POST"])
 async def telegram_webhook(request: Request):
     return await process_telegram_update(request)
 
-# Health Endpoint
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok", "mode": "HYBRID_SCALPER"}
@@ -216,23 +209,17 @@ def status():
         "last_scan_pht": pht_time
     }
 
-# NEW PHASE C REPLAY BACKTEST ENDPOINT
 @app.get("/run-backtest")
 def trigger_phase_c_backtest(min_score: int = 70, days: int = 15):
-    """
-    HTTP Endpoint for Phase C Replay Simulation.
-    Runs without needing Render Web Shell access.
-    """
+    if not BACKTEST_ENGINE_READY:
+        raise HTTPException(status_code=500, detail=f"Backtest module load error: {BACKTEST_ERROR_MSG}")
+
     try:
         results = {}
         for pair in PAIRS:
-            # 1. Generate multi-timeframe synthetic candle dataset
             df_h1, df_m15, df_m5, df_m1 = generate_spot_ohlc(pair, days=days)
-
-            # 2. Run deterministic replay engine
             runner = PhaseCReplayRunner(pair, df_h1, df_m15, df_m5, df_m1)
             metrics = runner.execute_replay(min_score_threshold=min_score)
-
             results[pair] = metrics
 
         return JSONResponse(status_code=200, content={
