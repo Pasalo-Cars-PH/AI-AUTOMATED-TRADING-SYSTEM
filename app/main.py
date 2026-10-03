@@ -9,7 +9,7 @@ import numpy as np
 
 from scripts.generate_synthetic_data import generate_spot_ohlc
 
-app = FastAPI(title="SMC M15 Killzone Engine")
+app = FastAPI(title="SMC Killzone Engine V2")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -32,8 +32,8 @@ def send_telegram_msg(message: str, target_chat_id: str = None):
     except Exception as e:
         print(f"Error sending Telegram alert: {e}")
 
-def fetch_m15_data(symbol: str):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=30&apikey={TWELVE_DATA_API_KEY}"
+def fetch_m5_data(symbol: str):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=5min&outputsize=30&apikey={TWELVE_DATA_API_KEY}"
     try:
         res = requests.get(url, timeout=5).json()
         if "values" in res:
@@ -42,13 +42,11 @@ def fetch_m15_data(symbol: str):
         print(f"Data fetch error for {symbol}: {e}")
     return None
 
-def analyze_m15_killzone_setup(symbol, candles):
+def analyze_hybrid_scalp(symbol, candles):
     if not candles or len(candles) < 25:
         return None
     
     closes = [float(c["close"]) for c in candles]
-    
-    # Fast & Slow Trend Confluence (EMA 20 & 50)
     ema20 = sum(closes[:20]) / 20
     ema50 = sum(closes[:25]) / 25
 
@@ -60,9 +58,8 @@ def analyze_m15_killzone_setup(symbol, candles):
     c1 = float(candles[1]["close"])
     o1 = float(candles[1]["open"])
     
-    # M15 Swing Points for SL Placement
-    recent_highs = [float(c["high"]) for c in candles[1:6]]
-    recent_lows = [float(c["low"]) for c in candles[1:6]]
+    recent_high = max([float(c["high"]) for c in candles[1:8]])
+    recent_low = min([float(c["low"]) for c in candles[1:8]])
     
     body_size = abs(c0 - o0)
     prev_body = abs(c1 - o1)
@@ -70,39 +67,38 @@ def analyze_m15_killzone_setup(symbol, candles):
     score = 0
     signal_type = None
     
-    # Bullish Trend Alignment
+    # Bullish SMC Setup
     if c0 > ema20 and ema20 > ema50:
         if c0 > o0 and body_size > prev_body * 1.2:
-            score += 40
-            if l0 < min(recent_lows):  # Liquidity Grab / Wick Rejection
-                score += 30
+            score += 35
+            if l0 < recent_low:  # Sweep Liquidity
+                score += 25
             if c0 > float(candles[1]["high"]):
                 score += 15
             signal_type = "BUY"
         
-    # Bearish Trend Alignment
+    # Bearish SMC Setup
     elif c0 < ema20 and ema20 < ema50:
         if c0 < o0 and body_size > prev_body * 1.2:
-            score += 40
-            if h0 > max(recent_highs):  # Liquidity Grab / Wick Rejection
-                score += 30
+            score += 35
+            if h0 > recent_high:  # Sweep Liquidity
+                score += 25
             if c0 < float(candles[1]["low"]):
                 score += 15
             signal_type = "SELL"
 
-    # M15 Quality Gate
-    required_score = 70
+    # Balanced Quality Gate
+    required_score = 65
 
     if score >= required_score and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
         
-        # Structure-Based SL and Fixed 1:3 RR TP
         if symbol == "XAUUSD":
-            sl_pips = max(25, round(abs(c0 - min(recent_lows if signal_type == "BUY" else recent_highs)) / pip_factor, 1))
-            tp_pips = sl_pips * 3.0
-        else: # GBPUSD & EURUSD
-            sl_pips = max(10, round(abs(c0 - min(recent_lows if signal_type == "BUY" else recent_highs)) / pip_factor, 1))
-            tp_pips = sl_pips * 3.0
+            sl_pips, tp_pips = 18, 36   # 1:2 RR
+        elif symbol == "GBPUSD":
+            sl_pips, tp_pips = 12, 24   # 1:2 RR
+        else: # EURUSD
+            sl_pips, tp_pips = 8, 20    # 1:2.5 RR
         
         if signal_type == "BUY":
             sl = round(c0 - (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
@@ -122,39 +118,57 @@ def analyze_m15_killzone_setup(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    send_telegram_msg("⏳ *Running M15 High-Timeframe Killzone Backtest (7-Day Replay)...*", chat_id)
+    send_telegram_msg("⏳ *Running Corrected Killzone Engine Backtest (7-Day Replay)...*", chat_id)
     try:
         np.random.seed(42)
         
-        summary_msg = "📊 *M15 KILLZONE STRATEGY BACKTEST (7-Day Replay | 1:3 RR)*\n\n"
+        summary_msg = "📊 *CORRECTED SMC HYBRID BACKTEST (7-Day Replay)*\n\n"
         for pair in PAIRS:
-            # Using M15 generated data structure
-            _, _, df_m15, _ = generate_spot_ohlc(pair, days=7)
+            _, _, df_m5, _ = generate_spot_ohlc(pair, days=7)
             
             total_trades = 0
             wins = 0
             losses = 0
             net_r = 0.0
             
-            records = df_m15.to_dict('records')
-            for i in range(len(records) - 30, 5, -1):
-                window = records[i:i+25]
-                sig = analyze_m15_killzone_setup(pair, window)
+            records = df_m5.to_dict('records')
+            total_records = len(records)
+            
+            # Corrected Chronological Loop Direction
+            for i in range(25, total_records - 20):
+                # Reverse window to mimic historical order (index 0 = most recent candle in slice)
+                window = list(reversed(records[i-25:i]))
+                sig = analyze_hybrid_scalp(pair, window)
+                
                 if sig:
                     total_trades += 1
-                    future_candles = records[max(0, i-15):i]
+                    # Look FORWARD into future candles
+                    future_candles = records[i:i+20]
                     win = False
-                    for fc in future_candles:
-                        if sig['type'] == "BUY" and float(fc['high']) >= sig['tp']:
-                            win = True
-                            break
-                        elif sig['type'] == "SELL" and float(fc['low']) <= sig['tp']:
-                            win = True
-                            break
                     
+                    for fc in future_candles:
+                        high_p = float(fc['high'])
+                        low_p = float(fc['low'])
+                        
+                        if sig['type'] == "BUY":
+                            if high_p >= sig['tp']:
+                                win = True
+                                break
+                            elif low_p <= sig['sl']:
+                                win = False
+                                break
+                        elif sig['type'] == "SELL":
+                            if low_p <= sig['tp']:
+                                win = True
+                                break
+                            elif high_p >= sig['sl']:
+                                win = False
+                                break
+                    
+                    rr_multiplier = 2.5 if pair == "EURUSD" else 2.0
                     if win:
                         wins += 1
-                        net_r += 3.0  # Strict 1:3 RR Target
+                        net_r += rr_multiplier
                     else:
                         losses += 1
                         net_r -= 1.0
@@ -176,17 +190,17 @@ def scheduled_market_scan():
     SCANS_TODAY += 1
     
     for pair in PAIRS:
-        data = fetch_m15_data(pair)
+        data = fetch_m5_data(pair)
         if data:
-            sig = analyze_m15_killzone_setup(pair, data)
+            sig = analyze_hybrid_scalp(pair, data)
             if sig:
                 msg = (
-                    f"⚡ *M15 KILLZONE SIGNAL DETECTED*\n\n"
+                    f"⚡ *M5 SMC SIGNAL DETECTED*\n\n"
                     f"• *Pair:* `{sig['pair']}`\n"
                     f"• *Action:* `{sig['type']}`\n"
                     f"• *Entry Price:* `{sig['entry']}`\n"
                     f"• *Stop Loss:* `{sig['sl']}`\n"
-                    f"• *Take Profit:* `{sig['tp']}` (1:3 RR)\n"
+                    f"• *Take Profit:* `{sig['tp']}`\n"
                     f"• *Confluence Score:* `{sig['score']}/100`\n\n"
                     f"⚠️ *Execution Mode:* Paper Trade Verification"
                 )
@@ -195,7 +209,7 @@ def scheduled_market_scan():
 @app.on_event("startup")
 def startup_event():
     if not scheduler.running:
-        scheduler.add_job(scheduled_market_scan, 'interval', minutes=15)
+        scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
         scheduler.start()
 
 @app.api_route("/telegram-webhook", methods=["GET", "POST"])
@@ -211,7 +225,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
                 msg = (
                     "📊 *ENGINE OPERATIONAL STATUS*\n\n"
-                    "• *System Mode:* `M15_KILLZONE_PRODUCTION`\n"
+                    "• *System Mode:* `SMC_KILLZONE_V2`\n"
                     "• *Paper Session:* `True`\n"
                     "• *Data Provider:* `TWELVE_DATA_SPOT`\n"
                     f"• *Scans Today:* `{SCANS_TODAY}`\n"
@@ -220,19 +234,19 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 send_telegram_msg(msg, chat_id)
 
             elif text == "/scan":
-                send_telegram_msg("🔍 *Scanning M15 High-Confluence setups... Please wait.*", chat_id)
+                send_telegram_msg("🔍 *Scanning M5 High-Confluence SMC setups... Please wait.*", chat_id)
                 signals_found = []
                 for pair in PAIRS:
-                    data = fetch_m15_data(pair)
+                    data = fetch_m5_data(pair)
                     if data:
-                        sig = analyze_m15_killzone_setup(pair, data)
+                        sig = analyze_hybrid_scalp(pair, data)
                         if sig:
                             signals_found.append(sig)
                 
                 if signals_found:
                     for sig in signals_found:
                         msg = (
-                            f"⚡ *M15 KILLZONE SIGNAL*\n\n"
+                            f"⚡ *SMC SIGNAL*\n\n"
                             f"• *Pair:* `{sig['pair']}` | *Action:* `{sig['type']}`\n"
                             f"• *Entry:* `{sig['entry']}`\n"
                             f"• *SL:* `{sig['sl']}` | *TP:* `{sig['tp']}`\n"
@@ -240,7 +254,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                         )
                         send_telegram_msg(msg, chat_id)
                 else:
-                    send_telegram_msg("ℹ *No high-confluence M15 setups detected right now.*", chat_id)
+                    send_telegram_msg("ℹ *No high-confluence M5 SMC setups detected right now.*", chat_id)
 
             elif text == "/backtest":
                 background_tasks.add_task(run_hybrid_backtest_task, chat_id)
@@ -249,7 +263,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 msg = (
                     "🤖 *AI TRADING BOT COMMANDS*\n\n"
                     "• `/status` - Check active system mode & scan counts\n"
-                    "• `/scan` - Force manual scan for M15 setups\n"
+                    "• `/scan` - Force manual scan for M5 SMC setups\n"
                     "• `/backtest` - Run instant strategy simulation"
                 )
                 send_telegram_msg(msg, chat_id)
@@ -261,13 +275,13 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
-    return {"status": "ok", "mode": "M15_KILLZONE"}
+    return {"status": "ok", "mode": "SMC_KILLZONE_V2"}
 
 @app.get("/status")
 def status():
     pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
     return {
-        "system_mode": "M15_KILLZONE_PRODUCTION",
+        "system_mode": "SMC_KILLZONE_V2",
         "paper_session": True,
         "scans_today": SCANS_TODAY,
         "last_scan_pht": pht_time
