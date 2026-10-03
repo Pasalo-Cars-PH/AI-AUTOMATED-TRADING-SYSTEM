@@ -122,14 +122,15 @@ def analyze_hybrid_scalp(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    send_telegram_msg("⏳ *Running Deterministic Hybrid Backtest... Please wait.*", chat_id)
+    send_telegram_msg("⏳ *Running 7-Day Extended Hybrid Backtest... Please wait 5-10 seconds.*", chat_id)
     try:
-        # Fixed Random Seed para maging consistent ang results sa bawat run
+        # Fixed Random Seed para maging deterministic ang results
         np.random.seed(42)
         
-        summary_msg = "📊 *DETERMINISTIC HYBRID SCALPER BACKTEST (3-Day Replay)*\n\n"
+        summary_msg = "📊 *DETERMINISTIC HYBRID SCALPER BACKTEST (7-Day Replay)*\n\n"
         for pair in PAIRS:
-            _, _, df_m5, _ = generate_spot_ohlc(pair, days=3)
+            # Pinalitan mula days=3 papuntang days=7
+            _, _, df_m5, _ = generate_spot_ohlc(pair, days=7)
             
             total_trades = 0
             wins = 0
@@ -137,6 +138,7 @@ def run_hybrid_backtest_task(chat_id: str):
             net_r = 0.0
             
             records = df_m5.to_dict('records')
+            # Inayos ang loop range para sa 7-day volume
             for i in range(len(records) - 25, 5, -1):
                 window = records[i:i+20]
                 sig = analyze_hybrid_scalp(pair, window)
@@ -212,7 +214,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
                 msg = (
                     "📊 *ENGINE OPERATIONAL STATUS*\n\n"
-                    "• *System Mode:* `HYBRID_SCALPER_PRODUCTION`\n"
+                    "• *System Mode:* `HYBRID_SCALPER_7DAY_TEST`\n"
                     "• *Paper Session:* `True`\n"
                     "• *Data Provider:* `TWELVE_DATA_SPOT`\n"
                     f"• *Scans Today:* `{SCANS_TODAY}`\n"
@@ -268,7 +270,7 @@ def health():
 def status():
     pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
     return {
-        "system_mode": "HYBRID_SCALPER_PRODUCTION",
+        "system_mode": "HYBRID_SCALPER_7DAY_TEST",
         "paper_session": True,
         "scans_today": SCANS_TODAY,
         "last_scan_pht": pht_time
