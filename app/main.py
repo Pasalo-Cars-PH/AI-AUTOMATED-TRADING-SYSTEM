@@ -27,8 +27,8 @@ SPREAD_PIPS = {"XAUUSD": 3.0, "GBPUSD": 1.5, "EURUSD": 1.2}
 TIMEOUT_CANDLES = 36        # 36 x M5 = 3 hours
 SESSION_START_UTC = 7       # London open
 SESSION_END_UTC = 19        # hanggang NY midday/afternoon
-BT_TOTAL_DAYS = 90
-BT_IS_DAYS = 60             # In-Sample (tuning); ang natira (30d) ay Out-of-Sample
+BT_TOTAL_DAYS = 180
+BT_IS_DAYS = 120            # In-Sample (tuning); ang natira (60d) ay Out-of-Sample
 ATR_PERIOD = 14
 ATR_SL_MULT = 1.5           # TP = 2 x SL (1:2 RR)
 MIN_SL_X_SPREAD = 5         # skip kapag SL < 5x spread (spread-dominated)
