@@ -126,12 +126,8 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
 scheduler.start()
 
-# Telegram Webhook Endpoint (Supports GET & POST)
-@app.api_route("/telegram-webhook", methods=["GET", "POST"])
-async def telegram_webhook(request: Request):
-    if request.method == "GET":
-        return {"status": "ok", "message": "Telegram Webhook Active"}
-
+# Generic Handler Function
+async def process_telegram_update(request: Request):
     try:
         update = await request.json()
         if "message" in update and "text" in update["message"]:
@@ -171,7 +167,7 @@ async def telegram_webhook(request: Request):
                         )
                         send_telegram_msg(msg, chat_id)
                 else:
-                    send_telegram_msg("ℹ️ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
+                    send_telegram_msg("ℹ️️ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
 
             elif text in ["/help", "/start"]:
                 msg = (
@@ -185,6 +181,12 @@ async def telegram_webhook(request: Request):
         print(f"Webhook processing error: {e}")
         
     return {"status": "ok"}
+
+# Support pareho ang /telegram-webhook AT /telegram/webhook (GET & POST)
+@app.api_route("/telegram-webhook", methods=["GET", "POST"])
+@app.api_route("/telegram/webhook", methods=["GET", "POST"])
+async def telegram_webhook(request: Request):
+    return await process_telegram_update(request)
 
 # Health Endpoint (Supports GET & HEAD)
 @app.api_route("/health", methods=["GET", "HEAD"])
