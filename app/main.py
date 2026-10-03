@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import pandas as pd
+import numpy as np
 
 from scripts.generate_synthetic_data import generate_spot_ohlc
 
@@ -62,7 +63,6 @@ def analyze_hybrid_scalp(symbol, candles):
     body_size = abs(c0 - o0)
     prev_body = abs(c1 - o1)
     
-    # Pair Specific Body Multiplier
     body_mult = 1.5 if symbol == "GBPUSD" else 1.3
     
     score = 0
@@ -91,17 +91,16 @@ def analyze_hybrid_scalp(symbol, candles):
         required_score = 65
     elif symbol == "EURUSD":
         required_score = 68
-    else: # GBPUSD (Higher strictness to filter false breakouts)
+    else: # GBPUSD
         required_score = 72
 
     if score >= required_score and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
         
-        # SL and TP Configurations
         if symbol == "XAUUSD":
             sl_pips, tp_pips = 15, 30  # 1:2 RR
         elif symbol == "GBPUSD":
-            sl_pips, tp_pips = 12, 24  # 1:2 RR (Wider buffer)
+            sl_pips, tp_pips = 12, 24  # 1:2 RR
         else: # EURUSD
             sl_pips, tp_pips = 6, 15   # 1:2.5 RR
         
@@ -123,9 +122,12 @@ def analyze_hybrid_scalp(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    send_telegram_msg("⏳ *Running Final GBPUSD-Isolated Backtest... Please wait.*", chat_id)
+    send_telegram_msg("⏳ *Running Deterministic Hybrid Backtest... Please wait.*", chat_id)
     try:
-        summary_msg = "📊 *OPTIMIZED HYBRID SCALPER BACKTEST (3-Day Replay)*\n\n"
+        # Fixed Random Seed para maging consistent ang results sa bawat run
+        np.random.seed(42)
+        
+        summary_msg = "📊 *DETERMINISTIC HYBRID SCALPER BACKTEST (3-Day Replay)*\n\n"
         for pair in PAIRS:
             _, _, df_m5, _ = generate_spot_ohlc(pair, days=3)
             
