@@ -9,7 +9,7 @@ import numpy as np
 
 from scripts.generate_synthetic_data import generate_spot_ohlc
 
-app = FastAPI(title="SMC Killzone Engine V2")
+app = FastAPI(title="SMC Scalp Engine V2.1")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -87,7 +87,7 @@ def analyze_hybrid_scalp(symbol, candles):
                 score += 15
             signal_type = "SELL"
 
-    # Balanced Quality Gate
+    # Strict Quality Gate
     required_score = 65
 
     if score >= required_score and signal_type:
@@ -97,8 +97,8 @@ def analyze_hybrid_scalp(symbol, candles):
             sl_pips, tp_pips = 18, 36   # 1:2 RR
         elif symbol == "GBPUSD":
             sl_pips, tp_pips = 12, 24   # 1:2 RR
-        else: # EURUSD
-            sl_pips, tp_pips = 8, 20    # 1:2.5 RR
+        else: # EURUSD Calibrated to 1:2 RR
+            sl_pips, tp_pips = 10, 20   # 1:2 RR
         
         if signal_type == "BUY":
             sl = round(c0 - (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
@@ -118,11 +118,11 @@ def analyze_hybrid_scalp(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    send_telegram_msg("⏳ *Running Corrected Killzone Engine Backtest (7-Day Replay)...*", chat_id)
+    send_telegram_msg("⏳ *Running Final Calibrated SMC Backtest (7-Day Replay)...*", chat_id)
     try:
         np.random.seed(42)
         
-        summary_msg = "📊 *CORRECTED SMC HYBRID BACKTEST (7-Day Replay)*\n\n"
+        summary_msg = "📊 *FINAL CALIBRATED SMC HYBRID BACKTEST (7-Day Replay)*\n\n"
         for pair in PAIRS:
             _, _, df_m5, _ = generate_spot_ohlc(pair, days=7)
             
@@ -134,15 +134,12 @@ def run_hybrid_backtest_task(chat_id: str):
             records = df_m5.to_dict('records')
             total_records = len(records)
             
-            # Corrected Chronological Loop Direction
             for i in range(25, total_records - 20):
-                # Reverse window to mimic historical order (index 0 = most recent candle in slice)
                 window = list(reversed(records[i-25:i]))
                 sig = analyze_hybrid_scalp(pair, window)
                 
                 if sig:
                     total_trades += 1
-                    # Look FORWARD into future candles
                     future_candles = records[i:i+20]
                     win = False
                     
@@ -165,10 +162,9 @@ def run_hybrid_backtest_task(chat_id: str):
                                 win = False
                                 break
                     
-                    rr_multiplier = 2.5 if pair == "EURUSD" else 2.0
                     if win:
                         wins += 1
-                        net_r += rr_multiplier
+                        net_r += 2.0  # Standardized 1:2 RR Across All Pairs
                     else:
                         losses += 1
                         net_r -= 1.0
@@ -200,7 +196,7 @@ def scheduled_market_scan():
                     f"• *Action:* `{sig['type']}`\n"
                     f"• *Entry Price:* `{sig['entry']}`\n"
                     f"• *Stop Loss:* `{sig['sl']}`\n"
-                    f"• *Take Profit:* `{sig['tp']}`\n"
+                    f"• *Take Profit:* `{sig['tp']}` (1:2 RR)\n"
                     f"• *Confluence Score:* `{sig['score']}/100`\n\n"
                     f"⚠️ *Execution Mode:* Paper Trade Verification"
                 )
@@ -225,7 +221,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
                 msg = (
                     "📊 *ENGINE OPERATIONAL STATUS*\n\n"
-                    "• *System Mode:* `SMC_KILLZONE_V2`\n"
+                    "• *System Mode:* `SMC_KILLZONE_V2.1`\n"
                     "• *Paper Session:* `True`\n"
                     "• *Data Provider:* `TWELVE_DATA_SPOT`\n"
                     f"• *Scans Today:* `{SCANS_TODAY}`\n"
@@ -275,13 +271,13 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
-    return {"status": "ok", "mode": "SMC_KILLZONE_V2"}
+    return {"status": "ok", "mode": "SMC_KILLZONE_V2.1"}
 
 @app.get("/status")
 def status():
     pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
     return {
-        "system_mode": "SMC_KILLZONE_V2",
+        "system_mode": "SMC_KILLZONE_V2.1",
         "paper_session": True,
         "scans_today": SCANS_TODAY,
         "last_scan_pht": pht_time
