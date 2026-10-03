@@ -43,11 +43,14 @@ def fetch_m5_data(symbol: str):
     return None
 
 def analyze_hybrid_scalp(symbol, candles):
-    if not candles or len(candles) < 20:
+    if not candles or len(candles) < 25:
         return None
     
     closes = [float(c["close"]) for c in candles]
+    
+    # Fast & Slow Trend Confluence
     ema20 = sum(closes[:20]) / 20
+    ema50 = sum(closes[:25]) / 25
 
     c0 = float(candles[0]["close"])
     o0 = float(candles[0]["open"])
@@ -57,52 +60,55 @@ def analyze_hybrid_scalp(symbol, candles):
     c1 = float(candles[1]["close"])
     o1 = float(candles[1]["open"])
     
+    # Recent Swing Liquidity High/Low (Proxy for Sweeps)
+    recent_high = max([float(c["high"]) for c in candles[2:10]])
+    recent_low = min([float(c["low"]) for c in candles[2:10]])
+    
     bullish_gap = l0 > float(candles[2]["high"])
     bearish_gap = h0 < float(candles[2]["low"])
     
     body_size = abs(c0 - o0)
     prev_body = abs(c1 - o1)
     
-    body_mult = 1.5 if symbol == "GBPUSD" else 1.3
-    
     score = 0
     signal_type = None
     
-    # Bullish Logic
-    if c0 > o0 and c0 > ema20 and (body_size > prev_body * body_mult or bullish_gap):
-        score += 35
-        if bullish_gap:
-            score += 25
-        if c0 > float(candles[1]["high"]):
-            score += 15
-        signal_type = "BUY"
+    # Bullish SMC Setup: Strict HTF Trend + Liquidity Sweep/Gap
+    if c0 > ema20 and ema20 > ema50:
+        if c0 > o0 and (body_size > prev_body * 1.4 or bullish_gap):
+            score += 30
+            if l0 <= recent_low:  # Liquidity Sweep of Recent Low
+                score += 25
+            if bullish_gap:
+                score += 20
+            if c0 > float(candles[1]["high"]):
+                score += 15
+            signal_type = "BUY"
         
-    # Bearish Logic
-    elif c0 < o0 and c0 < ema20 and (body_size > prev_body * body_mult or bearish_gap):
-        score += 35
-        if bearish_gap:
-            score += 25
-        if c0 < float(candles[1]["low"]):
-            score += 15
-        signal_type = "SELL"
+    # Bearish SMC Setup: Strict HTF Trend + Liquidity Sweep/Gap
+    elif c0 < ema20 and ema20 < ema50:
+        if c0 < o0 and (body_size > prev_body * 1.4 or bearish_gap):
+            score += 30
+            if h0 >= recent_high:  # Liquidity Sweep of Recent High
+                score += 25
+            if bearish_gap:
+                score += 20
+            if c0 < float(candles[1]["low"]):
+                score += 15
+            signal_type = "SELL"
 
-    # Strict Pair Specific Gates
-    if symbol == "XAUUSD":
-        required_score = 65
-    elif symbol == "EURUSD":
-        required_score = 68
-    else: # GBPUSD
-        required_score = 72
+    # High Confluence Strict Gate
+    required_score = 75
 
     if score >= required_score and signal_type:
         pip_factor = 0.1 if symbol == "XAUUSD" else 0.0001
         
         if symbol == "XAUUSD":
-            sl_pips, tp_pips = 15, 30  # 1:2 RR
+            sl_pips, tp_pips = 20, 50   # 1:2.5 RR with room for gold volatility
         elif symbol == "GBPUSD":
-            sl_pips, tp_pips = 12, 24  # 1:2 RR
+            sl_pips, tp_pips = 10, 25   # 1:2.5 RR
         else: # EURUSD
-            sl_pips, tp_pips = 6, 15   # 1:2.5 RR
+            sl_pips, tp_pips = 7, 21    # 1:3.0 RR
         
         if signal_type == "BUY":
             sl = round(c0 - (sl_pips * pip_factor), 2 if symbol == "XAUUSD" else 4)
@@ -122,14 +128,12 @@ def analyze_hybrid_scalp(symbol, candles):
     return None
 
 def run_hybrid_backtest_task(chat_id: str):
-    send_telegram_msg("⏳ *Running 7-Day Extended Hybrid Backtest... Please wait 5-10 seconds.*", chat_id)
+    send_telegram_msg("⏳ *Running Upgraded SMC Phase-C Backtest (7-Day Replay)...*", chat_id)
     try:
-        # Fixed Random Seed para maging deterministic ang results
         np.random.seed(42)
         
-        summary_msg = "📊 *DETERMINISTIC HYBRID SCALPER BACKTEST (7-Day Replay)*\n\n"
+        summary_msg = "📊 *SMC PHASE-C HYBRID BACKTEST (7-Day Replay | Gate: 75)*\n\n"
         for pair in PAIRS:
-            # Pinalitan mula days=3 papuntang days=7
             _, _, df_m5, _ = generate_spot_ohlc(pair, days=7)
             
             total_trades = 0
@@ -138,13 +142,12 @@ def run_hybrid_backtest_task(chat_id: str):
             net_r = 0.0
             
             records = df_m5.to_dict('records')
-            # Inayos ang loop range para sa 7-day volume
-            for i in range(len(records) - 25, 5, -1):
-                window = records[i:i+20]
+            for i in range(len(records) - 30, 5, -1):
+                window = records[i:i+25]
                 sig = analyze_hybrid_scalp(pair, window)
                 if sig:
                     total_trades += 1
-                    future_candles = records[max(0, i-10):i]
+                    future_candles = records[max(0, i-12):i]
                     win = False
                     for fc in future_candles:
                         if sig['type'] == "BUY" and float(fc['high']) >= sig['tp']:
@@ -154,7 +157,7 @@ def run_hybrid_backtest_task(chat_id: str):
                             win = True
                             break
                     
-                    rr_multiplier = 2.5 if pair == "EURUSD" else 2.0
+                    rr_multiplier = 3.0 if pair == "EURUSD" else 2.5
                     if win:
                         wins += 1
                         net_r += rr_multiplier
@@ -184,7 +187,7 @@ def scheduled_market_scan():
             sig = analyze_hybrid_scalp(pair, data)
             if sig:
                 msg = (
-                    f"⚡ *M5 HYBRID SCALP SIGNAL DETECTED*\n\n"
+                    f"⚡ *M5 SMC HYBRID SIGNAL DETECTED*\n\n"
                     f"• *Pair:* `{sig['pair']}`\n"
                     f"• *Action:* `{sig['type']}`\n"
                     f"• *Entry Price:* `{sig['entry']}`\n"
@@ -214,7 +217,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
                 msg = (
                     "📊 *ENGINE OPERATIONAL STATUS*\n\n"
-                    "• *System Mode:* `HYBRID_SCALPER_7DAY_TEST`\n"
+                    "• *System Mode:* `SMC_PHASE_C_HIGH_CONFLUENCE`\n"
                     "• *Paper Session:* `True`\n"
                     "• *Data Provider:* `TWELVE_DATA_SPOT`\n"
                     f"• *Scans Today:* `{SCANS_TODAY}`\n"
@@ -223,7 +226,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 send_telegram_msg(msg, chat_id)
 
             elif text == "/scan":
-                send_telegram_msg("🔍 *Scanning M5 High-Confluence setups... Please wait.*", chat_id)
+                send_telegram_msg("🔍 *Scanning M5 High-Confluence SMC setups... Please wait.*", chat_id)
                 signals_found = []
                 for pair in PAIRS:
                     data = fetch_m5_data(pair)
@@ -235,7 +238,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 if signals_found:
                     for sig in signals_found:
                         msg = (
-                            f"⚡ *HYBRID SCALP SIGNAL*\n\n"
+                            f"⚡ *SMC HYBRID SIGNAL*\n\n"
                             f"• *Pair:* `{sig['pair']}` | *Action:* `{sig['type']}`\n"
                             f"• *Entry:* `{sig['entry']}`\n"
                             f"• *SL:* `{sig['sl']}` | *TP:* `{sig['tp']}`\n"
@@ -243,7 +246,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                         )
                         send_telegram_msg(msg, chat_id)
                 else:
-                    send_telegram_msg("ℹ *No high-confluence M5 setups detected right now.*", chat_id)
+                    send_telegram_msg("ℹ *No high-confluence M5 SMC setups detected right now.*", chat_id)
 
             elif text == "/backtest":
                 background_tasks.add_task(run_hybrid_backtest_task, chat_id)
@@ -270,7 +273,7 @@ def health():
 def status():
     pht_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %I:%M:%S %p PHT")
     return {
-        "system_mode": "HYBRID_SCALPER_7DAY_TEST",
+        "system_mode": "SMC_PHASE_C_HIGH_CONFLUENCE",
         "paper_session": True,
         "scans_today": SCANS_TODAY,
         "last_scan_pht": pht_time
