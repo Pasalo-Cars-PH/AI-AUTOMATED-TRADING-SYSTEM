@@ -126,9 +126,12 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(scheduled_market_scan, 'interval', minutes=5)
 scheduler.start()
 
-# Telegram Webhook Endpoint
-@app.post("/telegram-webhook")
+# Telegram Webhook Endpoint (Supports GET & POST)
+@app.api_route("/telegram-webhook", methods=["GET", "POST"])
 async def telegram_webhook(request: Request):
+    if request.method == "GET":
+        return {"status": "ok", "message": "Telegram Webhook Endpoint is active."}
+
     try:
         update = await request.json()
         if "message" in update and "text" in update["message"]:
@@ -170,7 +173,7 @@ async def telegram_webhook(request: Request):
                 else:
                     send_telegram_msg("ℹ️ *No M5 Hybrid Scalp setups detected right now.*", chat_id)
 
-            elif text == "/help" or text == "/start":
+            elif text in ["/help", "/start"]:
                 msg = (
                     "🤖 *AI TRADING BOT COMMANDS*\n\n"
                     "• `/status` - Check active system mode & scan counts\n"
