@@ -1,6 +1,5 @@
 """
 Pinbar / Hammer / Shooting Star detector
-Bullish Hammer = signal akyat, Bearish Shooting Star = signal baba
 """
 import pandas as pd
 
@@ -54,3 +53,10 @@ def pinbar_score(row):
         strength = min(upper_wick / max(range_, 1e-6), 1.0)
         return {'type': 'bearish', 'score': -1, 'strength': strength, 'name': 'Shooting Star'}
     return {'type': 'none', 'score': 0, 'strength': 0, 'name': 'none'}
+
+def add_pinbar_columns(df, wick_mult=2.0):
+    df = df.copy()
+    df['is_bullish_pinbar'] = df.apply(lambda r: is_bullish_pinbar(r, wick_mult), axis=1)
+    df['is_bearish_pinbar'] = df.apply(lambda r: is_bearish_pinbar(r, wick_mult), axis=1)
+    df['pinbar_type'] = df.apply(lambda r: 'bullish' if r['is_bullish_pinbar'] else ('bearish' if r['is_bearish_pinbar'] else 'none'), axis=1)
+    return df
