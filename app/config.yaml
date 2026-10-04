@@ -1,6 +1,25 @@
+markets:
+  symbols: ["XAUUSD", "EURUSD", "GBPUSD"]
+  timeframes: ["M5", "M15", "H1"]
+
+spread_pips:
+  XAUUSD: 3.0
+  EURUSD: 1.2
+  GBPUSD: 1.5
+slippage_pips: 0.5
+
+data:
+  source: "twelve_data"
+  csv_folder: "./data"
+  remove_weekend: true
+  remove_flat_candles: true
+  off_hours_filter:
+    enabled: true
+
+strategies:
   strategy_1_liquidity_sweep_fvg:
     enabled: true
-    description: "Liquidity sweep of PDH/PDL/Asia + displacement + FVG limit entry"
+    description: "Liquidity sweep + FVG + Pinbar Hammer/ShootingStar"
     params:
       killzones: [["07:00","10:00"], ["12:00","15:00"]]
       asia_range: ["00:00","05:00"]
@@ -15,3 +34,62 @@
       higher_timeframe: "M15"
       require_pinbar: true
       pinbar_wick_mult: 2.0
+
+  strategy_2_trend_pullback:
+    enabled: true
+    description: "M15 trend pullback + Pinbar Hammer at EMA confluence"
+    params:
+      timeframe: "M15"
+      higher_timeframe: "H1"
+      ema_fast: 50
+      ema_slow: 200
+      atr_period: 14
+      atr_sl_mult: 1.5
+      pullback_ema: 21
+      rsi_filter: false
+      rsi_period: 14
+      rsi_long_min: 40
+      rsi_short_max: 60
+      tp_r: 1.8
+      require_pinbar: true
+      pinbar_wick_mult: 2.0
+
+  strategy_3_london_orb:
+    enabled: true
+    description: "London ORB + Pinbar filter"
+    params:
+      timeframe: "M5"
+      orb_start: "07:00"
+      orb_end: "08:00"
+      atr_period: 14
+      atr_min_mult: 0.7
+      sl_buffer_pips: 1.0
+      tp_r: 1.5
+      killzone_end: "11:00"
+      require_pinbar: true
+      pinbar_wick_mult: 2.0
+
+backtest:
+  start_date: "2023-01-01"
+  end_date: "2024-12-31"
+  walkforward_split: 0.666
+  commission_per_lot: 0.0
+  pass_criteria:
+    min_trades_oos: 100
+    min_expectancy_r: 0.15
+    min_profit_factor: 1.2
+    max_dd_pct_report: true
+  same_candle_rule: "SL_FIRST"
+
+execution:
+  default_mode: "PAPER"
+  risk_per_trade: 0.005
+  max_open_trades: 3
+  daily_loss_limit_pct: 0.02
+  max_total_drawdown_pct: 0.10
+  spread_guard_mult: 2.0
+  news_blackout_min: 15
+
+alerts:
+  telegram_enabled: false
+  daily_summary_utc: "22:00"
