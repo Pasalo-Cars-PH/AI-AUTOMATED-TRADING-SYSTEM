@@ -94,8 +94,8 @@ def fetch_hist(outputsize=3000):
     df=df[df['weekday']<5]; df=df[df['high']>df['low']]
     return df.to_dict('records')
 
-# V5.7 ULTRA BALANCED - 70% WR + Positive Out target
-def analyze_v57_ultra(window, h1_trend=None):
+# V5.8 = V5.1 VOLUME EDITION - Marami trades pero V5.1 quality
+def analyze_v58_volume_v51(window, h1_trend=None):
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
     if dt.hour<7 or dt.hour>19: return None
@@ -107,7 +107,7 @@ def analyze_v57_ultra(window, h1_trend=None):
 
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
-    # ULTRA: 0.80x para mas madami out-sample
+    # VOLUME: 0.80x para mas marami trades vs 0.9x ng V5.1
     if body<prev*0.80: return None
 
     bullish=is_bullish_pinbar(c0)
@@ -117,14 +117,14 @@ def analyze_v57_ultra(window, h1_trend=None):
     rng=c0['high']-c0['low']
     if rng==0: return None
 
-    # 3 GATES
+    # 3 GATES same as V5.1
     if bullish and not (c0['close']>e20>e50): return None
     if bearish and not (c0['close']<e20<e50): return None
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
-    # ULTRA: SC 56% para mas madami
+    # VOLUME: SC 56% vs 60% ng V5.1 para mas marami
     if sc<0.56: return None
 
-    # 7 LAYERS - need 58% para ULTRA BALANCED
+    # 7 LAYERS - VOLUME: 60% vs 71% ng V5.1 para mas marami trades
     layers=0; logs=[]
     if (bullish and c0['close']>e20>e50) or (bearish and c0['close']<e20<e50):
         layers+=1; logs.append("EMA")
@@ -149,23 +149,22 @@ def analyze_v57_ultra(window, h1_trend=None):
     except: pass
 
     conf=layers/7*100
-    # ULTRA: 58% conf para mas madami out-sample
-    if conf<58: return None
+    # VOLUME: 60% lang para mas marami vs 71% ng V5.1
+    if conf<60: return None
 
-    # QUALITY LOCK pero mas maluwag para positive out
-    if bullish and h1_trend=="BEAR" and conf<65: return None
-    if bearish and h1_trend=="BULL" and conf<65: return None
-    if bullish and rsi>72: return None
-    if bearish and rsi<28: return None
+    # QUALITY LOCK same as V5.1 para positive out-sample pa rin
+    if bullish and h1_trend=="BEAR" and conf<68: return None
+    if bearish and h1_trend=="BULL" and conf<68: return None
+    if bullish and rsi>70: return None
+    if bearish and rsi<30: return None
 
     # 8 BOOSTERS
     last_10_lows=[c['low'] for c in window[1:11]]
     last_10_highs=[c['high'] for c in window[1:11]]
     swept = (bullish and c0['low']<=min(last_10_lows)+0.05) or (bearish and c0['high']>=max(last_10_highs)-0.05)
-
     booster_logs=["NEWS Clear", f"KILL {dt.hour}UTC", "DXY N/A", "Sweep" if swept else "NoSweep", "Spread OK"]
     ai_score=min(98, 44+conf*0.55+(8 if swept else 0))
-    # ULTRA: ML 60% para mas madami
+    # VOLUME: ML 60% vs 65% ng V5.1 para mas marami
     if ai_score<60: return None
     booster_logs.append(f"ML {ai_score:.0f}%")
 
@@ -175,7 +174,7 @@ def analyze_v57_ultra(window, h1_trend=None):
     return {
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
         "pinbar":"Hammer","h1":h1_trend,"confluence":conf,"ai":ai_score,"layers":logs,"boosters":booster_logs,
-        "reason":f"3G 7L 8B ULTRA | {conf:.0f}% ML{ai_score:.0f}% | {'+'.join(logs)}"
+        "reason":f"V5.1 VOL | {conf:.0f}% ML{ai_score:.0f}% | {'+'.join(logs)}"
     }
 
 def run_sim(records):
@@ -186,7 +185,7 @@ def run_sim(records):
         oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
         e50=calculate_ema(closes,50); e100=calculate_ema(closes,100)
         h1_proxy="BULL" if e50 and e100 and e50>e100 else "BEAR" if e50 and e100 and e50<e100 else None
-        sig=analyze_v57_ultra(window, h1_trend=h1_proxy)
+        sig=analyze_v58_volume_v51(window, h1_trend=h1_proxy)
         if not sig: i+=1; continue
         total+=1; sl=sig['sl']; tp=sig['tp']; typ=sig['type']
         res=None
@@ -206,21 +205,21 @@ def run_sim(records):
     return total,wins,losses,wr,net,exp
 
 def run_backtest(chat_id):
-    send_telegram_msg("⏳ *TITAN V5.7 ULTRA BALANCED - 70% WR + Positive Out Target*\n_Hammer 58%conf ML60% SC56% Disp0.80x_\n_Target 12-14 trades 66-70% WR + 2-3 out positive_", chat_id)
+    send_telegram_msg("⏳ *TITAN V5.8 V5.1 VOLUME - Marami trades pero V5.1 Quality*\n_Hammer 60%conf ML60% SC56% Disp0.80x_\n_Target Many trades + Positive Out_", chat_id)
     try:
         rec=fetch_hist(3000)
         if not rec: send_telegram_msg("Data fail", chat_id); return
         split=int(len(rec)*0.66); ins=rec[:split]; outs=rec[split:]
         t,w,l,wr,net,exp=run_sim(ins)
         t2,w2,l2,wr2,net2,exp2=run_sim(outs)
-        msg=f"📊 *XAUUSD TITAN V5.7 ULTRA BALANCED 1:2*\n_Complete 3Gates 7Layers 8Boosters_\n\n🔹 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n⚡ _ULTRA: Hammer 58%conf ML60%_\n_3G: Trend+Structure+Momentum_\n_7L: EMA+Hammer/SC/Disp/H1/PD/FVG_\n_8B: News+Kill+DXY+Sweep+PD+FVG+RSI+Spread+ML_\n_Target: 70% WR + Positive Out_"
+        msg=f"📊 *XAUUSD TITAN V5.8 V5.1 VOLUME 1:2*\n_V5.1 Loosen 60%conf for Many Trades_\n\n🔹 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n⚡ _V5.1 VOLUME: Hammer 60%conf ML60%_\n_3G: Trend+Structure+Momentum_\n_7L: EMA+Hammer/SC/Disp/H1/PD/FVG_\n_8B: News+Kill+DXY+Sweep+PD+FVG+RSI+Spread+ML_\n_Target: Many trades Quality + Positive Out_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         send_telegram_msg(f"Err {e}", chat_id)
 
 def manual_scan(chat_id):
     h1=fetch_h1_trend()
-    send_telegram_msg(f"🔍 *Scanning TITAN V5.7 ULTRA*\n_Complete 3G 7L 8B 58%conf_ H1 `{h1}`", chat_id)
+    send_telegram_msg(f"🔍 *Scanning TITAN V5.8 V5.1 VOLUME*\n_Hammer 60%conf_ H1 `{h1}`", chat_id)
     data=fetch_m5_live()
     if not data: send_telegram_msg("No data", chat_id); return
     clean=[]
@@ -228,12 +227,12 @@ def manual_scan(chat_id):
         try: clean.append({"open":float(d["open"]),"high":float(d["high"]),"low":float(d["low"]),"close":float(d["close"]),"datetime":d["datetime"]})
         except: pass
     if len(clean)>=60:
-        sig=analyze_v57_ultra(clean, h1_trend=h1)
+        sig=analyze_v58_volume_v51(clean, h1_trend=h1)
         if sig:
             pht,utc=format_time_pht(sig['time'])
-            msg=f"⚡ *XAUUSD TITAN V5.7 ULTRA 1:2* 🔨\n\n• {sig['pair']} {sig['type']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Boosters `{' + '.join(sig['boosters'][:4])}`\n• Reason `{sig['reason']}`\n• 3G 7L 8B ULTRA"
+            msg=f"⚡ *XAUUSD TITAN V5.8 V5.1 VOL 1:2* 🔨\n\n• {sig['pair']} {sig['type']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• V5.1 VOLUME"
             send_telegram_msg(msg, chat_id); return
-    send_telegram_msg(f"ℹ️ No V5.7 setup. Need 58%+L + ML60%+\nH1 `{h1}`", chat_id)
+    send_telegram_msg(f"ℹ️ No V5.8 setup. Need 60%+L + ML60%+\nH1 `{h1}`", chat_id)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -241,13 +240,13 @@ async def lifespan(app: FastAPI):
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V5.7 ULTRA BALANCED 70% WR + Positive Out", lifespan=lifespan)
+app=FastAPI(title="TITAN V5.8 V5.1 VOLUME Many Trades Quality", lifespan=lifespan)
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V5.7 ULTRA BALANCED Live","mode":"3G_7L_8B_70WR_POS_OUT","time":pht_now().isoformat()}
+def root(): return {"status":"XAUUSD TITAN V5.8 V5.1 VOLUME Live","mode":"V51_VOLUME","time":pht_now().isoformat()}
 @app.get("/health")
-def health(): return {"status":"ok","mode":"V5.7_ULTRA"}
+def health(): return {"status":"ok","mode":"V5.8_V51_VOLUME"}
 @app.get("/status")
-def status(): return {"status":"ok","mode":"V5.7_ULTRA"}
+def status(): return {"status":"ok","mode":"V5.8_V51_VOLUME"}
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -260,9 +259,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if TELEGRAM_CHAT_ID and cid!=str(TELEGRAM_CHAT_ID): return {"status":"ok"}
             if txt=="/status":
                 h1=fetch_h1_trend()
-                send_telegram_msg(f"📊 *TITAN V5.7 ULTRA BALANCED*\nMode `3G_7L_8B_70WR_POS_OUT`\nH1 `{h1}`\nRR 1:2 SL18 TP36\nHammer 58%conf ML60% SC56%\n3G 7L 8B Complete\nTarget 70% WR + Positive Out\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"📊 *TITAN V5.8 V5.1 VOLUME*\nMode `V5.1_VOLUME_MANY`\nH1 `{h1}`\nRR 1:2 SL18 TP36\nHammer 60%conf ML60% SC56%\n3G 7L 8B Complete\nTarget Many Quality + Positive Out\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🤖 *TITAN V5.7 ULTRA*\n70% WR + Positive Out Target\n• /status • /scan • /backtest\n*Hammer 58%conf ML60%*", cid)
+            elif txt in ["/help","/start"]: send_telegram_msg("🤖 *TITAN V5.8 V5.1 VOLUME*\nV5.1 Loosen for Many Trades\n• /status • /scan • /backtest\n*Hammer 60%conf ML60%*", cid)
     except Exception as e: print(e)
     return {"status":"ok"}
