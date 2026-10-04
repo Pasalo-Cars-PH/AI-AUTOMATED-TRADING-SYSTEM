@@ -1,0 +1,18 @@
+  strategy_2_trend_pullback:
+    enabled: true
+    description: "M15 trend pullback EMA50/200 filter on H1, ATR stop"
+    params:
+      timeframe: "M15"
+      higher_timeframe: "H1"
+      ema_fast: 50
+      ema_slow: 200
+      atr_period: 14
+      atr_sl_mult: 1.5
+      pullback_ema: 21
+      rsi_filter: false
+      rsi_period: 14
+      rsi_long_min: 40
+      rsi_short_max: 60
+      tp_r: 1.8
+      require_pinbar: true # <-- DAGDAG MO TO, true para hammer lang
+      pinbar_wick_mult: 2.0 # <-- DAGDAG MO TO
