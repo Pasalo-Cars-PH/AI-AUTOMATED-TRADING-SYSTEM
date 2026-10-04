@@ -12,3 +12,4 @@ ta
 httpx
 yfinance
 apscheduler
+pytz
