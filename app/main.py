@@ -31,19 +31,20 @@ def send_telegram_msg(msg, chat_id=None):
             requests.post(url, json={"chat_id": cid, "text": msg}, timeout=10)
     except: pass
 
+# V4.2 PINBAR - mas maluwag para may out-sample
 def is_bullish_pinbar(c):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
-    return low_w>=1.8*max(body,rng*0.05) and up_w<=body*1.8 and body<=rng*0.45
+    return low_w>=1.6*max(body,rng*0.05) and up_w<=body*2.0 and body<=rng*0.5
 
 def is_bearish_pinbar(c):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
-    return up_w>=1.8*max(body,rng*0.05) and low_w<=body*1.8 and body<=rng*0.45
+    return up_w>=1.6*max(body,rng*0.05) and low_w<=body*2.0 and body<=rng*0.5
 
 def calculate_ema(closes, p):
     if len(closes)<p: return None
@@ -78,7 +79,7 @@ def fetch_h1_trend():
         return "BULL" if e20>e50 else "BEAR" if e20<e50 else None
     except: return None
 
-def fetch_hist(outputsize=2000):
+def fetch_hist(outputsize=3000):
     url="https://api.twelvedata.com/time_series"
     params={"symbol":"XAU/USD","interval":"5min","outputsize":outputsize,"timezone":"UTC","apikey":TWELVE_DATA_API_KEY}
     try:
@@ -92,7 +93,7 @@ def fetch_hist(outputsize=2000):
         return df.to_dict('records')
     except: return None
 
-def analyze_v4_1(window, h1_trend=None):
+def analyze_v42(window, h1_trend=None):
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
     if dt.hour<7 or dt.hour>19: return None
@@ -101,42 +102,46 @@ def analyze_v4_1(window, h1_trend=None):
     if not e20 or not e50: return None
     c0=window[0]; c1=window[1]
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
-    if body<prev*1.0: return None # luwagan from 1.2 to 1.0
+    if body<prev*0.9: return None # mas maluwag from 1.0 to 0.9 para may out-sample
 
     bullish=is_bullish_pinbar(c0); bearish=is_bearish_pinbar(c0)
     if not bullish and not bearish: return None
 
-    # NEW: Strong close filter para tumaas WR (60%+ trick)
     rng=c0['high']-c0['low']
     if rng==0: return None
+
+    # V4.2 NEW: SWING FILTER - dapat nasa dulo ng swing
+    last_10_lows=[c['low'] for c in window[1:11]]
+    last_10_highs=[c['high'] for c in window[1:11]]
+
     if bullish:
-        close_strength=(c0['close']-c0['low'])/rng
-        if close_strength<0.65: return None # dapat close nasa taas 65% ng range
+        if close_strength:=(c0['close']-c0['low'])/rng <0.60: return None # 60% na lang from 65%
         if not (c0['close']>e20>e50): return None
-        if h1_trend=="BEAR": return None # H1 kontra, wag
+        if h1_trend=="BEAR": return None
+        if last_10_lows and c0['low'] > min(last_10_lows)+0.05: return None # dapat swing low talaga
         sig="BUY"
     else:
-        close_strength=(c0['high']-c0['close'])/rng
-        if close_strength<0.65: return None
+        if (c0['high']-c0['close'])/rng <0.60: return None
         if not (c0['close']<e20<e50): return None
         if h1_trend=="BULL": return None
+        if last_10_highs and c0['high'] < max(last_10_highs)-0.05: return None
         sig="SELL"
 
     entry=round(c0['close'],2)
     sl=round(entry-1.8 if sig=="BUY" else entry+1.8,2)
     tp=round(entry+3.6 if sig=="BUY" else entry-3.6,2)
-    return {"pair":"XAUUSD","type":sig,"entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],"pinbar":"Hammer" if bullish else "Shooting Star","h1":h1_trend,"reason":f"Hammer+StrongClose65%+H1_{h1_trend}"}
+    return {"pair":"XAUUSD","type":sig,"entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],"pinbar":"Hammer" if bullish else "Shooting Star","h1":h1_trend,"reason":f"Swing+Hammer+SC60%+H1_{h1_trend}"}
 
 def run_sim(records):
     total=wins=losses=0; net=0.0
     i=60; n=len(records)
     while i<n-36:
         window=list(reversed(records[i-60:i]))
-        # HTF proxy for backtest: EMA100/200
         oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
-        e100=calculate_ema(closes,100); e200=calculate_ema(closes,200)
-        h1_proxy="BULL" if e100 and e200 and e100>e200 else "BEAR" if e100 and e200 and e100<e200 else None
-        sig=analyze_v4_1(window, h1_trend=h1_proxy)
+        # V4.2: EMA50/100 na lang para mas responsive, may out-sample
+        e50=calculate_ema(closes,50); e100=calculate_ema(closes,100)
+        h1_proxy="BULL" if e50 and e100 and e50>e100 else "BEAR" if e50 and e100 and e50<e100 else None
+        sig=analyze_v42(window, h1_trend=h1_proxy)
         if not sig: i+=1; continue
         total+=1; sl=sig['sl']; tp=sig['tp']; typ=sig['type']
         res=None
@@ -156,20 +161,20 @@ def run_sim(records):
     return total,wins,losses,wr,net,exp
 
 def run_backtest(chat_id):
-    send_telegram_msg("⏳ *V4.1 High WR Test (Hammer + Strong Close 65% + H1)*", chat_id)
+    send_telegram_msg("⏳ *V4.2 Final Test (Swing + Hammer + SC60% + H1 50/100)*\n_Target 60%+ WR with Out-Sample_", chat_id)
     try:
-        rec=fetch_hist(2000)
+        rec=fetch_hist(3000)
         if not rec: send_telegram_msg("Data fail", chat_id); return
         split=int(len(rec)*0.66); ins=rec[:split]; outs=rec[split:]
         t,w,l,wr,net,exp=run_sim(ins)
         t2,w2,l2,wr2,net2,exp2=run_sim(outs)
-        msg=f"📊 *XAUUSD V4.1 HIGH WR 1:2*\n_Hammer + StrongClose65% + H1_\n\n🔹 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n⚠️ _Target 60%+ WR same 1:2_"
+        msg=f"📊 *XAUUSD V4.2 FINAL 1:2*\n_Swing+Hammer+SC60%+H1_\n\n🔹 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n⚠️ _Target: 60%+ WR 1:2 RR with Out-Sample_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         send_telegram_msg(f"Err {e}", chat_id)
 
 def manual_scan(chat_id):
-    send_telegram_msg("🔍 *Scanning V4.1 (Hammer + Strong Close + H1)*", chat_id)
+    send_telegram_msg("🔍 *Scanning V4.2 (Swing Hammer SC60% H1)*", chat_id)
     data=fetch_m5_live(); h1=fetch_h1_trend()
     if not data: send_telegram_msg("No data", chat_id); return
     clean=[]
@@ -177,12 +182,12 @@ def manual_scan(chat_id):
         try: clean.append({"open":float(d["open"]),"high":float(d["high"]),"low":float(d["low"]),"close":float(d["close"]),"datetime":d["datetime"]})
         except: pass
     if len(clean)>=60:
-        sig=analyze_v4_1(clean, h1_trend=h1)
+        sig=analyze_v42(clean, h1_trend=h1)
         if sig:
             pht,utc=format_time_pht(sig['time'])
-            msg=f"⚡ *XAUUSD V4.1 1:2* 🔨\n\n• {sig['pair']} {sig['type']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• H1 `{sig['h1']}`\n• Reason `{sig['reason']}`"
+            msg=f"⚡ *XAUUSD V4.2 1:2* 🔨\n\n• {sig['pair']} {sig['type']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• H1 `{sig['h1']}`\n• Reason `{sig['reason']}`\n• Target WR `60%+`"
             send_telegram_msg(msg, chat_id); return
-    send_telegram_msg(f"ℹ️ No V4.1 setup. H1 `{h1}`", chat_id)
+    send_telegram_msg(f"ℹ️ No V4.2 setup. H1 `{h1}`", chat_id)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -190,7 +195,16 @@ async def lifespan(app: FastAPI):
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="V4.1 High WR", lifespan=lifespan)
+app=FastAPI(title="V4.2 Final High WR", lifespan=lifespan)
+
+@app.get("/")
+def root(): return {"status":"XAUUSD V4.2 Live","mode":"Swing_Hammer_SC60_H1","time":pht_now().isoformat()}
+
+@app.get("/health")
+def health(): return {"status":"ok","mode":"V4.2"}
+
+@app.get("/status")
+def status(): return {"status":"ok","mode":"V4.2"}
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -203,12 +217,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if TELEGRAM_CHAT_ID and cid!=str(TELEGRAM_CHAT_ID): return {"status":"ok"}
             if txt=="/status":
                 h1=fetch_h1_trend()
-                send_telegram_msg(f"📊 *V4.1*\nMode `HAMMER+STRONG65%+H1`\nH1 `{h1}`\nRR 1:2\nTarget 60%+ WR\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"📊 *V4.2 FINAL*\nMode `SWING_HAMMER_SC60_H1`\nH1 `{h1}`\nRR 1:2 SL18 TP36\nTarget 60%+ WR\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🤖 /status /scan /backtest - V4.1 High WR 1:2", cid)
+            elif txt in ["/help","/start"]: send_telegram_msg("🤖 V4.2 Commands\n• /status • /scan • /backtest\n*Goal 60%+ WR 1:2 with Out-Sample*", cid)
     except Exception as e: print(e)
     return {"status":"ok"}
-
-@app.get("/status")
-def status(): return {"status":"ok","mode":"V4.1_HIGH_WR"}
