@@ -91,5 +91,5 @@ execution:
   news_blackout_min: 15
 
 alerts:
-  telegram_enabled: false
+  telegram_enabled: true
   daily_summary_utc: "22:00"
