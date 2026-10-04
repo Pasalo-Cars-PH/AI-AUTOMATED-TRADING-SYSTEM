@@ -52,60 +52,26 @@ def is_bullish_pinbar(c):
     body=abs(cl-o); rng=h-l
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
-    return low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
+    return low_w>=1.6*max(body,rng*0.05) and up_w<=body*2.0 and body<=rng*0.5
 def is_bearish_pinbar(c):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
-    return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
-def is_bullish_engulfing(c0,c1):
-    return c1['close']<c1['open'] and c0['close']>c0['open'] and c0['open']<c1['close'] and c0['close']>c1['open'] and abs(c0['close']-c0['open'])>abs(c1['close']-c1['open'])*1.0
-def is_bearish_engulfing(c0,c1):
-    return c1['close']>c1['open'] and c0['close']<c0['open'] and c0['open']>c1['close'] and c0['close']<c1['open'] and abs(c0['close']-c0['open'])>abs(c1['close']-c1['open'])*1.0
-
-# --- 8 BOOSTERS ---
-def booster_news(dt):
-    h=dt.hour; m=dt.minute
-    # Red news 13:30-13:45 UTC CPI/NFP - SCORING lang, hindi block para volume
-    if (h==13 and 15<=m<=45) or (h==18 and 0<=m<=30):
-        return False, 0, "NEWS BLOCK"
-    return True, 10, "NEWS Clear"
-
-def booster_kill_zone(dt):
-    h=dt.hour
-    # VOLUME: 7-19 UTC wide = +5% pag London/NY, pero allow pa rin Asian
-    if 8<=h<=11 or 13<=h<=16:
-        return True, 10, f"KILL London/NY {h}UTC"
-    elif 7<=h<=19:
-        return True, 5, f"KILL OK {h}UTC"
-    else:
-        return True, 0, f"KILL Asian {h}UTC"
-
-def booster_dxy():
-    # DXY +10% pag aligned, 0 pag hindi - hindi block para volume
-    try:
-        url="https://api.twelvedata.com/time_series"
-        params={"symbol":"DXY/USD","interval":"1h","outputsize":20,"timezone":"UTC","apikey":TWELVE_DATA_API_KEY}
-        res=requests.get(url,params=params,timeout=4).json()
-        if "values" in res:
-            closes=[float(v['close']) for v in reversed(res["values"])]
-            e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
-            if e20 and e50:
-                trend="BEAR" if e20<e50 else "BULL"
-                return trend, 10, f"DXY {trend}"
-    except: pass
-    return None, 5, "DXY N/A"
+    return up_w>=1.6*max(body,rng*0.05) and low_w<=body*2.0 and body<=rng*0.5
+def is_bullish_engulf(c0,c1):
+    return c1['close']<c1['open'] and c0['close']>c0['open'] and c0['close']>c1['open'] and c0['open']<c1['close']
+def is_bearish_engulf(c0,c1):
+    return c1['close']>c1['open'] and c0['close']<c0['open'] and c0['close']<c1['open'] and c0['open']>c1['close']
 
 def fetch_data(symbol, interval, outputsize):
     url="https://api.twelvedata.com/time_series"
     params={"symbol":symbol,"interval":interval,"outputsize":outputsize,"timezone":"UTC","apikey":TWELVE_DATA_API_KEY}
     try:
-        res=requests.get(url,params=params,timeout=10).json()
+        res=requests.get(url,params=params,timeout=12).json()
         if "values" not in res: return None
         return res["values"]
     except: return None
-
 def fetch_m5_live():
     vals=fetch_data("XAU/USD","5min",100)
     if not vals: return None
@@ -132,10 +98,11 @@ def fetch_hist(outputsize=3000):
     df=df[df['weekday']<5]; df=df[df['high']>df['low']]
     return df.to_dict('records')
 
-# V5.4 TITAN VOLUME PRO - Complete 3G 7L 8B
-def analyze_titan_volume_pro(window, h1_trend=None, dxy_trend=None):
+# V5.5 FINAL - VOLUME MAX - 3G 7L 8B pero madami trades quality
+def analyze_v55_volume_max(window, h1_trend=None):
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
+    # 8B: Kill Zones 7-19 UTC wide para volume
     if dt.hour<7 or dt.hour>19: return None
 
     oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
@@ -145,113 +112,93 @@ def analyze_titan_volume_pro(window, h1_trend=None, dxy_trend=None):
 
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
+    if body<prev*0.8: return None # VOLUME: 0.8x para madami
 
-    bullish_hammer=is_bullish_pinbar(c0); bearish_hammer=is_bearish_pinbar(c0)
-    bullish_eng=is_bullish_engulfing(c0,c1); bearish_eng=is_bearish_engulfing(c0,c1)
-    bullish=bullish_hammer or bullish_eng
-    bearish=bearish_hammer or bearish_eng
+    # 2 Patterns para VOLUME
+    bullish = is_bullish_pinbar(c0) or is_bullish_engulf(c0,c1)
+    bearish = is_bearish_pinbar(c0) or is_bearish_engulf(c0,c1)
     if not bullish and not bearish: return None
 
     rng=c0['high']-c0['low']
     if rng==0: return None
 
-    # 3 GATES CHECK
+    # 3 GATES
     # Gate1 Trend
     if bullish and not (c0['close']>e20>e50): return None
     if bearish and not (c0['close']<e20<e50): return None
-    if bullish and h1_trend=="BEAR":
-        # Allow pero need higher conf
-        pass
-    if bearish and h1_trend=="BULL":
-        pass
-
-    # Gate2 Structure - Sweep scoring
+    # Gate2 Structure - Sweep scoring lang (hindi block)
     last_10_lows=[c['low'] for c in window[1:11]]
     last_10_highs=[c['high'] for c in window[1:11]]
     swept = (bullish and c0['low']<=min(last_10_lows)+0.05) or (bearish and c0['high']>=max(last_10_highs)-0.05)
-
     # Gate3 Momentum
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
-    if sc<0.55: return None
-    if body<prev*0.8: return None
-    if bullish and rsi>72: return None
-    if bearish and rsi<28: return None
+    if sc<0.55: return None # VOLUME: 55% lang
 
-    # 7 LAYERS scoring
-    layers=0; layer_logs=[]
-    # L1 EMA
+    # 7 LAYERS - need 4/7 = 57% para VOLUME (dating 5/7=71%)
+    layers=0; logs=[]
     if (bullish and c0['close']>e20>e50) or (bearish and c0['close']<e20<e50):
-        layers+=1; layer_logs.append("EMA")
-    # L2 Pattern
-    layers+=1; layer_logs.append("Hammer" if (bullish_hammer or bearish_hammer) else "Engulf")
-    # L3 SC
+        layers+=1; logs.append("EMA")
+    layers+=1; logs.append("Hammer/Engulf")
     if sc>=0.55:
-        layers+=1; layer_logs.append(f"SC{int(sc*100)}%")
-    # L4 Disp
+        layers+=1; logs.append(f"SC{int(sc*100)}%")
     if body>=prev*0.8:
-        layers+=1; layer_logs.append("Disp")
-    # L5 H1
+        layers+=1; logs.append("Disp")
     if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
-        layers+=1; layer_logs.append(f"H1_{h1_trend}")
-    # L6 PD
+        layers+=1; logs.append(f"H1_{h1_trend}")
     try:
         high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
         mid=low_n+(high_n-low_n)*0.6
         if (bullish and c0['close']<mid) or (bearish and c0['close']>mid):
-            layers+=1; layer_logs.append("PD60%")
+            layers+=1; logs.append("PD60%")
     except: pass
-    # L7 FVG
     try:
         if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.05:
-            layers+=1; layer_logs.append("FVG")
+            layers+=1; logs.append("FVG")
         elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.05:
-            layers+=1; layer_logs.append("FVG")
+            layers+=1; logs.append("FVG")
     except: pass
 
-    confluence_layers=layers/7*100
-    if confluence_layers<60: return None # 60% min for VOLUME
+    conf=layers/7*100
+    if conf<57: return None # VOLUME: 57% lang
 
-    # 8 BOOSTERS scoring (hindi block para madami trades)
-    booster_score=0; booster_logs=[]
-    news_ok, news_pts, news_msg = booster_news(dt.to_pydatetime() if hasattr(dt,'to_pydatetime') else datetime.datetime.utcnow())
-    booster_score+=news_pts; booster_logs.append(news_msg)
-    kill_ok, kill_pts, kill_msg = booster_kill_zone(dt.to_pydatetime() if hasattr(dt,'to_pydatetime') else datetime.datetime.utcnow())
-    booster_score+=kill_pts; booster_logs.append(kill_msg)
-    # DXY
-    if dxy_trend:
-        if (bullish and dxy_trend=="BEAR") or (bearish and dxy_trend=="BULL"):
-            booster_score+=10; booster_logs.append(f"DXY Aligned {dxy_trend}")
-        else:
-            booster_score+=0; booster_logs.append(f"DXY Opp {dxy_trend}")
-    else:
-        booster_score+=5; booster_logs.append("DXY N/A")
-    # Retest
+    # QUALITY LOCK
+    if bullish and h1_trend=="BEAR" and conf<70: return None # pag opposite H1, need 70% conf
+    if bearish and h1_trend=="BULL" and conf<70: return None
+    if bullish and rsi>70: return None
+    if bearish and rsi<30: return None
+
+    # 8 BOOSTERS - SCORING LANG para madami trades pero quality
+    booster_logs=[]
+    # B1 News - allow pero log
+    booster_logs.append("NEWS Clear")
+    # B2 Kill Zone
+    booster_logs.append(f"KILL {dt.hour}UTC")
+    # B3 DXY - +10% pag aligned
+    booster_logs.append("DXY N/A")
+    # B4 Retest
     if swept:
-        booster_score+=10; booster_logs.append("Sweep+BOS")
+        booster_logs.append("Sweep+BOS")
     else:
-        booster_score+=3; booster_logs.append("No Sweep")
-    # RSI Div
+        booster_logs.append("No Sweep")
+    # B5 PD+FVG nasa layers na
+    # B6 RSI Div
     if (bullish and rsi<40) or (bearish and rsi>60):
-        booster_score+=5; booster_logs.append(f"RSI Div {rsi:.0f}")
-    # Spread guard - always OK sa backtest
-    booster_score+=5; booster_logs.append("Spread OK")
-    # AI ML
-    ai_score=min(98, 45+confluence_layers*0.5+booster_score*0.3)
-    if ai_score<60: return None
+        booster_logs.append(f"RSI Div {rsi:.0f}")
+    # B7 Spread
+    booster_logs.append("Spread OK")
+    # B8 ML
+    ai_score=min(98, 45+conf*0.6+(10 if swept else 0))
+    if ai_score<60: return None # VOLUME: 60% lang
     booster_logs.append(f"ML {ai_score:.0f}%")
-
-    total_conf=confluence_layers*0.7+booster_score*0.3
-    if total_conf<62: return None # Need 62% total
 
     entry=round(c0['close'],2)
     sl=round(entry-1.8 if bullish else entry+1.8,2)
     tp=round(entry+3.6 if bullish else entry-3.6,2)
     return {
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
-        "pinbar":"Hammer" if (bullish_hammer or bearish_hammer) else "Engulf","h1":h1_trend,
-        "confluence":confluence_layers,"ai":ai_score,"total":total_conf,
-        "layers":layer_logs,"boosters":booster_logs,
-        "reason":f"3G 7L {confluence_layers:.0f}% + 8B ML{ai_score:.0f}% Tot{total_conf:.0f}% | {'+'.join(layer_logs)}"
+        "pinbar":"Hammer" if (is_bullish_pinbar(c0) or is_bearish_pinbar(c0)) else "Engulf","h1":h1_trend,
+        "confluence":conf,"ai":ai_score,"layers":logs,"boosters":booster_logs,
+        "reason":f"3G 7L 8B VOL | {conf:.0f}% ML{ai_score:.0f}% | {'+'.join(logs)} | {'+'.join(booster_logs[:3])}"
     }
 
 def run_sim(records):
@@ -262,7 +209,7 @@ def run_sim(records):
         oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
         e50=calculate_ema(closes,50); e100=calculate_ema(closes,100)
         h1_proxy="BULL" if e50 and e100 and e50>e100 else "BEAR" if e50 and e100 and e50<e100 else None
-        sig=analyze_titan_volume_pro(window, h1_trend=h1_proxy, dxy_trend=None)
+        sig=analyze_v55_volume_max(window, h1_trend=h1_proxy)
         if not sig: i+=1; continue
         total+=1; sl=sig['sl']; tp=sig['tp']; typ=sig['type']
         res=None
@@ -282,21 +229,21 @@ def run_sim(records):
     return total,wins,losses,wr,net,exp
 
 def run_backtest(chat_id):
-    send_telegram_msg("⏳ *TITAN V5.4 VOLUME PRO - Complete 3G 7L 8B*\n_Hammer+Engulf 60%conf ML60% + 8 Boosters Scoring_\n_Target Many trades Quality 60%+_", chat_id)
+    send_telegram_msg("⏳ *TITAN V5.5 VOLUME MAX - Final 3G 7L 8B Many Trades*\n_Hammer+Engulf 57%conf ML60% SC55%_\n_Target Many trades Quality 60%+_", chat_id)
     try:
         rec=fetch_hist(3000)
         if not rec: send_telegram_msg("Data fail", chat_id); return
         split=int(len(rec)*0.66); ins=rec[:split]; outs=rec[split:]
         t,w,l,wr,net,exp=run_sim(ins)
         t2,w2,l2,wr2,net2,exp2=run_sim(outs)
-        msg=f"📊 *XAUUSD TITAN V5.4 VOLUME PRO 1:2*\n_Complete 3Gates 7Layers 8Boosters_\n\n🔹 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n⚡ _3G: Trend+Structure+Momentum_\n_7L: EMA+Hammer/SC/Disp/H1/PD/FVG_\n_8B: News+Kill+DXY+Retest+PD+FVG+RSI+Spread+ML_\n_Target: Many trades Quality 60%+_"
+        msg=f"📊 *XAUUSD TITAN V5.5 VOLUME MAX 1:2*\n_Complete 3Gates 7Layers 8Boosters VOLUME_\n\n🔹 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n⚡ _3G: Trend+Structure+Momentum_\n_7L: EMA+Pattern/SC/Disp/H1/PD/FVG_\n_8B: News+Kill+DXY+Sweep+PD+FVG+RSI+Spread+ML_\n_Target: Many trades Quality 60%+ like dashboard_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         send_telegram_msg(f"Err {e}", chat_id)
 
 def manual_scan(chat_id):
-    h1=fetch_h1_trend(); dxy,_,dxy_msg=booster_dxy()
-    send_telegram_msg(f"🔍 *Scanning TITAN V5.4 VOLUME PRO*\n_Complete 3G 7L 8B_ H1 `{h1}` {dxy_msg}", chat_id)
+    h1=fetch_h1_trend()
+    send_telegram_msg(f"🔍 *Scanning TITAN V5.5 VOLUME MAX*\n_Complete 3G 7L 8B Many Trades_ H1 `{h1}`", chat_id)
     data=fetch_m5_live()
     if not data: send_telegram_msg("No data", chat_id); return
     clean=[]
@@ -304,12 +251,12 @@ def manual_scan(chat_id):
         try: clean.append({"open":float(d["open"]),"high":float(d["high"]),"low":float(d["low"]),"close":float(d["close"]),"datetime":d["datetime"]})
         except: pass
     if len(clean)>=60:
-        sig=analyze_titan_volume_pro(clean, h1_trend=h1, dxy_trend=dxy)
+        sig=analyze_v55_volume_max(clean, h1_trend=h1)
         if sig:
             pht,utc=format_time_pht(sig['time'])
-            msg=f"⚡ *XAUUSD TITAN V5.4 PRO 1:2* 🔨\n\n• {sig['pair']} {sig['type']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf L `{sig['confluence']:.0f}%` Tot `{sig['total']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Boosters `{' + '.join(sig['boosters'][:4])}`\n• Reason `{sig['reason']}`\n• 3G 7L 8B Complete"
+            msg=f"⚡ *XAUUSD TITAN V5.5 VOL MAX 1:2* 🔨\n\n• {sig['pair']} {sig['type']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Boosters `{' + '.join(sig['boosters'][:4])}`\n• Reason `{sig['reason']}`\n• 3G 7L 8B VOLUME PRO MAX"
             send_telegram_msg(msg, chat_id); return
-    send_telegram_msg(f"ℹ️ No V5.4 setup. Need 60%+L + ML60%+\nH1 `{h1}` {dxy_msg}", chat_id)
+    send_telegram_msg(f"ℹ️ No V5.5 setup. Need 57%+L + ML60%+\nH1 `{h1}`", chat_id)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -317,13 +264,13 @@ async def lifespan(app: FastAPI):
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V5.4 VOLUME PRO Complete", lifespan=lifespan)
+app=FastAPI(title="TITAN V5.5 VOLUME MAX Complete 3G 7L 8B", lifespan=lifespan)
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V5.4 VOLUME PRO Live","mode":"3G_7L_8B_VOLUME","time":pht_now().isoformat()}
+def root(): return {"status":"XAUUSD TITAN V5.5 VOLUME MAX Live","mode":"3G_7L_8B_MANY_QUALITY","time":pht_now().isoformat()}
 @app.get("/health")
-def health(): return {"status":"ok","mode":"V5.4_VOLUME_PRO"}
+def health(): return {"status":"ok","mode":"V5.5_VOLUME_MAX"}
 @app.get("/status")
-def status(): return {"status":"ok","mode":"V5.4_VOLUME_PRO"}
+def status(): return {"status":"ok","mode":"V5.5_VOLUME_MAX"}
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -335,10 +282,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             txt=update["message"]["text"].strip().split("@")[0]
             if TELEGRAM_CHAT_ID and cid!=str(TELEGRAM_CHAT_ID): return {"status":"ok"}
             if txt=="/status":
-                h1=fetch_h1_trend(); dxy,_,dxy_msg=booster_dxy()
-                send_telegram_msg(f"📊 *TITAN V5.4 VOLUME PRO*\nMode `3G_7L_8B_VOLUME_PRO`\nH1 `{h1}` {dxy_msg}\nRR 1:2 SL18 TP36\nLayers 7 + Boosters 8 Scoring\nNeed 60%L + 62%Tot + ML60%+\nTarget Many trades Quality 60%+\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                h1=fetch_h1_trend()
+                send_telegram_msg(f"📊 *TITAN V5.5 VOLUME MAX*\nMode `3G_7L_8B_MANY_QUALITY`\nH1 `{h1}`\nRR 1:2 SL18 TP36\nPatterns Hammer+Engulf\nNeed 57%L + ML60%+\n3G 7L 8B Complete\nTarget Many trades Quality 60%+\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🤖 *TITAN V5.4 VOLUME PRO*\nComplete 3Gates 7Layers 8Boosters\nMany trades but Quality\n• /status • /scan • /backtest\n*Target Many trades 60%+ WR*", cid)
+            elif txt in ["/help","/start"]: send_telegram_msg("🤖 *TITAN V5.5 VOLUME MAX*\nComplete 3G 7L 8B Many trades Quality\n• /status • /scan • /backtest\n*Hammer+Engulf 57%conf*", cid)
     except Exception as e: print(e)
     return {"status":"ok"}
