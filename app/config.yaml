@@ -1,18 +1,17 @@
-  strategy_2_trend_pullback:
+  strategy_1_liquidity_sweep_fvg:
     enabled: true
-    description: "M15 trend pullback EMA50/200 filter on H1, ATR stop"
+    description: "Liquidity sweep of PDH/PDL/Asia + displacement + FVG limit entry"
     params:
-      timeframe: "M15"
-      higher_timeframe: "H1"
-      ema_fast: 50
-      ema_slow: 200
-      atr_period: 14
-      atr_sl_mult: 1.5
-      pullback_ema: 21
-      rsi_filter: false
-      rsi_period: 14
-      rsi_long_min: 40
-      rsi_short_max: 60
-      tp_r: 1.8
-      require_pinbar: true # <-- DAGDAG MO TO, true para hammer lang
-      pinbar_wick_mult: 2.0 # <-- DAGDAG MO TO
+      killzones: [["07:00","10:00"], ["12:00","15:00"]]
+      asia_range: ["00:00","05:00"]
+      sweep_buffer_pips: 2.0
+      displacement_atr_mult: 1.2
+      displacement_lookback: 3
+      fvg_min_size_pips: 1.0
+      fvg_max_age_bars: 10
+      sl_buffer_pips: 1.5
+      tp_r: 2.0
+      timeframe: "M5"
+      higher_timeframe: "M15"
+      require_pinbar: true
+      pinbar_wick_mult: 2.0
