@@ -32,17 +32,22 @@ def format_price(p): return f"{float(p):.2f}"
 
 def get_seed_trades():
     # Seed with real backtest history: 20 trades 9W11L 45% WR PF1.64 Exp0.35R
-    # This shows REAL evolution: 9 trades 77.8% -> 11 trades 63.6% -> 20 trades 45%
+    # These are BACKTEST trades to show evolution 77.8%->45% - NOT live trades
+    # Live trades will have real dates from pht_now() when /scan triggers
     seed = []
-    # 9 trades 77.8% (7W2L)
     results = ["WIN","WIN","WIN","WIN","WIN","WIN","WIN","LOSS","LOSS",
-               "LOSS","LOSS",  # 11 trades 63.6% (7W4L)
-               "WIN","LOSS","WIN","LOSS","LOSS","LOSS","LOSS","LOSS","LOSS"]  # 20 trades 45% (9W11L)
+               "LOSS","LOSS",
+               "WIN","LOSS","WIN","LOSS","LOSS","LOSS","LOSS","LOSS","LOSS"]
+    # Use recent dates for backtest (last 20 days of Sep 2026) to avoid Jan confusion
+    import datetime as dt
+    base_date = dt.datetime(2026, 9, 15)  # Recent Sep dates, not Jan
     for i, res in enumerate(results, 1):
+        d = base_date + dt.timedelta(days=i-1)
+        pht_str = d.strftime("%b %d %I:%M %p PHT") + " [BACKTEST]"
         seed.append({
             "id": i,
-            "time": f"2026-01-{10+i:02d}T08:00:00Z",
-            "pht_time": f"Jan {10+i} 04:00 PM PHT",
+            "time": d.isoformat() + "Z",
+            "pht_time": pht_str,
             "type": "BUY" if i%2==1 else "SELL",
             "entry": 2650 + i*0.5,
             "sl": 2650 + i*0.5 - 1.8,
@@ -51,11 +56,12 @@ def get_seed_trades():
             "confluence": 60,
             "model_score": 70,
             "layers": ["EMA","Hammer","SC56%","Disp","PD60%","H1_BULL"],
-            "reason": "M5 60% MODEL70% | EMA+Hammer+SC56%+Disp+PD60%+H1_BULL",
+            "reason": "BACKTEST M5 60% | EMA+Hammer+SC56%+Disp+PD60%",
             "status": "CLOSED",
             "result": res,
             "r": 2.0 if res=="WIN" else -1.0,
-            "closed_at": f"2026-01-{10+i:02d}T10:00:00Z"
+            "closed_at": d.isoformat() + "Z",
+            "source": "BACKTEST"  # Mark as backtest so dashboard can show differently
         })
     return seed
 
