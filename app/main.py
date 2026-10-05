@@ -65,6 +65,8 @@ def calculate_rsi(closes, period=14):
     rs=avg_gain/avg_loss
     return 100-(100/(1+rs))
 
+# M5 LOCK ONLY - REPORTED 45% WR (20-trade) was 77.8% (9-trade) NOT INTRINSIC
+# Thresholds: 0.80 disp / 0.56 SC / 60% conf (4/7=57.1% eff) / 60% MODEL / 1.5x wick / 55% body
 def is_bullish_pinbar(c):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
@@ -78,32 +80,13 @@ def is_bearish_pinbar(c):
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
     return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
 
-# M1 FLEX V5.9.3 - EVEN LOOSER FOR VALIDATION - TARGET 10-15 trades/day
-def is_bullish_pinbar_relaxed(c, tf="M1"):
-    o,h,l,cl=c['open'],c['high'],c['low'],c['close']
-    body=abs(cl-o); rng=h-l
-    if rng==0: return False
-    low_w=min(o,cl)-l
-    if tf=="M1":
-        return low_w>=1.0*max(body,rng*0.05) and body<=rng*0.75
-    return low_w>=1.5*max(body,rng*0.05) and body<=rng*0.55
-
-def is_bearish_pinbar_relaxed(c, tf="M1"):
-    o,h,l,cl=c['open'],c['high'],c['low'],c['close']
-    body=abs(cl-o); rng=h-l
-    if rng==0: return False
-    up_w=h-max(o,cl)
-    if tf=="M1":
-        return up_w>=1.0*max(body,rng*0.05) and body<=rng*0.75
-    return up_w>=1.5*max(body,rng*0.05) and body<=rng*0.55
-
 def fetch_data(symbol, interval, outputsize):
     url="https://api.twelvedata.com/time_series"
     params={"symbol":symbol,"interval":interval,"outputsize":outputsize,"timezone":"UTC","apikey":TWELVE_DATA_API_KEY}
     try:
         res=requests.get(url,params=params,timeout=12).json()
         if "values" not in res:
-            print(f"TwelveData no values for {interval} {outputsize}: {res.get('message','')} {res.get('code','')}")
+            print(f"No values {interval} {outputsize}: {res.get('message','')}")
             return None
         return res["values"]
     except Exception as e:
@@ -130,7 +113,6 @@ def fetch_h1_trend():
     return "BULL" if e20>e50 else "BEAR" if e20<e50 else None
 
 def fetch_hist_tf(interval, outputsize=3000):
-    # Try smaller chunks if 10k fails for 1min
     for attempt_size in [outputsize, 5000, 3000, 1000]:
         vals=fetch_data("XAU/USD", interval, attempt_size)
         if vals:
@@ -140,15 +122,11 @@ def fetch_hist_tf(interval, outputsize=3000):
                 for col in ['open','high','low','close']: df[col]=df[col].astype(float)
                 df['weekday']=df['datetime'].dt.weekday
                 df=df[df['weekday']<5]; df=df[df['high']>df['low']]
-                print(f"Fetched {interval} {attempt_size} -> {len(df)} bars after filter")
                 return df.to_dict('records')
-            except Exception as e:
-                print(f"Parse error {interval} {attempt_size}: {e}")
-                continue
-        print(f"Fetch failed {interval} {attempt_size}, trying smaller")
+            except: continue
     return None
 
-def generate_chart_with_markings(window, sig, tf="M1"):
+def generate_chart_with_markings(window, sig, tf="M5"):
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -185,7 +163,7 @@ def generate_chart_with_markings(window, sig, tf="M1"):
             rect = mpatches.Rectangle((i-0.3, body_bottom), 0.6, body_height, facecolor=color, edgecolor=color)
             ax.add_patch(rect)
             if i==len(candles)-1:
-                ax.annotate(f'V5.9.3 {tf} {sig["type"]}\nConf {sig["confluence"]:.0f}% MODEL {sig["model_score"]:.0f}%', xy=(i, l), xytext=(i-12, l- (max(highs)-min(lows))*0.14),
+                ax.annotate(f'V6.0 {tf} {sig["type"]}\nConf {sig["confluence"]:.0f}% MODEL {sig["model_score"]:.0f}%', xy=(i, l), xytext=(i-12, l- (max(highs)-min(lows))*0.14),
                             color='#22c55e', fontsize=6, fontweight='bold',
                             arrowprops=dict(facecolor='#22c55e', shrink=0.05, width=1, headwidth=5),
                             bbox=dict(boxstyle="round,pad=0.3", facecolor='black', edgecolor='#22c55e'))
@@ -202,12 +180,12 @@ def generate_chart_with_markings(window, sig, tf="M1"):
         ax.axhline(y=tp, color='#22c55e', linestyle=':', linewidth=1.0, label=f'TP {tp}')
         ax.fill_between(x_vals, sl, entry, color='#ef4444', alpha=0.1)
         ax.fill_between(x_vals, entry, tp, color='#22c55e', alpha=0.1)
-        ax.set_title(f"XAUUSD {tf} {sig['type']} V5.9.3 PAPER | {sig['reason']} | {format_time_pht(sig['time'])[0]}", color='white', fontsize=8, fontweight='bold')
+        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.0 M5 LOCK ONLY PAPER | {sig['reason']} | {format_time_pht(sig['time'])[0]}", color='white', fontsize=8, fontweight='bold')
         ax.set_ylabel('Price', color='white')
         ax.tick_params(colors='white')
         ax.legend(loc='upper left', fontsize=6, facecolor='black', edgecolor='white', labelcolor='white')
         ax.grid(True, alpha=0.15, color='white')
-        chart_path = f"/tmp/chart_{tf}_{sig['type']}_V593.png"
+        chart_path = f"/tmp/chart_{tf}_{sig['type']}_V60.png"
         plt.tight_layout()
         plt.savefig(chart_path, facecolor='black', dpi=150)
         plt.close()
@@ -216,14 +194,11 @@ def generate_chart_with_markings(window, sig, tf="M1"):
         print(f"Chart gen error: {e}")
         return None
 
+# V6.0 M5 LOCK ONLY - M1/M15 DISABLED due to negative expectancy
 def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
-    # V5.9.3: Kill Zone expanded to 06-20 UTC for M1 to get more trades
-    if tf=="M5" or tf=="M15":
-        if dt.hour<7 or dt.hour>19: return None
-    else: # M1 expanded 06-20 UTC
-        if dt.hour<6 or dt.hour>20: return None
+    if dt.hour<7 or dt.hour>19: return None
 
     oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
     e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
@@ -233,23 +208,11 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
 
-    if tf=="M1":
-        # V5.9.3 LOOSER: Wick 1.0x / Body 75% / Disp 0.30 / SC 38% / Conf 40% (3/7=42.9% eff) / MODEL 45%
-        # PD60 OPTIONAL, FVG/StrDisp OPTIONAL, RSI OFF for M1
-        disp_req, sc_req, conf_req, model_req = 0.30, 0.38, 40, 45
-        bullish=is_bullish_pinbar_relaxed(c0, "M1")
-        bearish=is_bearish_pinbar_relaxed(c0, "M1")
-        rsi_high, rsi_low = 85, 15  # RSI OFF effectively for M1
-    elif tf=="M5":
-        disp_req, sc_req, conf_req, model_req = 0.80, 0.56, 60, 60
-        bullish=is_bullish_pinbar(c0)
-        bearish=is_bearish_pinbar(c0)
-        rsi_high, rsi_low = 70, 30
-    else: # M15 DISABLED
-        disp_req, sc_req, conf_req, model_req = 0.75, 0.52, 85, 75
-        bullish=is_bullish_pinbar(c0)
-        bearish=is_bearish_pinbar(c0)
-        rsi_high, rsi_low = 70, 30
+    # M5 LOCK ONLY
+    disp_req, sc_req, conf_req, model_req = 0.80, 0.56, 60, 60
+    bullish=is_bullish_pinbar(c0)
+    bearish=is_bearish_pinbar(c0)
+    rsi_high, rsi_low = 70, 30
 
     if body<prev*disp_req: return None
     if not bullish and not bearish: return None
@@ -262,7 +225,6 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
 
     pd60_ok=False
     fvg_ok=False
-    strong_disp_ok=False
     try:
         high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
         rng_n=high_n-low_n
@@ -279,18 +241,6 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03:
             fvg_ok=True
     except: pass
-    try:
-        if bullish:
-            if body>=prev*0.55 and c0['close']>c0['open']:
-                strong_disp_ok=True
-            elif c0['close']>c1['high']:
-                strong_disp_ok=True
-        else:
-            if body>=prev*0.55 and c0['close']<c0['open']:
-                strong_disp_ok=True
-            elif c0['close']<c1['low']:
-                strong_disp_ok=True
-    except: pass
 
     layers=0; logs=[]
     if (bullish and c0['close']>e20>e50) or (bearish and c0['close']<e20<e50):
@@ -298,37 +248,20 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     layers+=1; logs.append("Hammer")
     if sc>=sc_req: layers+=1; logs.append(f"SC{int(sc*100)}%")
     if body>=prev*disp_req: layers+=1; logs.append("Disp")
-
-    if tf=="M1":
-        if pd60_ok:
-            layers+=1; logs.append("PD60%")
-        if fvg_ok:
-            layers+=1; logs.append("FVG")
-        elif strong_disp_ok:
-            layers+=1; logs.append("StrDisp")
-        layers+=1; logs.append("M1-LOOSER-V3")
-    else:
-        if pd60_ok:
-            layers+=1; logs.append("PD60%")
-        if fvg_ok:
-            layers+=1; logs.append("FVG")
-        if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
-            layers+=1; logs.append(f"H1_{h1_trend}")
+    if pd60_ok:
+        layers+=1; logs.append("PD60%")
+    if fvg_ok:
+        layers+=1; logs.append("FVG")
+    if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
+        layers+=1; logs.append(f"H1_{h1_trend}")
 
     conf=layers/7*100
     if conf<conf_req: return None
 
-    if tf=="M5":
-        if bullish and h1_trend=="BEAR" and conf<68: return None
-        if bearish and h1_trend=="BULL" and conf<68: return None
-        if bullish and rsi>rsi_high: return None
-        if bearish and rsi<rsi_low: return None
-    elif tf=="M1":
-        # RSI OFF for V5.9.3 M1 to increase frequency
-        pass
-    else:
-        if bullish and rsi>rsi_high: return None
-        if bearish and rsi<rsi_low: return None
+    if bullish and h1_trend=="BEAR" and conf<68: return None
+    if bearish and h1_trend=="BULL" and conf<68: return None
+    if bullish and rsi>rsi_high: return None
+    if bearish and rsi<rsi_low: return None
 
     last_10_lows=[c['low'] for c in window[1:11]]
     last_10_highs=[c['high'] for c in window[1:11]]
@@ -337,9 +270,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     model_score=min(98, 44+conf*0.55+(8 if swept else 0))
     if model_score<model_req: return None
 
-    if tf=="M1": sl_d, tp_d = 0.8, 1.6
-    elif tf=="M5": sl_d, tp_d = 1.8, 3.6
-    else: sl_d, tp_d = 3.0, 6.0
+    sl_d, tp_d = 1.8, 3.6
 
     entry=round(c0['close'],2)
     sl=round(entry-sl_d if bullish else entry+sl_d,2)
@@ -348,7 +279,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
         "pinbar":"Hammer","h1":h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,"layers":logs,
         "boosters":[f"KILL {dt.hour}UTC", f"MODEL {model_score:.0f}%"],
-        "reason":f"{tf} {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)}", "tf":tf
+        "reason":f"M5 {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)}", "tf":"M5"
     }
 
 def run_sim_tf(records, tf="M5"):
@@ -383,48 +314,30 @@ def run_backtest(chat_id):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
-    send_telegram_msg("⏳ *TITAN V5.9.3 M1 LOOSER V3 - M15 DISABLED - RETRY FETCH*\n_M1 Wick1.0x Body75% Disp0.30 SC38% Conf40% MODEL45% RSI OFF KillZone 06-20_", chat_id)
+    send_telegram_msg("⏳ *TITAN V6.0 M5 LOCK ONLY PAPER*\n_M1/M15 DISABLED due to 0% WR and -0.25R_\n_M5 REPORTED 45% (20-trade) was 77.8% (9-trade) NOT intrinsic_", chat_id)
     try:
         rec_m5=fetch_hist_tf("5min", 5000)
-        rec_m1=fetch_hist_tf("1min", 10000)
-        rec_m15=fetch_hist_tf("15min", 5000)
+        rec_m5_large=fetch_hist_tf("5min", 10000)
         
         results={}
         if rec_m5:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5, tf="M5")
-            results['M5']= (t,w,l,wr,net,exp,pf, len(rec_m5))
-        else:
-            send_telegram_msg("⚠️ M5 fetch failed", chat_id)
-        if rec_m1:
-            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m1, tf="M1")
-            results['M1']= (t,w,l,wr,net,exp,pf, len(rec_m1))
-        else:
-            send_telegram_msg("⚠️ M1 fetch failed - TwelveData 1min limit? Trying smaller size next", chat_id)
-        if rec_m15:
-            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m15, tf="M15")
-            results['M15']= (t,w,l,wr,net,exp,pf, len(rec_m15))
+            results['M5_5k']= (t,w,l,wr,net,exp,pf, len(rec_m5))
+        if rec_m5_large:
+            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5")
+            results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
 
-        total_trades=sum([v[0] for v in results.values() if v[0]>0 and v[0] and results.get('M15', (0,))[0]==0 or True])
-        # Only M5+M1 for combined, exclude M15 disabled
-        m5_m1_trades = results.get('M5', (0,))[0] + results.get('M1', (0,))[0] if 'M5' in results or 'M1' in results else 0
-        total_wins= results.get('M5', (0,0))[1] + results.get('M1', (0,0))[1]
-        total_losses= results.get('M5', (0,0,0))[2] + results.get('M1', (0,0,0))[2]
-        total_net= results.get('M5', (0,0,0,0,0))[4] + results.get('M1', (0,0,0,0,0))[4]
-        combined_wr=round(total_wins/(total_wins+total_losses)*100,1) if total_wins+total_losses>0 else 0
-        combined_exp=round(total_net/(results.get('M5', (0,))[0] + results.get('M1', (0,))[0]),2) if (results.get('M5', (0,))[0] + results.get('M1', (0,))[0])>0 else 0
-        combined_pf=round((total_wins*2)/(total_losses*1),2) if total_losses>0 else 0
-
-        msg=f"📊 *XAUUSD TITAN V5.9.3 M1 LOOSER V3 - RETRY FETCH*\n\n"
-        for tf in ["M5","M1","M15"]:
-            if tf in results:
-                t,w,l,wr,net,exp,pf, n = results[tf]
-                status = "LOCK REPORTED 45% (was 77.8% 9-trade)" if tf=="M5" else "LOOSER V3 Wick1.0 Body75 Disp0.30 SC38 Conf40 MODEL45 RSI OFF" if tf=="M1" else "DISABLED 85%"
-                msg+=f"🔹 *{tf} {status}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
-        msg+=f"🔹 *COMBINED M5+M1 (M15 disabled)*:\n Trades `{results.get('M5',(0,))[0] + results.get('M1',(0,))[0]}` | W `{total_wins}` L `{total_losses}` | WR `{combined_wr}%` | PF `{combined_pf}` | Exp `{combined_exp}R` | Net `{total_net}R`\n\n"
-        msg+=f"🔒 _V5.9.3: M1 Wick1.0x Body75% Disp0.30 SC38% Conf40% eff 3/7=42.9% MODEL45% PD60 OPTIONAL FVG/StrDisp OPTIONAL RSI OFF KillZone 06-20 UTC_\n"
-        msg+=f"_M5 LOCK: thresholds 0.80/0.56/60%/60%/1.5x/55% untouched - REPORTED 45% WR (20-trade) was 77.8% (9-trade) NOT intrinsic_\n"
-        msg+=f"_FIX: Retry fetch for M1 1min with smaller sizes if 10k fails_\n"
-        msg+=f"_TARGET: 100-200 M1 trades for validation_"
+        msg=f"📊 *XAUUSD TITAN V6.0 M5 LOCK ONLY - M1/M15 DISABLED*\n_M1 LOOSER V3 FAILED 0% WR 46L - M15 -0.25R - DISABLED_\n\n"
+        for key in ["M5_5k","M5_10k"]:
+            if key in results:
+                t,w,l,wr,net,exp,pf, n = results[key]
+                label = "M5 5k bars" if "5k" in key else "M5 10k bars (bigger sample)"
+                msg+=f"🔹 *{label}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
+        msg+=f"🔒 _V6.0: M5 LOCK ONLY thresholds 0.80 disp 0.56 SC 60% conf 60% MODEL 1.5x wick 55% body 07-19 UTC_\n"
+        msg+=f"_M1 DISABLED: V5.9.3 LOOSER V3 produced 46 trades 0W-46L WR 0% Exp -1.0R Net -46R - TOO LOOSE_\n"
+        msg+=f"_M15 DISABLED: 25% WR Exp -0.25R - NO TRADE better_\n"
+        msg+=f"_LESSON: Frequency increase without quality = 0% WR - Keep M5 LOCK ONLY until 100-200 sample_\n"
+        msg+=f"_REPORTED 77.8% was 9-trade sample, 63.6% was 11-trade, 45% is 20-trade - Regression to mean - Need 100+ trades_"
 
         send_telegram_msg(msg, chat_id)
     except Exception as e:
@@ -436,41 +349,43 @@ def manual_scan(chat_id, auto=False):
         send_telegram_msg("🚫 LIVE BLOCKED - SAFETY LOCK PAPER ONLY", chat_id)
         return
     h1=fetch_h1_trend()
-    found=False
-    for tf, interval in [("M5","5min"),("M1","1min")]:
-        data=fetch_live_tf(interval)
-        if not data: continue
-        clean=[]
-        for d in data:
-            try:
-                o=float(d["open"]); h=float(d["high"]); lo=float(d["low"]); c=float(d["close"])
-                if h>lo and o>0 and c>0:
-                    clean.append({"open":o,"high":h,"low":lo,"close":c,"datetime":d["datetime"]})
-            except: pass
-        if len(clean)<60: continue
-        sig=analyze_titan_mtf(clean, tf=tf, h1_trend=h1)
-        if sig:
-            pht,utc=format_time_pht(sig['time'])
-            caption = f"{'🤖 AUTO' if auto else '⚡ MANUAL'} {tf} 5M XAUUSD {tf} 1:2 V5.9.3 PAPER 🔨\n\n• {sig['pair']} {sig['type']} {sig['tf']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:2\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` MODEL `{sig['model_score']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• {tf} {'LOCK REPORTED 45%' if tf=='M5' else 'LOOSER V3 V5.9.3'} PAPER ONLY"
-            chart_path = generate_chart_with_markings(clean, sig, tf=tf)
-            if chart_path and os.path.exists(chart_path):
-                send_telegram_photo(chart_path, caption, chat_id)
-            else:
-                send_telegram_msg(caption, chat_id)
-            found=True
-            break
-    if not found and not auto:
-        send_telegram_msg(f"ℹ️ No setup M5/M1 V5.9.3 PAPER - M15 DISABLED\nH1 `{h1}`\nM5 LOCK REPORTED 45% (was 77.8%) 60% eff\nM1 LOOSER V3 40% eff 3/7=42.9% MODEL45% Wick1.0x Body75% Disp0.30 SC38% RSI OFF KillZone 06-20\nTry ulit 5 mins! PAPER ONLY", chat_id)
+    data=fetch_live_tf("5min")
+    if not data:
+        if not auto:
+            send_telegram_msg("Data fail", chat_id)
+        return
+    clean=[]
+    for d in data:
+        try:
+            o=float(d["open"]); h=float(d["high"]); lo=float(d["low"]); c=float(d["close"])
+            if h>lo and o>0 and c>0:
+                clean.append({"open":o,"high":h,"low":lo,"close":c,"datetime":d["datetime"]})
+        except: pass
+    if len(clean)<60:
+        if not auto:
+            send_telegram_msg("Not enough bars", chat_id)
+        return
+    sig=analyze_titan_mtf(clean, tf="M5", h1_trend=h1)
+    if sig:
+        pht,utc=format_time_pht(sig['time'])
+        caption = f"{'🤖 AUTO' if auto else '⚡ MANUAL'} M5 5M XAUUSD M5 1:2 V6.0 PAPER 🔨\n\n• {sig['pair']} {sig['type']} M5 {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:2\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` MODEL `{sig['model_score']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• M5 LOCK ONLY PAPER ONLY - M1/M15 DISABLED"
+        chart_path = generate_chart_with_markings(clean, sig, tf="M5")
+        if chart_path and os.path.exists(chart_path):
+            send_telegram_photo(chart_path, caption, chat_id)
+        else:
+            send_telegram_msg(caption, chat_id)
+    else:
+        if not auto:
+            send_telegram_msg(f"ℹ️ No setup M5 V6.0 PAPER ONLY - M1/M15 DISABLED\nH1 `{h1}`\nM5 LOCK REPORTED 45% (20-trade was 77.8% 9-trade) 60% conf 4/7 eff 0.80 disp 0.56 SC 1.5x wick 55% body\nM1 DISABLED: 0% WR 46L\nM15 DISABLED: -0.25R\nTry ulit 5 mins! PAPER ONLY", chat_id)
 
 def auto_scan_job():
     try:
         if MASTER_LIVE_ENABLE:
-            print("🚫 LIVE BLOCKED")
             return
         now_utc = datetime.datetime.utcnow()
         if not TELEGRAM_CHAT_ID: return
-        if not (6 <= now_utc.hour <= 20): return
-        print(f"[AUTO-SCAN V5.9.3 PAPER M15 DISABLED] {now_utc} scanning M5->M1 only...")
+        if not (7 <= now_utc.hour <= 19): return
+        print(f"[AUTO-SCAN V6.0 M5 LOCK ONLY] {now_utc} scanning M5 only...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
     except Exception as e:
         print(f"Auto scan error: {e}")
@@ -478,19 +393,19 @@ def auto_scan_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not scheduler.running:
-        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v593_m1_looser_v3_m15_disabled_paper_autoscan_5m', replace_existing=True)
+        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v60_m5_lock_only_paper_autoscan_5m', replace_existing=True)
         scheduler.start()
-        print("✅ TITAN V5.9.3 M1 LOOSER V3 M15 DISABLED PAPER AUTO-SCAN 06-20 UTC started!")
+        print("✅ TITAN V6.0 M5 LOCK ONLY PAPER AUTO-SCAN 07-19 UTC started! M1/M15 DISABLED")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V5.9.3 M1 LOOSER V3 M15 DISABLED", lifespan=lifespan)
+app=FastAPI(title="TITAN V6.0 M5 LOCK ONLY M1/M15 DISABLED", lifespan=lifespan)
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V5.9.3 M1 LOOSER V3 M15 DISABLED PAPER ONLY Live","mode":"V593_M1_LOOSER_V3_M15_DISABLED_PAPER","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK + M1 LOOSER V3 only M15 DISABLED","live_enabled":MASTER_LIVE_ENABLE}
+def root(): return {"status":"XAUUSD TITAN V6.0 M5 LOCK ONLY PAPER ONLY Live","mode":"V60_M5_LOCK_ONLY_M1_M15_DISABLED","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK ONLY M1/M15 DISABLED","live_enabled":MASTER_LIVE_ENABLE}
 @app.get("/health")
-def health(): return {"status":"ok","mode":"V593_M1_LOOSER_V3_M15_DISABLED_PAPER","auto_scan":"5m PAPER V5.9.3 M5+M1","live_enabled":MASTER_LIVE_ENABLE}
+def health(): return {"status":"ok","mode":"V60_M5_LOCK_ONLY","auto_scan":"5m PAPER V6.0 M5 ONLY","live_enabled":MASTER_LIVE_ENABLE}
 @app.get("/status")
-def status(): return {"status":"ok","mode":"V593_M1_LOOSER_V3_M15_DISABLED_PAPER","live_enabled":MASTER_LIVE_ENABLE}
+def status(): return {"status":"ok","mode":"V60_M5_LOCK_ONLY","live_enabled":MASTER_LIVE_ENABLE}
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -506,9 +421,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 return {"status":"blocked"}
             if txt=="/status":
                 h1=fetch_h1_trend()
-                send_telegram_msg(f"🔒 *TITAN V5.9.3 M1 LOOSER V3 M15 DISABLED PAPER*\nMode `V593_M15_DISABLED_V3`\nH1 `{h1}`\nM1 LOOSER V3 40% eff 3/7=42.9% MODEL45% Wick1.0x Body75% Disp0.30 SC38% PD60 OPTIONAL RSI OFF KillZone 06-20 UTC RR1:2 SL0.8 TP1.6\nM5 LOCK REPORTED 45% (was 77.8% 9-trade) 60% eff 4/7 0.80 disp 0.56 SC 1.5x wick 55% body MODEL60% untouched\nM15 DISABLED -0.25R expectancy\nSafety Lock MASTER_LIVE_ENABLE=False PAPER ONLY\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN V6.0 M5 LOCK ONLY PAPER*\nMode `V60_M5_ONLY`\nH1 `{h1}`\nM5 LOCK REPORTED 45% (20-trade was 77.8% 9-trade) 60% eff 4/7 0.80 disp 0.56 SC 1.5x wick 55% body MODEL60% untouched RR1:2 SL1.8 TP3.6\nM1 DISABLED: V5.9.3 produced 46 trades 0W-46L WR 0% Exp -1.0R Net -46R - TOO LOOSE - Frequency without quality = 0% WR\nM15 DISABLED: 25% WR Exp -0.25R\nSafety Lock MASTER_LIVE_ENABLE=False PAPER ONLY\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.9.3 M1 LOOSER V3 M15 DISABLED PAPER*\n_M5 LOCK REPORTED 45% untouched_\n_M1 LOOSER V3 Wick1.0 Body75 Disp0.30 SC38 Conf40 MODEL45_\n_M15 DISABLED_\n• /status • /scan • /backtest", cid)
+            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V6.0 M5 LOCK ONLY PAPER*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF 1.64_\n• /status • /scan • /backtest", cid)
     except Exception as e: print(e)
     return {"status":"ok"}
