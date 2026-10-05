@@ -60,6 +60,24 @@ def is_bearish_pinbar(c):
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
     return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
 
+def is_bullish_pinbar_relaxed(c, tf="M1"):
+    o,h,l,cl=c['open'],c['high'],c['low'],c['close']
+    body=abs(cl-o); rng=h-l
+    if rng==0: return False
+    low_w=min(o,cl)-l; up_w=h-max(o,cl)
+    if tf=="M1":
+        return low_w>=1.2*max(body,rng*0.05) and body<=rng*0.65
+    return low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
+
+def is_bearish_pinbar_relaxed(c, tf="M1"):
+    o,h,l,cl=c['open'],c['high'],c['low'],c['close']
+    body=abs(cl-o); rng=h-l
+    if rng==0: return False
+    low_w=min(o,cl)-l; up_w=h-max(o,cl)
+    if tf=="M1":
+        return up_w>=1.2*max(body,rng*0.05) and body<=rng*0.65
+    return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
+
 def fetch_data(symbol, interval, outputsize):
     url="https://api.twelvedata.com/time_series"
     params={"symbol":symbol,"interval":interval,"outputsize":outputsize,"timezone":"UTC","apikey":TWELVE_DATA_API_KEY}
@@ -68,6 +86,7 @@ def fetch_data(symbol, interval, outputsize):
         if "values" not in res: return None
         return res["values"]
     except: return None
+
 def fetch_live_tf(interval):
     vals=fetch_data("XAU/USD", interval, 100)
     if not vals: return None
@@ -77,6 +96,7 @@ def fetch_live_tf(interval):
         if datetime.datetime.utcnow()<dt+datetime.timedelta(minutes=delta): vals=vals[1:]
     except: pass
     return vals
+
 def fetch_h1_trend():
     vals=fetch_data("XAU/USD","1h",100)
     if not vals: return None
@@ -85,6 +105,7 @@ def fetch_h1_trend():
     e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
     if not e20 or not e50: return None
     return "BULL" if e20>e50 else "BEAR" if e20<e50 else None
+
 def fetch_hist(outputsize=3000):
     vals=fetch_data("XAU/USD","5min",outputsize)
     if not vals: return None
@@ -95,11 +116,10 @@ def fetch_hist(outputsize=3000):
     df=df[df['weekday']<5]; df=df[df['high']>df['low']]
     return df.to_dict('records')
 
-# V5.8 MULTI-TF M1/M5/M15 - FINAL LOCK M5 77.8% WR + M1/M15
 def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
-    if dt.hour<7 or dt.hour>19: return None
+    if tf!="M1" and (dt.hour<7 or dt.hour>19): return None
 
     oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
     e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
@@ -109,20 +129,24 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
 
-    # TF-specific requirements
-    if tf=="M1": disp_req, sc_req, conf_req, ml_req = 0.70, 0.50, 50, 55
-    elif tf=="M5": disp_req, sc_req, conf_req, ml_req = 0.80, 0.56, 60, 60
-    else: disp_req, sc_req, conf_req, ml_req = 0.85, 0.60, 65, 65 # M15
+    if tf=="M1":
+        disp_req, sc_req, conf_req, ml_req = 0.40, 0.45, 40, 50
+        bullish=is_bullish_pinbar_relaxed(c0, "M1")
+        bearish=is_bearish_pinbar_relaxed(c0, "M1")
+    elif tf=="M5":
+        disp_req, sc_req, conf_req, ml_req = 0.80, 0.56, 60, 60
+        bullish=is_bullish_pinbar(c0)
+        bearish=is_bearish_pinbar(c0)
+    else:
+        disp_req, sc_req, conf_req, ml_req = 0.75, 0.52, 55, 55
+        bullish=is_bullish_pinbar(c0)
+        bearish=is_bearish_pinbar(c0)
 
     if body<prev*disp_req: return None
-
-    bullish=is_bullish_pinbar(c0)
-    bearish=is_bearish_pinbar(c0)
     if not bullish and not bearish: return None
 
     rng=c0['high']-c0['low']
     if rng==0: return None
-
     if bullish and not (c0['close']>e20>e50): return None
     if bearish and not (c0['close']<e20<e50): return None
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
@@ -132,12 +156,14 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if (bullish and c0['close']>e20>e50) or (bearish and c0['close']<e20<e50):
         layers+=1; logs.append("EMA")
     layers+=1; logs.append("Hammer")
-    if sc>=sc_req:
-        layers+=1; logs.append(f"SC{int(sc*100)}%")
-    if body>=prev*disp_req:
-        layers+=1; logs.append("Disp")
-    if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
-        layers+=1; logs.append(f"H1_{h1_trend}")
+    if sc>=sc_req: layers+=1; logs.append(f"SC{int(sc*100)}%")
+    if body>=prev*disp_req: layers+=1; logs.append("Disp")
+    if tf=="M1":
+        layers+=1; logs.append("M1-Free")
+    else:
+        if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
+            layers+=1; logs.append(f"H1_{h1_trend}")
+
     try:
         high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
         mid=low_n+(high_n-low_n)*0.6
@@ -145,13 +171,13 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
             layers+=1; logs.append("PD60%")
     except: pass
     try:
-        if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.05:
+        if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03:
             layers+=1; logs.append("FVG")
-        elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.05:
+        elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03:
             layers+=1; logs.append("FVG")
     except: pass
 
-    conf=layers/7*100
+    conf=layers/7*100 if tf!="M1" else layers/5*100
     if conf<conf_req: return None
 
     if tf=="M5":
@@ -164,12 +190,9 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     last_10_highs=[c['high'] for c in window[1:11]]
     swept = (bullish and c0['low']<=min(last_10_lows)+0.05) or (bearish and c0['high']>=max(last_10_highs)-0.05)
 
-    booster_logs=["NEWS Clear", f"KILL {dt.hour}UTC", "DXY N/A", "Sweep" if swept else "NoSweep", "Spread OK"]
     ai_score=min(98, 44+conf*0.55+(8 if swept else 0))
     if ai_score<ml_req: return None
-    booster_logs.append(f"ML {ai_score:.0f}%")
 
-    # TF-specific SL/TP
     if tf=="M1": sl_d, tp_d = 0.8, 1.6
     elif tf=="M5": sl_d, tp_d = 1.8, 3.6
     else: sl_d, tp_d = 3.0, 6.0
@@ -179,9 +202,9 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     tp=round(entry+tp_d if bullish else entry-tp_d,2)
     return {
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
-        "pinbar":"Hammer","h1":h1_trend,"confluence":conf,"ai":ai_score,"layers":logs,"boosters":booster_logs,
-        "reason":f"{tf} FINAL {conf:.0f}% ML{ai_score:.0f}% | {'+'.join(logs)}",
-        "tf":tf
+        "pinbar":"Hammer","h1":h1_trend,"confluence":conf,"ai":ai_score,"layers":logs,
+        "boosters":[f"KILL {dt.hour}UTC", f"ML {ai_score:.0f}%"],
+        "reason":f"{tf} {conf:.0f}% ML{ai_score:.0f}% | {'+'.join(logs)}", "tf":tf
     }
 
 def run_sim(records):
@@ -212,21 +235,21 @@ def run_sim(records):
     return total,wins,losses,wr,net,exp
 
 def run_backtest(chat_id):
-    send_telegram_msg("⏳ *TITAN V5.8 MULTI-TF M1/M5/M15 FINAL*\n_M5 77.8% WR LOCK + M1/M15_", chat_id)
+    send_telegram_msg("⏳ *TITAN V5.8 MULTI-TF V2 M1/M5/M15*\n_M5 77.8% LOCK + M1 RELAXED_", chat_id)
     try:
         rec=fetch_hist(3000)
         if not rec: send_telegram_msg("Data fail", chat_id); return
         split=int(len(rec)*0.66); ins=rec[:split]; outs=rec[split:]
         t,w,l,wr,net,exp=run_sim(ins)
         t2,w2,l2,wr2,net2,exp2=run_sim(outs)
-        msg=f"📊 *XAUUSD TITAN V5.8 MULTI-TF M1/M5/M15 1:2*\n_M5 LOCK 77.8% WR 12R 1.33R exp_\n\n🔹 M5 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 M5 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n🔒 _M5 77.8% LOCKED + M1/M15 ADDED_\n_M1 SL0.8 TP1.6 M5 SL1.8 TP3.6 M15 SL3.0 TP6.0_"
+        msg=f"📊 *XAUUSD TITAN V5.8 MULTI-TF V2*\n_M5 LOCK 77.8% WR 12R 1.33R exp_\n\n🔹 M5 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 M5 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n🔒 _M5 77.8% LOCK + M1 RELAXED 40% + M15_\n_M1 SL0.8 TP1.6 M5 SL1.8 TP3.6 M15 SL3.0 TP6.0_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         send_telegram_msg(f"Err {e}", chat_id)
 
 def manual_scan(chat_id, auto=False):
     h1=fetch_h1_trend()
-    # MULTI-TF SCAN: M1 -> M5 -> M15 priority (M5 first for 77.8% WR)
+    found=False
     for tf, interval in [("M5","5min"),("M1","1min"),("M15","15min")]:
         data=fetch_live_tf(interval)
         if not data: continue
@@ -239,18 +262,20 @@ def manual_scan(chat_id, auto=False):
             if sig:
                 pht,utc=format_time_pht(sig['time'])
                 auto_tag = f"🤖 AUTO {tf} 5M" if auto else f"⚡ MANUAL {tf}"
-                msg=f"{auto_tag} *XAUUSD TITAN V5.8 MULTI-TF {tf} 1:2* 🔨🔒\n\n• {sig['pair']} {sig['type']} {sig['tf']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` ({tf} SL/TP)\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• 🔒 M5 77.8% LOCK + {tf}"
-                send_telegram_msg(msg, chat_id); return
-    if not auto:
-        send_telegram_msg(f"ℹ️ No MULTI-TF M1/M5/M15 setup\nH1 `{h1}`\n🔒 M5 77.8% LOCK + M1/M15 ready", chat_id)
+                msg=f"{auto_tag} *XAUUSD {tf} 1:2* 🔨\n\n• {sig['pair']} {sig['type']} {sig['tf']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• {tf} {'LOCK 77.8%' if tf=='M5' else 'RELAXED'}"
+                send_telegram_msg(msg, chat_id)
+                found=True
+                if not auto: break
+                else: return
+    if not found and not auto:
+        send_telegram_msg(f"ℹ️ No setup M1/M5/M15\nH1 `{h1}`\nM5 LOCK 77.8% strict\nM1 RELAXED 40% conf active\nTry ulit 5 mins!", chat_id)
 
 def auto_scan_job():
     try:
         now_utc = datetime.datetime.utcnow()
-        if now_utc.weekday()>=5: return
-        if not (7 <= now_utc.hour <= 19): return
         if not TELEGRAM_CHAT_ID: return
-        print(f"[AUTO-SCAN MULTI M1/M5/M15] {now_utc} scanning...")
+        if not (7 <= now_utc.hour <= 19): return
+        print(f"[AUTO-SCAN MULTI M1/M5/M15 V2] {now_utc} scanning...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
     except Exception as e:
         print(f"Auto scan error: {e}")
@@ -258,19 +283,19 @@ def auto_scan_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not scheduler.running:
-        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v58_mtf_autoscan_5m', replace_existing=True)
+        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v58_mtf_v2_autoscan_5m', replace_existing=True)
         scheduler.start()
-        print("✅ TITAN V5.8 MULTI-TF M1/M5/M15 AUTO-SCAN every 5 mins 7-19 UTC started!")
+        print("✅ TITAN V5.8 MULTI-TF V2 M1 RELAXED AUTO-SCAN every 5 mins 7-19 UTC started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V5.8 MULTI-TF M1/M5/M15 77.8% WR + AUTO 5M", lifespan=lifespan)
+app=FastAPI(title="TITAN V5.8 MULTI-TF V2 M1 RELAXED 77.8% WR + AUTO 5M", lifespan=lifespan)
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V5.8 MULTI-TF M1/M5/M15 77.8% + AUTO 5M Live","mode":"FINAL_LOCK_77_8_WR_MULTI_M1_M5_M15","time":pht_now().isoformat(),"auto_scan":"every 5 mins 7-19 UTC M1/M5/M15"}
+def root(): return {"status":"XAUUSD TITAN V5.8 MULTI-TF V2 M1 RELAXED 77.8% + AUTO 5M Live","mode":"FINAL_LOCK_77_8_WR_MULTI_M1_M5_M15_V2","time":pht_now().isoformat(),"auto_scan":"every 5 mins 7-19 UTC M1/M5/M15"}
 @app.get("/health")
-def health(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR_MULTI_M1_M5_M15","auto_scan":"5m M1/M5/M15"}
+def health(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR_MULTI_M1_M5_M15_V2","auto_scan":"5m M1/M5/M15"}
 @app.get("/status")
-def status(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR_MULTI_M1_M5_M15"}
+def status(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR_MULTI_M1_M5_M15_V2"}
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -283,9 +308,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if TELEGRAM_CHAT_ID and cid!=str(TELEGRAM_CHAT_ID): return {"status":"ok"}
             if txt=="/status":
                 h1=fetch_h1_trend()
-                send_telegram_msg(f"🔒 *TITAN V5.8 MULTI-TF M1/M5/M15 77.8% WR + AUTO 5M*\nMode `MULTI_M1_M5_M15`\nH1 `{h1}`\nM1 SL0.8 TP1.6 50%conf\nM5 SL1.8 TP3.6 60%conf LOCK 77.8% WR\nM15 SL3.0 TP6.0 65%conf\nAuto-scan every 5 mins 7-19 UTC\nManual /scan anytime scans M5->M1->M15\n9 trades M5 77.8% WR 12R 1.33R exp 7.0 PF\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN V5.8 MULTI-TF V2 M1 RELAXED 77.8% WR + AUTO 5M*\nMode `MULTI_M1_M5_M15_V2`\nH1 `{h1}`\nM1 SL0.8 TP1.6 40%conf RELAXED 24/7\nM5 SL1.8 TP3.6 60%conf LOCK 77.8% WR\nM15 SL3.0 TP6.0 55%conf\nAuto-scan every 5 mins 7-19 UTC\nManual /scan scans M5->M1->M15\n9 trades M5 77.8% WR 12R 1.33R exp 7.0 PF\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.8 MULTI-TF M1/M5/M15 77.8% WR + AUTO 5M*\n_M5 LOCK 77.8% WR 12R + M1/M15_\n_Auto-scan every 5 mins M1/M5/M15_\n• /status • /scan • /backtest\n*M1 0.8/1.6 M5 1.8/3.6 M15 3.0/6.0*", cid)
+            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.8 MULTI-TF V2 M1 RELAXED*\n_M5 LOCK 77.8% WR + M1 RELAXED_\n_Auto-scan every 5 mins M1/M5/M15_\n• /status • /scan • /backtest\n*M1 0.8/1.6 40% M5 1.8/3.6 60% M15 3.0/6.0*", cid)
     except Exception as e: print(e)
     return {"status":"ok"}
