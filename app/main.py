@@ -60,6 +60,7 @@ def calculate_rsi(closes, period=14):
     rs=avg_gain/avg_loss
     return 100-(100/(1+rs))
 
+# M5 LOCK - STRICT 77.8% WR - UNTOUCHED
 def is_bullish_pinbar(c):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
@@ -73,13 +74,14 @@ def is_bearish_pinbar(c):
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
     return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
 
+# M1 FLEX V5.9 - Controlled Relaxation 1.1x wick, 70% body
 def is_bullish_pinbar_relaxed(c, tf="M1"):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
     if tf=="M1":
-        return low_w>=1.2*max(body,rng*0.05) and body<=rng*0.65
+        return low_w>=1.1*max(body,rng*0.05) and body<=rng*0.70
     return low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
 
 def is_bearish_pinbar_relaxed(c, tf="M1"):
@@ -88,7 +90,7 @@ def is_bearish_pinbar_relaxed(c, tf="M1"):
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
     if tf=="M1":
-        return up_w>=1.2*max(body,rng*0.05) and body<=rng*0.65
+        return up_w>=1.1*max(body,rng*0.05) and body<=rng*0.70
     return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
 
 def fetch_data(symbol, interval, outputsize):
@@ -166,8 +168,8 @@ def generate_chart_with_markings(window, sig, tf="M1"):
             rect = mpatches.Rectangle((i-0.3, body_bottom), 0.6, body_height, facecolor=color, edgecolor=color)
             ax.add_patch(rect)
             if i==len(candles)-1:
-                ax.annotate(f'HAMMER\nSC{int(sig["confluence"])}%\n{tf} {sig["type"]}', xy=(i, l), xytext=(i-8, l- (max(highs)-min(lows))*0.08),
-                            color='#22c55e', fontsize=8, fontweight='bold',
+                ax.annotate(f'HAMMER V5.9\n{tf} {sig["type"]}\nConf {sig["confluence"]:.0f}%', xy=(i, l), xytext=(i-10, l- (max(highs)-min(lows))*0.10),
+                            color='#22c55e', fontsize=7, fontweight='bold',
                             arrowprops=dict(facecolor='#22c55e', shrink=0.05, width=1, headwidth=5),
                             bbox=dict(boxstyle="round,pad=0.3", facecolor='black', edgecolor='#22c55e'))
         x_vals = list(range(len(candles)))
@@ -183,89 +185,148 @@ def generate_chart_with_markings(window, sig, tf="M1"):
         ax.axhline(y=tp, color='#22c55e', linestyle=':', linewidth=1.0, label=f'TP {tp}')
         ax.fill_between(x_vals, sl, entry, color='#ef4444', alpha=0.1)
         ax.fill_between(x_vals, entry, tp, color='#22c55e', alpha=0.1)
-        ax.set_title(f"XAUUSD {tf} {sig['type']} | {sig['reason']} | {format_time_pht(sig['time'])[0]}", color='white', fontsize=11, fontweight='bold')
+        ax.set_title(f"XAUUSD {tf} {sig['type']} V5.9 | {sig['reason']} | {format_time_pht(sig['time'])[0]}", color='white', fontsize=10, fontweight='bold')
         ax.set_ylabel('Price', color='white')
         ax.tick_params(colors='white')
         ax.legend(loc='upper left', fontsize=7, facecolor='black', edgecolor='white', labelcolor='white')
         ax.grid(True, alpha=0.15, color='white')
-        chart_path = f"/tmp/chart_{tf}_{sig['type']}.png"
+        chart_path = f"/tmp/chart_{tf}_{sig['type']}_V59.png"
         plt.tight_layout()
         plt.savefig(chart_path, facecolor='black', dpi=150)
         plt.close()
         return chart_path
     except Exception as e:
         print(f"Chart gen error: {e}")
-        import traceback; traceback.print_exc()
         return None
 
+# V5.9 M1 FLEX Controlled Relaxation + M5 LOCK untouched
 def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
     if tf!="M1" and (dt.hour<7 or dt.hour>19): return None
+    if tf=="M1" and (dt.hour<7 or dt.hour>19): return None  # Keep Kill Zone ON for M1 as per proposal
+
     oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
     e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
     rsi=calculate_rsi(closes,14)
     if not e20 or not e50: return None
+
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
+
     if tf=="M1":
-        disp_req, sc_req, conf_req, ml_req = 0.40, 0.45, 40, 50
+        # V5.9 M1 FLEX - Controlled Relaxation per user proposal
+        disp_req, sc_req, conf_req, ml_req = 0.35, 0.42, 45, 48
         bullish=is_bullish_pinbar_relaxed(c0, "M1")
         bearish=is_bearish_pinbar_relaxed(c0, "M1")
+        rsi_extreme_high = 78
+        rsi_extreme_low = 22
     elif tf=="M5":
+        # M5 LOCK - UNTOUCHED - 77.8% WR / 7.0 PF
         disp_req, sc_req, conf_req, ml_req = 0.80, 0.56, 60, 60
         bullish=is_bullish_pinbar(c0)
         bearish=is_bearish_pinbar(c0)
-    else:
+        rsi_extreme_high = 70
+        rsi_extreme_low = 30
+    else: # M15
         disp_req, sc_req, conf_req, ml_req = 0.75, 0.52, 55, 55
         bullish=is_bullish_pinbar(c0)
         bearish=is_bearish_pinbar(c0)
+        rsi_extreme_high = 70
+        rsi_extreme_low = 30
+
     if body<prev*disp_req: return None
     if not bullish and not bearish: return None
+
     rng=c0['high']-c0['low']
     if rng==0: return None
     if bullish and not (c0['close']>e20>e50): return None
     if bearish and not (c0['close']<e20<e50): return None
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
     if sc<sc_req: return None
+
+    # --- V5.9 PD60 + FVG OR logic for M1 ---
+    pd60_ok=False
+    fvg_ok=False
+    strong_disp_ok=False
+    try:
+        high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
+        mid=low_n+(high_n-low_n)*0.6
+        if (bullish and c0['close']<mid) or (bearish and c0['close']>mid):
+            pd60_ok=True
+    except: pass
+    try:
+        if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03:
+            fvg_ok=True
+        elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03:
+            fvg_ok=True
+    except: pass
+    try:
+        # Strong displacement/reclaim: body >=0.55x prev OR close reclaim previous high/low
+        if body>=prev*0.55:
+            strong_disp_ok=True
+        elif bullish and c0['close']>c1['high']:
+            strong_disp_ok=True
+        elif bearish and c0['close']<c1['low']:
+            strong_disp_ok=True
+    except: pass
+
     layers=0; logs=[]
     if (bullish and c0['close']>e20>e50) or (bearish and c0['close']<e20<e50):
         layers+=1; logs.append("EMA")
     layers+=1; logs.append("Hammer")
     if sc>=sc_req: layers+=1; logs.append(f"SC{int(sc*100)}%")
     if body>=prev*disp_req: layers+=1; logs.append("Disp")
+
+    # V5.9 M1 logic: PD60 required + (FVG OR strong disp/reclaim)
     if tf=="M1":
-        layers+=1; logs.append("M1-Free")
+        if not pd60_ok:
+            return None  # PD60 required for M1 V5.9
+        layers+=1; logs.append("PD60%")
+        if not (fvg_ok or strong_disp_ok):
+            return None  # Need FVG OR strong disp/reclaim
+        if fvg_ok:
+            layers+=1; logs.append("FVG")
+        else:
+            layers+=1; logs.append("StrDisp")
+        layers+=1; logs.append("M1-FLEX")
     else:
+        # M5/M15 original logic
+        if pd60_ok:
+            layers+=1; logs.append("PD60%")
+        if fvg_ok:
+            layers+=1; logs.append("FVG")
         if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
             layers+=1; logs.append(f"H1_{h1_trend}")
-    try:
-        high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
-        mid=low_n+(high_n-low_n)*0.6
-        if (bullish and c0['close']<mid) or (bearish and c0['close']>mid):
-            layers+=1; logs.append("PD60%")
-    except: pass
-    try:
-        if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03:
-            layers+=1; logs.append("FVG")
-        elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03:
-            layers+=1; logs.append("FVG")
-    except: pass
-    conf=layers/7*100 if tf!="M1" else layers/5*100
+
+    conf=layers/7*100
     if conf<conf_req: return None
+
+    # H1 filter and RSI - M5 strict
     if tf=="M5":
         if bullish and h1_trend=="BEAR" and conf<68: return None
         if bearish and h1_trend=="BULL" and conf<68: return None
-        if bullish and rsi>70: return None
-        if bearish and rsi<30: return None
+        if bullish and rsi>rsi_extreme_high: return None
+        if bearish and rsi<rsi_extreme_low: return None
+    elif tf=="M1":
+        # V5.9 M1: soft RSI filter to prevent extreme entries
+        if bullish and rsi>rsi_extreme_high: return None
+        if bearish and rsi<rsi_extreme_low: return None
+    else: # M15
+        if bullish and rsi>rsi_extreme_high: return None
+        if bearish and rsi<rsi_extreme_low: return None
+
     last_10_lows=[c['low'] for c in window[1:11]]
     last_10_highs=[c['high'] for c in window[1:11]]
     swept = (bullish and c0['low']<=min(last_10_lows)+0.05) or (bearish and c0['high']>=max(last_10_highs)-0.05)
+
     ai_score=min(98, 44+conf*0.55+(8 if swept else 0))
     if ai_score<ml_req: return None
+
     if tf=="M1": sl_d, tp_d = 0.8, 1.6
     elif tf=="M5": sl_d, tp_d = 1.8, 3.6
     else: sl_d, tp_d = 3.0, 6.0
+
     entry=round(c0['close'],2)
     sl=round(entry-sl_d if bullish else entry+sl_d,2)
     tp=round(entry+tp_d if bullish else entry-tp_d,2)
@@ -304,14 +365,14 @@ def run_sim(records):
     return total,wins,losses,wr,net,exp
 
 def run_backtest(chat_id):
-    send_telegram_msg("⏳ *TITAN V5.8 V3 WITH CHART*\n_M5 77.8% LOCK + M1 RELAXED + Chart_", chat_id)
+    send_telegram_msg("⏳ *TITAN V5.9 M1 FLEX V3 WITH CHART*\n_M5 77.8% LOCK untouched + M1 45% FLEX_", chat_id)
     try:
         rec=fetch_hist(3000)
         if not rec: send_telegram_msg("Data fail", chat_id); return
         split=int(len(rec)*0.66); ins=rec[:split]; outs=rec[split:]
         t,w,l,wr,net,exp=run_sim(ins)
         t2,w2,l2,wr2,net2,exp2=run_sim(outs)
-        msg=f"📊 *XAUUSD TITAN V5.8 V3 WITH CHART*\n_M5 LOCK 77.8% WR 12R 1.33R exp_\n\n🔹 M5 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 M5 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n🔒 _WITH AUTO CHART SCREENSHOT_"
+        msg=f"📊 *XAUUSD TITAN V5.9 M1 FLEX*\n_M5 LOCK 77.8% WR untouched_\n\n🔹 M5 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 M5 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n🔒 _M1 FLEX 45% ML48% PD60+(FVG/StrDisp) RSI78/22_\n_M1 0.8/1.6 M5 1.8/3.6 M15 3.0/6.0_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         send_telegram_msg(f"Err {e}", chat_id)
@@ -330,7 +391,8 @@ def manual_scan(chat_id, auto=False):
             sig=analyze_titan_mtf(clean, tf=tf, h1_trend=h1)
             if sig:
                 pht,utc=format_time_pht(sig['time'])
-                caption = f"🤖 AUTO {tf} 5M XAUUSD {tf} 1:2 🔨\n\n• {sig['pair']} {sig['type']} {sig['tf']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• {tf} {'LOCK 77.8%' if tf=='M5' else 'RELAXED'} WITH CHART"
+                auto_tag = f"🤖 AUTO {tf} 5M" if auto else f"⚡ MANUAL {tf}"
+                caption = f"{auto_tag} *XAUUSD {tf} 1:2 V5.9* 🔨\n\n• {sig['pair']} {sig['type']} {sig['tf']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• {tf} {'LOCK 77.8%' if tf=='M5' else 'FLEX 45% V5.9'} WITH CHART"
                 chart_path = generate_chart_with_markings(clean, sig, tf=tf)
                 if chart_path and os.path.exists(chart_path):
                     send_telegram_photo(chart_path, caption, chat_id)
@@ -340,14 +402,14 @@ def manual_scan(chat_id, auto=False):
                 if not auto: break
                 else: return
     if not found and not auto:
-        send_telegram_msg(f"ℹ️ No setup M1/M5/M15\nH1 `{h1}`\nM5 LOCK 77.8% strict\nM1 RELAXED 40% conf active\nTry ulit 5 mins!", chat_id)
+        send_telegram_msg(f"ℹ️ No setup M1/M5/M15 V5.9\nH1 `{h1}`\nM5 LOCK 77.8% strict 60%\nM1 FLEX 45% ML48% PD60+(FVG/StrDisp)\nTry ulit 5 mins!", chat_id)
 
 def auto_scan_job():
     try:
         now_utc = datetime.datetime.utcnow()
         if not TELEGRAM_CHAT_ID: return
         if not (7 <= now_utc.hour <= 19): return
-        print(f"[AUTO-SCAN V3 CHART] {now_utc} scanning...")
+        print(f"[AUTO-SCAN V5.9 V3 CHART] {now_utc} scanning...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
     except Exception as e:
         print(f"Auto scan error: {e}")
@@ -355,19 +417,19 @@ def auto_scan_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not scheduler.running:
-        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v58_mtf_v3_chart_autoscan_5m', replace_existing=True)
+        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v59_m1_flex_v3_chart_autoscan_5m', replace_existing=True)
         scheduler.start()
-        print("✅ TITAN V5.8 V3 WITH CHART AUTO-SCAN every 5 mins started!")
+        print("✅ TITAN V5.9 M1 FLEX V3 WITH CHART AUTO-SCAN every 5 mins started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V5.8 V3 WITH CHART 77.8% WR + AUTO 5M", lifespan=lifespan)
+app=FastAPI(title="TITAN V5.9 M1 FLEX 45% + M5 LOCK 77.8% + CHART", lifespan=lifespan)
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V5.8 V3 WITH CHART Live","mode":"V3_CHART","time":pht_now().isoformat(),"auto_scan":"5m WITH CHART"}
+def root(): return {"status":"XAUUSD TITAN V5.9 M1 FLEX Live","mode":"V59_M1_FLEX_45_ML48","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK + M1 FLEX + M15 WITH CHART"}
 @app.get("/health")
-def health(): return {"status":"ok","mode":"V3_CHART","auto_scan":"5m CHART"}
+def health(): return {"status":"ok","mode":"V59_M1_FLEX","auto_scan":"5m CHART V5.9"}
 @app.get("/status")
-def status(): return {"status":"ok","mode":"V3_CHART"}
+def status(): return {"status":"ok","mode":"V59_M1_FLEX"}
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -380,9 +442,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if TELEGRAM_CHAT_ID and cid!=str(TELEGRAM_CHAT_ID): return {"status":"ok"}
             if txt=="/status":
                 h1=fetch_h1_trend()
-                send_telegram_msg(f"🔒 *TITAN V5.8 V3 WITH CHART*\nMode `V3_CHART`\nH1 `{h1}`\nM1 SL0.8 TP1.6 40% RELAXED\nM5 SL1.8 TP3.6 60% LOCK 77.8% WR\nM15 SL3.0 TP6.0 55%\nAuto-scan with chart screenshot\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN V5.9 M1 FLEX*\nMode `V59_M1_FLEX_45_ML48`\nH1 `{h1}`\nM1 FLEX 45% ML48% PD60+(FVG/StrDisp)\nWick 1.1x Body 70% Disp 0.35 SC42% RSI78/22\nM5 LOCK 77.8% 60% ML60% untouched\nM15 55% fallback\nAuto-scan 5m WITH CHART\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.8 V3 WITH CHART*\n_M5 77.8% + M1 RELAXED + CHART_\n• /status • /scan • /backtest", cid)
+            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.9 M1 FLEX*\n_M5 77.8% LOCK untouched_\n_M1 FLEX 45% ML48% PD60+(FVG/StrDisp)_\n• /status • /scan • /backtest", cid)
     except Exception as e: print(e)
     return {"status":"ok"}
