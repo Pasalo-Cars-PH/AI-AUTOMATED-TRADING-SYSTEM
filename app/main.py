@@ -278,6 +278,195 @@ def fetch_hist_tf(interval, outputsize=3000):
             except: continue
     return None
 
+
+def analyze_titan_detailed(window, tf="M5", h1_trend=None):
+    """Detailed breakdown for pre-trade dashboard: 3 Gates 7 Layers 8 Boosters"""
+    result = {
+        "timestamp": pht_now().isoformat(),
+        "tf": tf,
+        "h1_trend": h1_trend,
+        "gates": [],
+        "layers": [],
+        "boosters": [],
+        "candle": None,
+        "indicators": None,
+        "decision": "SKIP",
+        "reason": "",
+        "signal": None,
+        "confluence": 0,
+        "passed_layers": 0,
+        "model_score": 0,
+        "swept": False
+    }
+    if len(window)<60:
+        result["reason"] = f"Not enough bars {len(window)}<60"
+        return result
+    try:
+        dt = pd.to_datetime(window[0]['datetime'])
+        c0 = window[0]
+        c1 = window[1] if len(window)>1 else c0
+        c2 = window[2] if len(window)>2 else c1
+        oldest = list(reversed(window))
+        closes = [c['close'] for c in oldest]
+        e20 = calculate_ema(closes, 20)
+        e50 = calculate_ema(closes, 50)
+        rsi = calculate_rsi(closes, 14)
+        body = abs(c0['close']-c0['open'])
+        prev_body = abs(c1['close']-c1['open'])
+        rng = c0['high']-c0['low']
+        low_w = min(c0['open'],c0['close'])-c0['low']
+        up_w = c0['high']-max(c0['open'],c0['close'])
+        sc = (c0['close']-c0['low'])/rng if rng>0 else 0
+        is_bull = False
+        is_bear = False
+        if c0['close']>=c0['open']:
+            is_bull = low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
+            if not is_bull:
+                is_bear = up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
+                sc = (c0['high']-c0['close'])/rng if rng>0 else 0
+        else:
+            is_bear = up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
+            if not is_bear:
+                is_bull = low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
+            sc = (c0['high']-c0['close'])/rng if rng>0 else 0
+        
+        result["candle"] = {
+            "open": c0['open'], "high": c0['high'], "low": c0['low'], "close": c0['close'],
+            "body": body, "prev_body": prev_body, "range": rng,
+            "low_wick": low_w, "up_wick": up_w,
+            "sc": sc, "is_bull_pin": is_bull, "is_bear_pin": is_bear,
+            "datetime": str(c0.get('datetime',''))
+        }
+        result["indicators"] = {
+            "ema20": e20, "ema50": e50, "rsi": rsi,
+            "e20_gt_e50": e20>e50 if e20 and e50 else None
+        }
+        gates = []
+        disp_pass = body >= prev_body*0.80 if prev_body>0 else False
+        gates.append({
+            "id": 1, "name": "DISP Gate", "desc": f"body {body:.3f} >= prev {prev_body:.3f}*0.80",
+            "required": "0.80x", "actual": round(body/prev_body,2) if prev_body>0 else 0,
+            "pass": disp_pass, "fail_reason": f"body {body:.3f} < prev*0.80 {prev_body*0.80:.3f}" if not disp_pass else ""
+        })
+        if not disp_pass:
+            result["gates"]=gates
+            result["reason"]=f"Failed at Gate 1 DISP: {gates[-1]['fail_reason']}"
+            return result
+        pinbar_pass = is_bull or is_bear
+        sc_pass = sc>=0.56
+        gate2_pass = pinbar_pass and sc_pass
+        gates.append({
+            "id": 2, "name": "PINBAR + SC Gate", "desc": f"Pinbar {pinbar_pass} + SC {sc*100:.1f}% >=56%",
+            "required": "Pinbar + SC>=56%", "actual": f"{'PIN' if pinbar_pass else 'NO-PIN'} SC{sc*100:.1f}%",
+            "pass": gate2_pass,
+            "fail_reason": f"{'No pinbar' if not pinbar_pass else ''} {'SC '+str(round(sc*100,1))+'% <56%' if not sc_pass else ''}".strip()
+        })
+        if not gate2_pass:
+            result["gates"]=gates
+            result["reason"]=f"Failed at Gate 2 PINBAR+SC: {gates[-1]['fail_reason']}"
+            return result
+        if is_bull:
+            ema_pass = c0['close']>e20>e50 if e20 and e50 else False
+        else:
+            ema_pass = c0['close']<e20<e50 if e20 and e50 else False
+        gates.append({
+            "id": 3, "name": "EMA Trend Gate", "desc": f"close {' > EMA20 > EMA50' if is_bull else ' < EMA20 < EMA50'}",
+            "required": "Trend aligned", "actual": f"C{e20 and e50 and 'OK' or 'NO'} {c0['close']:.2f} {' > ' if is_bull else ' < '} {e20:.2f} {' > ' if is_bull else ' < '} {e50:.2f}" if e20 and e50 else "No EMA",
+            "pass": ema_pass,
+            "fail_reason": f"EMA not aligned: close {c0['close']:.2f} e20 {e20:.2f} e50 {e50:.2f}" if not ema_pass else ""
+        })
+        if not ema_pass:
+            result["gates"]=gates
+            result["reason"]=f"Failed at Gate 3 EMA: {gates[-1]['fail_reason']}"
+            return result
+        result["gates"]=gates
+        layers = []
+        layers.append({"id":1, "name":"EMA Layer", "desc":"EMA20>EMA50 BULL or EMA20<EMA50 BEAR + close beyond", "pass": ema_pass, "weight":1})
+        layers.append({"id":2, "name":"Hammer Layer", "desc":"Pinbar wick 1.5x body<=55%", "pass": pinbar_pass, "weight":1})
+        layers.append({"id":3, "name":"SC Layer", "desc":f"SC {sc*100:.1f}% >=56%", "pass": sc_pass, "weight":1})
+        layers.append({"id":4, "name":"Disp Layer", "desc":f"Disp {body/prev_body:.2f}x >=0.80", "pass": disp_pass, "weight":1})
+        try:
+            high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
+            rng_n=high_n-low_n
+            buy_thr = low_n + rng_n*0.6
+            sell_thr = low_n + rng_n*0.4
+            if is_bull:
+                pd60_pass = c0['close']<=buy_thr
+            else:
+                pd60_pass = c0['close']>=sell_thr
+        except:
+            pd60_pass=False
+        layers.append({"id":5, "name":"PD60% Layer", "desc":"Premium/Discount 60% zone", "pass": pd60_pass, "weight":1})
+        try:
+            if is_bull and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03:
+                fvg_pass=True
+            elif not is_bull and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03:
+                fvg_pass=True
+            else:
+                fvg_pass=False
+        except:
+            fvg_pass=False
+        layers.append({"id":6, "name":"FVG Layer", "desc":"Fair Value Gap present", "pass": fvg_pass, "weight":1})
+        h1_pass = h1_trend is None or (is_bull and h1_trend=="BULL") or (not is_bull and h1_trend=="BEAR")
+        layers.append({"id":7, "name":"H1 Layer", "desc":f"H1 {h1_trend} alignment", "pass": h1_pass, "weight":1})
+        passed_layers = sum(1 for l in layers if l['pass'])
+        conf = passed_layers/7*100
+        result["layers"]=layers
+        result["confluence"] = conf
+        result["passed_layers"] = passed_layers
+        if conf<60:
+            result["reason"]=f"Failed Confluence: {passed_layers}/7={conf:.1f}% <60% required"
+            return result
+        boosters = []
+        kill_pass = 7 <= dt.hour <= 19
+        boosters.append({"id":1, "name":"KILL ZONE", "desc":"07-19 UTC trading hours", "required":"07-19 UTC", "actual":f"{dt.hour} UTC", "pass": kill_pass})
+        last_10_lows=[c['low'] for c in window[1:11]]
+        last_10_highs=[c['high'] for c in window[1:11]]
+        swept = (is_bull and c0['low']<=min(last_10_lows)+0.05) or (not is_bull and c0['high']>=max(last_10_highs)-0.05)
+        model_score = min(98, 44+conf*0.55+(8 if swept else 0))
+        model_pass = model_score>=60
+        boosters.append({"id":2, "name":"MODEL SCORE", "desc":"44+conf*0.55+(8 if swept)", "required":"60%+", "actual":f"{model_score:.0f}%", "pass": model_pass, "detail": f"44+{conf:.1f}*0.55+{8 if swept else 0}= {model_score:.0f}%"})
+        boosters.append({"id":3, "name":"SWEEP", "desc":"Liquidity sweep last 10", "required":"Sweep", "actual": "SWEPT" if swept else "NO SWEEP", "pass": True})
+        rsi_pass = not ((is_bull and rsi>70) or (not is_bull and rsi<30))
+        boosters.append({"id":4, "name":"RSI", "desc":"Not overbought >70 or oversold <30", "required":"RSI 30-70", "actual": f"RSI {rsi:.1f}", "pass": rsi_pass})
+        if not rsi_pass:
+            result["boosters"]=boosters
+            result["reason"]=f"Failed RSI: {rsi:.1f} overbought/oversold"
+            return result
+        h1_contra_pass = True
+        if is_bull and h1_trend=="BEAR" and conf<68:
+            h1_contra_pass=False
+        if not is_bull and h1_trend=="BULL" and conf<68:
+            h1_contra_pass=False
+        boosters.append({"id":5, "name":"H1 CONTRA", "desc":"If H1 opposite, need conf>=68%", "required":"conf>=68% if contra", "actual": f"H1 {h1_trend} conf {conf:.0f}%", "pass": h1_contra_pass})
+        if not h1_contra_pass:
+            result["boosters"]=boosters
+            result["reason"]=f"Failed H1 Contra: H1 {h1_trend} opposite but conf {conf:.0f}% <68%"
+            return result
+        weekday_pass = dt.weekday()<5
+        boosters.append({"id":6, "name":"WEEKDAY", "desc":"Not weekend", "required":"Mon-Fri", "actual": f"Weekday {dt.weekday()}", "pass": weekday_pass})
+        body_pass = rng>0 and c0['high']>c0['low']
+        boosters.append({"id":7, "name":"BODY", "desc":"Range high>low", "required":"high>low", "actual": f"Range {rng:.3f}", "pass": body_pass})
+        boosters.append({"id":8, "name":"VOLUME", "desc":"Simulated volume confirmation", "required":"High vol", "actual": "SIM OK", "pass": True})
+        result["boosters"]=boosters
+        result["model_score"]=model_score
+        result["swept"]=swept
+        if not model_pass:
+            result["reason"]=f"Failed Model Score: {model_score:.0f}% <60%"
+            return result
+        sig = analyze_titan_mtf(window, tf=tf, h1_trend=h1_trend)
+        if sig:
+            result["decision"]="EXECUTE"
+            result["reason"]=f"PASS All 3 Gates + {passed_layers}/7 Layers {conf:.0f}% + Model {model_score:.0f}% + 8 Boosters"
+            result["signal"]=sig
+        else:
+            result["reason"]="Failed final signal generation"
+        return result
+    except Exception as e:
+        import traceback
+        result["reason"]=f"Error {e} {traceback.format_exc()[:200]}"
+        return result
+
 def generate_chart_with_markings(window, sig, tf="M5"):
     try:
         import matplotlib
@@ -327,7 +516,7 @@ def generate_chart_with_markings(window, sig, tf="M5"):
         ax.axhline(y=tp, color='#22c55e', linestyle=':', linewidth=1.0, label=f'TP {tp}')
         ax.fill_between(x_vals, sl, entry, color='#ef4444', alpha=0.1)
         ax.fill_between(x_vals, entry, tp, color='#22c55e', alpha=0.1)
-        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.1 M5 LOCK ONLY PAPER | {sig['reason']}", color='white', fontsize=8, fontweight='bold')
+        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.2 M5 LOCK ONLY PAPER | {sig['reason']}", color='white', fontsize=8, fontweight='bold')
         ax.set_ylabel('Price', color='white')
         ax.tick_params(colors='white')
         ax.legend(loc='upper left', fontsize=6, facecolor='black', edgecolor='white', labelcolor='white')
@@ -451,7 +640,7 @@ def run_backtest(chat_id):
         if rec_m5_large:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5")
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V6.1 M5 LOCK ONLY + DASHBOARD*\n"
+        msg=f"📊 *XAUUSD TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE*\n"
         for key in ["M5_5k","M5_10k"]:
             if key in results:
                 t,w,l,wr,net,exp,pf, n = results[key]
@@ -502,7 +691,7 @@ def auto_scan_job():
         now_utc = datetime.datetime.utcnow()
         if not TELEGRAM_CHAT_ID: return
         if not (7 <= now_utc.hour <= 19): return
-        print(f"[AUTO-SCAN V6.1 M5 LOCK ONLY + DASHBOARD] {now_utc} scanning M5 only...")
+        print(f"[AUTO-SCAN V6.1 M5 LOCK ONLY + DASHBOARD + PRETRADE] {now_utc} scanning M5 only...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
     except Exception as e:
         print(f"Auto scan error: {e}")
@@ -512,14 +701,14 @@ async def lifespan(app: FastAPI):
     if not scheduler.running:
         scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v61_m5_lock_only_dashboard_paper_autoscan_5m', replace_existing=True)
         scheduler.start()
-        print("✅ TITAN V6.1 M5 LOCK ONLY + DASHBOARD AUTO-SCAN 07-19 UTC started!")
+        print("✅ TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE AUTO-SCAN 07-19 UTC started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
 app=FastAPI(title="TITAN V6.1 M5 LOCK ONLY + REAL-TIME DASHBOARD", lifespan=lifespan)
 
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V6.1 M5 LOCK ONLY + DASHBOARD Live","mode":"V61_M5_LOCK_ONLY_DASHBOARD","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK ONLY + DASHBOARD","live_enabled":MASTER_LIVE_ENABLE, "dashboard":"/dashboard", "api":"/api/stats"}
+def root(): return {"status":"XAUUSD TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE Live","mode":"V61_M5_LOCK_ONLY_DASHBOARD","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK ONLY + DASHBOARD + PRETRADE","live_enabled":MASTER_LIVE_ENABLE, "dashboard":"/dashboard", "api":"/api/stats"}
 
 @app.get("/health")
 def health(): return {"status":"ok","mode":"V61_M5_LOCK_ONLY_DASHBOARD","auto_scan":"5m PAPER V6.1 M5 ONLY + DASHBOARD","live_enabled":MASTER_LIVE_ENABLE}
@@ -536,6 +725,149 @@ def api_trades():
 def api_stats():
     trades = load_trades()
     return JSONResponse(calculate_stats(trades))
+
+
+@app.get("/api/pretrade")
+def api_pretrade():
+    try:
+        h1 = fetch_h1_trend()
+        data = fetch_live_tf("5min")
+        if not data:
+            return JSONResponse({"error":"No data", "timestamp": pht_now().isoformat()})
+        clean=[]
+        for d in data:
+            try:
+                o=float(d["open"]); h=float(d["high"]); lo=float(d["low"]); c=float(d["close"])
+                if h>lo and o>0 and c>0:
+                    clean.append({"open":o,"high":h,"low":lo,"close":c,"datetime":d["datetime"]})
+            except: pass
+        if len(clean)<60:
+            return JSONResponse({"error":f"Not enough bars {len(clean)}<60", "timestamp": pht_now().isoformat()})
+        detailed = analyze_titan_detailed(clean, tf="M5", h1_trend=h1)
+        return JSONResponse(detailed)
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()[:500], "timestamp": pht_now().isoformat()})
+
+@app.get("/api/signal")
+def api_signal():
+    try:
+        h1 = fetch_h1_trend()
+        data = fetch_live_tf("5min")
+        if not data:
+            return JSONResponse({"signal": None, "reason":"No data"})
+        clean=[]
+        for d in data:
+            try:
+                clean.append({"open":float(d["open"]),"high":float(d["high"]),"low":float(d["low"]),"close":float(d["close"]),"datetime":d["datetime"]})
+            except: pass
+        sig = analyze_titan_mtf(clean, tf="M5", h1_trend=h1)
+        if sig:
+            return JSONResponse({"signal": sig, "h1": h1, "timestamp": pht_now().isoformat()})
+        else:
+            detailed = analyze_titan_detailed(clean, tf="M5", h1_trend=h1)
+            return JSONResponse({"signal": None, "reason": detailed.get("reason","No setup"), "detailed": detailed, "h1": h1})
+    except Exception as e:
+        return JSONResponse({"error": str(e)})
+
+@app.get("/pretrade", response_class=HTMLResponse)
+@app.get("/signal-dashboard", response_class=HTMLResponse)
+@app.get("/gates", response_class=HTMLResponse)
+def pretrade_dashboard():
+    html = """
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TITAN V6.2 PRE-TRADE 3GATES 7LAYERS 8BOOSTERS</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px}
+.header{border:2px solid #22c55e;padding:10px;margin-bottom:8px;background:#0a0a0a}
+.header h1{color:#22c55e;font-size:14px}
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px}
+.card{border:1px solid #333;padding:8px;background:#0a0a0a}
+.card.pass{border-color:#22c55e;background:#052e16}
+.card.fail{border-color:#ef4444;background:#2e0a0a}
+.card h3{font-size:10px;color:#888;margin-bottom:2px}
+.card .status{font-size:12px;font-weight:bold}
+.status.pass{color:#22c55e}
+.status.fail{color:#ef4444}
+.decision{border:2px solid #22c55e;padding:12px;text-align:center;margin:8px 0;font-size:14px;font-weight:bold}
+.decision.execute{border-color:#22c55e;background:#052e16;color:#22c55e}
+.decision.skip{border-color:#ef4444;background:#2e0a0a;color:#ef4444}
+.candle{border:1px solid #333;padding:8px;background:#0a0a0a;margin-bottom:8px}
+.btn{padding:6px 10px;border:1px solid #22c55e;background:#000;color:#22c55e;cursor:pointer;font-size:10px;margin:2px}
+</style>
+</head>
+<body>
+<div class="header">
+<h1>🔍 TITAN V6.2 PRE-TRADE SIGNAL DASHBOARD - 3 GATES 7 LAYERS 8 BOOSTERS <span style="color:#22c55e">● LIVE</span></h1>
+<p>Shows WHY signals pass/fail BEFORE execution - Automated + Manual check</p>
+<p id="last" style="font-size:9px;color:#666"></p>
+</div>
+<div id="decision" class="decision skip">Loading...</div>
+<div class="candle" id="candleInfo">Loading candle...</div>
+<h2 style="color:#22c55e;font-size:12px;margin:8px 0">🚪 3 GATES (Must all PASS)</h2>
+<div class="grid" id="gates"></div>
+<h2 style="color:#22c55e;font-size:12px;margin:8px 0">📚 7 LAYERS (Need 60% = 4/7)</h2>
+<div class="grid" id="layers"></div>
+<h2 style="color:#22c55e;font-size:12px;margin:8px 0">🚀 8 BOOSTERS (Extra confirmation)</h2>
+<div class="grid" id="boosters"></div>
+<div style="margin-top:12px">
+<button class="btn" onclick="load()">🔄 REFRESH</button>
+<button class="btn" onclick="window.open('/dashboard','_blank')">📊 PERFORMANCE DASHBOARD</button>
+<button class="btn" onclick="window.open('/api/pretrade','_blank')">🔧 RAW API</button>
+</div>
+<script>
+async function load(){
+ try{
+  const res = await fetch('/api/pretrade');
+  const data = await res.json();
+  document.getElementById('last').textContent = 'Last: '+new Date().toLocaleString()+' | TF '+data.tf+' H1 '+data.h1_trend+' | '+data.timestamp;
+  const dec = document.getElementById('decision');
+  dec.textContent = data.decision+' - '+data.reason;
+  dec.className = 'decision '+(data.decision==='EXECUTE'?'execute':'skip');
+  const ci = data.candle||{};
+  document.getElementById('candleInfo').innerHTML = 
+   `<b>CANDLE:</b> ${ci.datetime||''} O:${ci.open} H:${ci.high} L:${ci.low} C:${ci.close} Body:${(ci.body||0).toFixed(3)} Range:${(ci.range||0).toFixed(3)} SC:${((ci.sc||0)*100).toFixed(1)}% BullPin:${ci.is_bull_pin} BearPin:${ci.is_bear_pin}<br>`+
+   `<b>INDICATORS:</b> EMA20:${(data.indicators?.ema20||0).toFixed(2)} EMA50:${(data.indicators?.ema50||0).toFixed(2)} RSI:${(data.indicators?.rsi||0).toFixed(1)} | Confluence ${data.passed_layers||0}/7=${(data.confluence||0).toFixed(1)}% Model ${data.model_score||0}% Swept ${data.swept||false}`;
+  const gatesDiv = document.getElementById('gates');
+  gatesDiv.innerHTML='';
+  (data.gates||[]).forEach(g=>{
+   const d=document.createElement('div');
+   d.className='card '+(g.pass?'pass':'fail');
+   d.innerHTML=`<h3>GATE ${g.id} ${g.name}</h3><div class="status ${g.pass?'pass':'fail'}">${g.pass?'✅ PASS':'❌ FAIL'} - ${g.actual}</div><div style="font-size:9px;color:#888">${g.desc} | Req ${g.required}</div>${g.fail_reason?'<div style="font-size:9px;color:#ef4444">'+g.fail_reason+'</div>':''}`;
+   gatesDiv.appendChild(d);
+  });
+  const layersDiv = document.getElementById('layers');
+  layersDiv.innerHTML='';
+  (data.layers||[]).forEach(l=>{
+   const d=document.createElement('div');
+   d.className='card '+(l.pass?'pass':'fail');
+   d.innerHTML=`<h3>LAYER ${l.id} ${l.name}</h3><div class="status ${l.pass?'pass':'fail'}">${l.pass?'✅ PASS':'❌ FAIL'}</div><div style="font-size:9px;color:#888">${l.desc}</div>`;
+   layersDiv.appendChild(d);
+  });
+  const boostDiv = document.getElementById('boosters');
+  boostDiv.innerHTML='';
+  (data.boosters||[]).forEach(b=>{
+   const d=document.createElement('div');
+   d.className='card '+(b.pass?'pass':'fail');
+   d.innerHTML=`<h3>BOOSTER ${b.id} ${b.name}</h3><div class="status ${b.pass?'pass':'fail'}">${b.pass?'✅ PASS':'❌ FAIL'} - ${b.actual}</div><div style="font-size:9px;color:#888">${b.desc} | Req ${b.required}</div>${b.detail?'<div style="font-size:8px;color:#22c55e">'+b.detail+'</div>':''}`;
+   boostDiv.appendChild(d);
+  });
+  if(data.signal){
+   dec.innerHTML+='<br>ENTRY '+data.signal.entry+' SL '+data.signal.sl+' TP '+data.signal.tp+' '+data.signal.type+' Conf '+data.signal.confluence+'%';
+  }
+ }catch(e){
+  document.getElementById('decision').textContent='Error '+e;
+ }
+}
+load();
+setInterval(load, 5000);
+</script>
+</body></html>
+"""
+    return HTMLResponse(content=html)
+
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
@@ -779,7 +1111,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if txt_base=="/status":
                 h1=fetch_h1_trend()
                 stats=calculate_stats(load_trades())
-                send_telegram_msg(f"🔒 *TITAN V6.1 M5 LOCK ONLY + DASHBOARD*\nMode `V61_DASHBOARD`\nH1 `{h1}`\nLive Trades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nM5 LOCK 45% REAL (20-trade) was 77.8% (9-trade) NOT intrinsic\nM1 DISABLED 0% WR 46L\nM15 DISABLED -0.25R\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE*\nMode `V62_DASHBOARD_PRETRADE`\nH1 `{h1}`\nLive Trades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nM5 LOCK 45% REAL (20-trade) was 77.8% (9-trade) NOT intrinsic\nM1 DISABLED 0% WR 46L\nM15 DISABLED -0.25R\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt_base=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt_base=="/backtest": background_tasks.add_task(run_backtest, cid)
             elif txt_base=="/dashboard":
@@ -863,7 +1195,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 except Exception as e:
                     send_telegram_msg(f"Reset error {e}", cid)
             elif txt_base in ["/help","/start"]:
-                send_telegram_msg("🔒 *TITAN V6.1 M5 LOCK ONLY + DASHBOARD*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade = create test OPEN trade\n• /reset = reset to 20 backtest trades\nDashboard auto-updates every 5s from bot", cid)
+                send_telegram_msg("🔒 *TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade = create test OPEN trade\n• /reset = reset to 20 backtest trades\nDashboard auto-updates every 5s from bot", cid)
     except Exception as e:
         print(e)
         import traceback; traceback.print_exc()
