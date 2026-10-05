@@ -13,3 +13,4 @@ httpx
 yfinance
 apscheduler
 pytz
+matplotlib
