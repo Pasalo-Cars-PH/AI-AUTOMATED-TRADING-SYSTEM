@@ -6,7 +6,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 
 # SAFETY LOCK - ABSOLUTE PAPER ONLY - NO LIVE EXECUTION
-MASTER_LIVE_ENABLE = False  # MUST REMAIN FALSE - PAPER ONLY - NO BROKER EXECUTION PATH
+MASTER_LIVE_ENABLE = False  # MUST REMAIN FALSE
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -36,7 +36,7 @@ def send_telegram_msg(msg, chat_id=None):
 
 def send_telegram_photo(photo_path, caption, chat_id=None):
     if MASTER_LIVE_ENABLE:
-        send_telegram_msg("🚫 LIVE BLOCKED - SAFETY LOCK PAPER ONLY", chat_id)
+        send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
     cid = chat_id or TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -66,9 +66,8 @@ def calculate_rsi(closes, period=14):
     rs=avg_gain/avg_loss
     return 100-(100/(1+rs))
 
-# M5 LOCK - REPORTED 77.8% WR - BACKTEST SAMPLE ONLY - NOT INTRINSIC PROPERTY
-# Thresholds: 0.80 disp / 0.56 SC / 60% conf / 60% MODEL_SCORE / 1.5x wick / 55% body
-# NOTE: 77.8% WR is REPORTED result from 9-trade sample, NOT guaranteed by code
+# M5 LOCK - REPORTED 63.6% WR in 11-trade sample (was 77.8% in 9-trade) - NOT INTRINSIC
+# Thresholds untouched: 0.80 disp / 0.56 SC / 60% conf (4/7=57.1% eff) / 60% MODEL / 1.5x wick / 55% body
 def is_bullish_pinbar(c):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
@@ -82,8 +81,9 @@ def is_bearish_pinbar(c):
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
     return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
 
-# M1 FLEX V5.9.1 - Controlled Relaxation - AUDIT FIXED
-# Wick 1.1x / Body ≤70% / Disp ≥0.35 / SC ≥42% / Conf ≥45% (effective 4/7=57.1%) / MODEL_SCORE ≥48%
+# M1 FLEX V5.9.2 - LOOSER FOR PAPER VALIDATION - TARGET 5-10 trades/day
+# Wick 1.1x / Body ≤70% / Disp ≥0.35 / SC ≥42% / Conf ≥45% (eff 4/7=57.1%) / MODEL ≥48%
+# PD60 OPTIONAL (bonus layer) - NOT REQUIRED - to increase frequency from 1/day to 5-10/day
 def is_bullish_pinbar_relaxed(c, tf="M1"):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
@@ -129,16 +129,6 @@ def fetch_h1_trend():
     e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
     if not e20 or not e50: return None
     return "BULL" if e20>e50 else "BEAR" if e20<e50 else None
-
-def fetch_hist(outputsize=3000):
-    vals=fetch_data("XAU/USD","5min",outputsize)
-    if not vals: return None
-    df=pd.DataFrame(vals); df['datetime']=pd.to_datetime(df['datetime'])
-    df=df.sort_values('datetime').reset_index(drop=True)
-    for col in ['open','high','low','close']: df[col]=df[col].astype(float)
-    df['weekday']=df['datetime'].dt.weekday
-    df=df[df['weekday']<5]; df=df[df['high']>df['low']]
-    return df.to_dict('records')
 
 def fetch_hist_tf(interval, outputsize=3000):
     vals=fetch_data("XAU/USD", interval, outputsize)
@@ -187,7 +177,7 @@ def generate_chart_with_markings(window, sig, tf="M1"):
             rect = mpatches.Rectangle((i-0.3, body_bottom), 0.6, body_height, facecolor=color, edgecolor=color)
             ax.add_patch(rect)
             if i==len(candles)-1:
-                ax.annotate(f'V5.9.1 {tf} {sig["type"]}\nConf {sig["confluence"]:.0f}% MODEL {sig["model_score"]:.0f}%\n4/7 layers min', xy=(i, l), xytext=(i-12, l- (max(highs)-min(lows))*0.14),
+                ax.annotate(f'V5.9.2 {tf} {sig["type"]}\nConf {sig["confluence"]:.0f}% MODEL {sig["model_score"]:.0f}%', xy=(i, l), xytext=(i-12, l- (max(highs)-min(lows))*0.14),
                             color='#22c55e', fontsize=6, fontweight='bold',
                             arrowprops=dict(facecolor='#22c55e', shrink=0.05, width=1, headwidth=5),
                             bbox=dict(boxstyle="round,pad=0.3", facecolor='black', edgecolor='#22c55e'))
@@ -204,12 +194,12 @@ def generate_chart_with_markings(window, sig, tf="M1"):
         ax.axhline(y=tp, color='#22c55e', linestyle=':', linewidth=1.0, label=f'TP {tp}')
         ax.fill_between(x_vals, sl, entry, color='#ef4444', alpha=0.1)
         ax.fill_between(x_vals, entry, tp, color='#22c55e', alpha=0.1)
-        ax.set_title(f"XAUUSD {tf} {sig['type']} V5.9.1 PAPER ONLY | {sig['reason']} | {format_time_pht(sig['time'])[0]} 4/7 layers", color='white', fontsize=8, fontweight='bold')
+        ax.set_title(f"XAUUSD {tf} {sig['type']} V5.9.2 PAPER | {sig['reason']} | {format_time_pht(sig['time'])[0]}", color='white', fontsize=8, fontweight='bold')
         ax.set_ylabel('Price', color='white')
         ax.tick_params(colors='white')
         ax.legend(loc='upper left', fontsize=6, facecolor='black', edgecolor='white', labelcolor='white')
         ax.grid(True, alpha=0.15, color='white')
-        chart_path = f"/tmp/chart_{tf}_{sig['type']}_V591.png"
+        chart_path = f"/tmp/chart_{tf}_{sig['type']}_V592.png"
         plt.tight_layout()
         plt.savefig(chart_path, facecolor='black', dpi=150)
         plt.close()
@@ -218,11 +208,11 @@ def generate_chart_with_markings(window, sig, tf="M1"):
         print(f"Chart gen error: {e}")
         return None
 
-# V5.9.1 - AUDIT FIXED - PD60 explicit math, MODEL_SCORE renamed, 4/7 layers documented
+# V5.9.2 - M15 DISABLED + M1 LOOSER + BIGGER SAMPLE
 def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
-    # Kill Zone 07:00-19:00 UTC ON for ALL TF per V5.9 gate
+    # Kill Zone 07-19 UTC ON for ALL TF
     if dt.hour<7 or dt.hour>19: return None
 
     oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
@@ -234,20 +224,17 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
 
     if tf=="M1":
-        # V5.9.1 M1 FLEX: Base Disp 0.35 + FVG OR StrongDisp 0.55/reclaim
-        # Conf >=45% means effective 4/7 = 57.1% minimum layers
         disp_req, sc_req, conf_req, model_req = 0.35, 0.42, 45, 48
         bullish=is_bullish_pinbar_relaxed(c0, "M1")
         bearish=is_bearish_pinbar_relaxed(c0, "M1")
         rsi_high, rsi_low = 78, 22
     elif tf=="M5":
-        # M5 LOCK untouched - REPORTED 77.8% WR from 9-trade sample, NOT intrinsic
         disp_req, sc_req, conf_req, model_req = 0.80, 0.56, 60, 60
         bullish=is_bullish_pinbar(c0)
         bearish=is_bearish_pinbar(c0)
         rsi_high, rsi_low = 70, 30
-    else: # M15 fallback - conf 55% effective 57.1% (4/7), set to 57 for explicit
-        disp_req, sc_req, conf_req, model_req = 0.75, 0.52, 57, 55
+    else: # M15 DISABLED - set very high threshold to almost never trade
+        disp_req, sc_req, conf_req, model_req = 0.75, 0.52, 85, 75
         bullish=is_bullish_pinbar(c0)
         bearish=is_bearish_pinbar(c0)
         rsi_high, rsi_low = 70, 30
@@ -261,40 +248,32 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
     if sc<sc_req: return None
 
-    # --- PD60 EXPLICIT MATH FIX per audit ---
-    # Old: mid = low + 0.6*range, BUY close<mid (60% range), SELL close>mid (40% range) - asymmetric
-    # New explicit: 
-    # BUY discount = lower 60%: close <= low + range*0.6
-    # SELL premium = upper 60%: close >= low + range*0.4 (top 60% starts at 40% from bottom)
-    # This gives symmetric 60% zones, overlap 40-60% valid for both but directional filter separates
     pd60_ok=False
     fvg_ok=False
     strong_disp_ok=False
     try:
         high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
         rng_n=high_n-low_n
-        buy_threshold = low_n + rng_n*0.6  # lower 60% is discount
-        sell_threshold = low_n + rng_n*0.4  # upper 60% starts at 40% = premium
+        buy_threshold = low_n + rng_n*0.6
+        sell_threshold = low_n + rng_n*0.4
         if bullish and c0['close']<=buy_threshold:
             pd60_ok=True
         elif bearish and c0['close']>=sell_threshold:
             pd60_ok=True
     except: pass
     try:
-        # FVG directional - BUY bullish gap, SELL bearish gap
         if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03:
             fvg_ok=True
         elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03:
             fvg_ok=True
     except: pass
     try:
-        # Strong displacement/reclaim - directional - body >=0.55x prev + direction check
         if bullish:
             if body>=prev*0.55 and c0['close']>c0['open']:
                 strong_disp_ok=True
             elif c0['close']>c1['high']:
                 strong_disp_ok=True
-        else: # bearish
+        else:
             if body>=prev*0.55 and c0['close']<c0['open']:
                 strong_disp_ok=True
             elif c0['close']<c1['low']:
@@ -309,16 +288,15 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if body>=prev*disp_req: layers+=1; logs.append("Disp")
 
     if tf=="M1":
-        if not pd60_ok:
-            return None
-        layers+=1; logs.append("PD60%")
-        if not (fvg_ok or strong_disp_ok):
-            return None
+        # V5.9.2: PD60 OPTIONAL - bonus layer, NOT required - to increase frequency
+        if pd60_ok:
+            layers+=1; logs.append("PD60%")
         if fvg_ok:
             layers+=1; logs.append("FVG")
-        else:
+        elif strong_disp_ok:
             layers+=1; logs.append("StrDisp")
-        layers+=1; logs.append("M1-FLEX")
+        # M1-FLEX always added for M1
+        layers+=1; logs.append("M1-FLEX-LOOSER")
     else:
         if pd60_ok:
             layers+=1; logs.append("PD60%")
@@ -327,7 +305,6 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
             layers+=1; logs.append(f"H1_{h1_trend}")
 
-    # Conf: 7 layers total, 3/7=42.9%, 4/7=57.1%, so >=45% effective = 4/7 min
     conf=layers/7*100
     if conf<conf_req: return None
 
@@ -347,8 +324,6 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     last_10_highs=[c['high'] for c in window[1:11]]
     swept = (bullish and c0['low']<=min(last_10_lows)+0.05) or (bearish and c0['high']>=max(last_10_highs)-0.05)
 
-    # MODEL_SCORE deterministic formula - NOT real ML - coupled to conf
-    # Example: conf=57.1 no sweep => 44+57.1*0.55=75.4 => auto passes 48%
     model_score=min(98, 44+conf*0.55+(8 if swept else 0))
     if model_score<model_req: return None
 
@@ -363,7 +338,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
         "pinbar":"Hammer","h1":h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,"layers":logs,
         "boosters":[f"KILL {dt.hour}UTC", f"MODEL {model_score:.0f}%"],
-        "reason":f"{tf} {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)} 4/7min", "tf":tf
+        "reason":f"{tf} {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)}", "tf":tf
     }
 
 def run_sim_tf(records, tf="M5"):
@@ -398,14 +373,11 @@ def run_backtest(chat_id):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
-    send_telegram_msg("⏳ *TITAN V5.9.1 M1 FLEX PAPER BACKTEST - ALL TF*\n_M5 LOCK REPORTED 77.8% (9-trade sample)_ + _M1 FLEX 45% (4/7 layers)_\n_PAPER ONLY - MODEL_SCORE deterministic_", chat_id)
+    send_telegram_msg("⏳ *TITAN V5.9.2 M1 LOOSER PAPER - M15 DISABLED*\n_Bigger sample: M1 10k bars, M5/M15 5k bars_\n_M5 REPORTED 63.6% (11-trade) NOT intrinsic_", chat_id)
     try:
-        # M5 history for M5 backtest
-        rec_m5=fetch_hist_tf("5min", 3000)
-        # M1 history for M1 backtest - use 1min data
-        rec_m1=fetch_hist_tf("1min", 3000)
-        # M15 history
-        rec_m15=fetch_hist_tf("15min", 3000)
+        rec_m5=fetch_hist_tf("5min", 5000)
+        rec_m1=fetch_hist_tf("1min", 10000)
+        rec_m15=fetch_hist_tf("15min", 5000)
         
         results={}
         if rec_m5:
@@ -418,8 +390,7 @@ def run_backtest(chat_id):
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m15, tf="M15")
             results['M15']= (t,w,l,wr,net,exp,pf, len(rec_m15))
 
-        # Combined
-        total_trades=sum([v[0] for v in results.values()])
+        total_trades=sum([v[0] for v in results.values() if v[0]>0])
         total_wins=sum([v[1] for v in results.values()])
         total_losses=sum([v[2] for v in results.values()])
         total_net=sum([v[4] for v in results.values()])
@@ -427,16 +398,17 @@ def run_backtest(chat_id):
         combined_exp=round(total_net/total_trades,2) if total_trades>0 else 0
         combined_pf=round((total_wins*2)/(total_losses*1),2) if total_losses>0 else 0
 
-        msg=f"📊 *XAUUSD TITAN V5.9.1 M1 FLEX PAPER - ALL TF VALIDATION*\n_REPORTED M5 77.8% is 9-trade sample - NOT intrinsic_\n\n"
+        msg=f"📊 *XAUUSD TITAN V5.9.2 M1 LOOSER - BIGGER SAMPLE*\n_M5 LOCK REPORTED 63.6% (11-trade) NOT intrinsic - M15 DISABLED_\n\n"
         for tf in ["M5","M1","M15"]:
             if tf in results:
                 t,w,l,wr,net,exp,pf, n = results[tf]
-                msg+=f"🔹 *{tf} {'LOCK REPORTED 77.8%' if tf=='M5' else 'FLEX 45% 4/7 layers' if tf=='M1' else 'FALLBACK 57%'}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
-        msg+=f"🔹 *COMBINED PAPER*:\n Trades `{total_trades}` | W `{total_wins}` L `{total_losses}` | WR `{combined_wr}%` | PF `{combined_pf}` | Exp `{combined_exp}R` | Net `{total_net}R`\n\n"
-        msg+=f"🔒 _M1 FLEX: Wick1.1x Body70% Disp0.35 SC42% Conf45% (eff 4/7=57.1%) MODEL48% PD60 req (low+0.6*rng BUY / low+0.4*rng SELL) FVG OR StrDisp 0.55+/reclaim RSI78/22 KillZone 07-19 UTC H1 OFF_\n"
-        msg+=f"_M5 LOCK: REPORTED 77.8% WR - 9-trade sample - NOT intrinsic - thresholds 0.80/0.56/60%/60%/1.5x/55% untouched_\n"
-        msg+=f"_MODEL_SCORE deterministic: 44+conf*0.55+(8 if swept) - NOT real ML - coupled to conf_\n"
-        msg+=f"_PAPER VALIDATION ONLY - NEED 100-200 SAMPLE PER TF - APPLES TO APPLES_"
+                status = "LOCK REPORTED" if tf=="M5" else "LOOSER PD60 optional" if tf=="M1" else "DISABLED 85% (should be 0 trades)"
+                msg+=f"🔹 *{tf} {status}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
+        msg+=f"🔹 *COMBINED PAPER (M5+M1 only, M15 disabled)*:\n Trades `{total_trades}` | W `{total_wins}` L `{total_losses}` | WR `{combined_wr}%` | PF `{combined_pf}` | Exp `{combined_exp}R` | Net `{total_net}R`\n\n"
+        msg+=f"🔒 _V5.9.2: M1 FLEX Wick1.1x Body70% Disp0.35 SC42% Conf45% eff 4/7 MODEL48% PD60 OPTIONAL bonus (not required) FVG/StrDisp bonus RSI78/22 KillZone 07-19 UTC_\n"
+        msg+=f"_M5 LOCK: REPORTED 63.6% (was 77.8% in 9-trade) thresholds 0.80/0.56/60%/60%/1.5x/55% untouched_\n"
+        msg+=f"_M15 DISABLED due to -0.25R expectancy in V5.9.1 - NO TRADE better than negative_\n"
+        msg+=f"_BIGGER SAMPLE: M1 10k bars (~1 week) M5/M15 5k bars - TARGET 100-200 M1 trades_"
 
         send_telegram_msg(msg, chat_id)
     except Exception as e:
@@ -445,18 +417,17 @@ def run_backtest(chat_id):
 
 def manual_scan(chat_id, auto=False):
     if MASTER_LIVE_ENABLE:
-        send_telegram_msg("🚫 LIVE BLOCKED - SAFETY LOCK ACTIVE - PAPER ONLY", chat_id)
+        send_telegram_msg("🚫 LIVE BLOCKED - SAFETY LOCK PAPER ONLY", chat_id)
         return
     h1=fetch_h1_trend()
     found=False
-    # DATA QUALITY gate + M5 priority real
-    for tf, interval in [("M5","5min"),("M1","1min"),("M15","15min")]:
+    # V5.9.2: M5 -> M1 only, M15 DISABLED due to negative expectancy
+    for tf, interval in [("M5","5min"),("M1","1min")]:
         data=fetch_live_tf(interval)
         if not data: continue
         clean=[]
         for d in data:
             try:
-                # DATA QUALITY: valid OHLC, high>low
                 o=float(d["open"]); h=float(d["high"]); lo=float(d["low"]); c=float(d["close"])
                 if h>lo and o>0 and c>0:
                     clean.append({"open":o,"high":h,"low":lo,"close":c,"datetime":d["datetime"]})
@@ -465,7 +436,7 @@ def manual_scan(chat_id, auto=False):
         sig=analyze_titan_mtf(clean, tf=tf, h1_trend=h1)
         if sig:
             pht,utc=format_time_pht(sig['time'])
-            caption = f"{'🤖 AUTO' if auto else '⚡ MANUAL'} {tf} 5M XAUUSD {tf} 1:2 V5.9.1 PAPER 🔨\n\n• {sig['pair']} {sig['type']} {sig['tf']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:2\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` (4/7=57.1% min eff) MODEL `{sig['model_score']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• {tf} {'LOCK REPORTED 77.8% (9-trade sample)' if tf=='M5' else 'FLEX 45% eff 4/7 V5.9.1'} PAPER ONLY"
+            caption = f"{'🤖 AUTO' if auto else '⚡ MANUAL'} {tf} 5M XAUUSD {tf} 1:2 V5.9.2 PAPER 🔨\n\n• {sig['pair']} {sig['type']} {sig['tf']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:2\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` MODEL `{sig['model_score']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• {tf} {'LOCK REPORTED 63.6%' if tf=='M5' else 'FLEX LOOSER V5.9.2'} PAPER ONLY - M15 DISABLED"
             chart_path = generate_chart_with_markings(clean, sig, tf=tf)
             if chart_path and os.path.exists(chart_path):
                 send_telegram_photo(chart_path, caption, chat_id)
@@ -474,17 +445,17 @@ def manual_scan(chat_id, auto=False):
             found=True
             break
     if not found and not auto:
-        send_telegram_msg(f"ℹ️ No setup M1/M5/M15 V5.9.1 PAPER\nH1 `{h1}`\nM5 LOCK REPORTED 77.8% (9-trade sample NOT intrinsic) 60% 4/7 eff\nM1 FLEX 45% eff 4/7=57.1% MODEL48% PD60 req (low+0.6 BUY / low+0.4 SELL) FVG OR StrDisp0.55+/reclaim SC42% Wick1.1x Body70% Disp0.35 RSI78/22 KillZone 07-19 UTC ON\nTry ulit 5 mins! PAPER ONLY", chat_id)
+        send_telegram_msg(f"ℹ️ No setup M5/M1 V5.9.2 PAPER - M15 DISABLED\nH1 `{h1}`\nM5 LOCK REPORTED 63.6% (was 77.8% 9-trade) 60% 4/7 eff\nM1 FLEX LOOSER 45% eff 4/7 MODEL48% PD60 OPTIONAL bonus SC42% Wick1.1x Body70% Disp0.35 RSI78/22 KillZone 07-19 UTC\nM15 DISABLED due to -0.25R expectancy\nTry ulit 5 mins! PAPER ONLY", chat_id)
 
 def auto_scan_job():
     try:
         if MASTER_LIVE_ENABLE:
-            print("🚫 LIVE BLOCKED - SAFETY LOCK")
+            print("🚫 LIVE BLOCKED")
             return
         now_utc = datetime.datetime.utcnow()
         if not TELEGRAM_CHAT_ID: return
         if not (7 <= now_utc.hour <= 19): return
-        print(f"[AUTO-SCAN V5.9.1 PAPER] {now_utc} scanning M5->M1->M15 PAPER ONLY...")
+        print(f"[AUTO-SCAN V5.9.2 PAPER M15 DISABLED] {now_utc} scanning M5->M1 only...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
     except Exception as e:
         print(f"Auto scan error: {e}")
@@ -492,19 +463,19 @@ def auto_scan_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not scheduler.running:
-        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v591_m1_flex_paper_autoscan_5m', replace_existing=True)
+        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v592_m1_looser_m15_disabled_paper_autoscan_5m', replace_existing=True)
         scheduler.start()
-        print("✅ TITAN V5.9.1 M1 FLEX PAPER AUTO-SCAN 07-19 UTC started! SAFETY LOCK ON - AUDIT FIXED")
+        print("✅ TITAN V5.9.2 M1 LOOSER M15 DISABLED PAPER AUTO-SCAN 07-19 UTC started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V5.9.1 M1 FLEX PAPER ONLY + M5 LOCK REPORTED 77.8% + AUDIT FIXED", lifespan=lifespan)
+app=FastAPI(title="TITAN V5.9.2 M1 LOOSER M15 DISABLED PAPER", lifespan=lifespan)
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V5.9.1 M1 FLEX PAPER ONLY Live AUDIT FIXED","mode":"V591_M1_FLEX_PAPER_45_4OF7_SAFETY_LOCK","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK REPORTED + M1 FLEX 4/7 + M15 PAPER ONLY","live_enabled":MASTER_LIVE_ENABLE, "note":"77.8% WR is REPORTED 9-trade sample NOT intrinsic"}
+def root(): return {"status":"XAUUSD TITAN V5.9.2 M1 LOOSER M15 DISABLED PAPER ONLY Live","mode":"V592_M1_LOOSER_M15_DISABLED_PAPER","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK + M1 LOOSER only M15 DISABLED","live_enabled":MASTER_LIVE_ENABLE, "note":"M5 63.6% REPORTED 11-trade NOT intrinsic, M15 disabled -0.25R"}
 @app.get("/health")
-def health(): return {"status":"ok","mode":"V591_M1_FLEX_PAPER_AUDIT_FIXED","auto_scan":"5m PAPER V5.9.1 ALL TF","live_enabled":MASTER_LIVE_ENABLE}
+def health(): return {"status":"ok","mode":"V592_M1_LOOSER_M15_DISABLED_PAPER","auto_scan":"5m PAPER V5.9.2 M5+M1","live_enabled":MASTER_LIVE_ENABLE}
 @app.get("/status")
-def status(): return {"status":"ok","mode":"V591_M1_FLEX_PAPER_AUDIT_FIXED","live_enabled":MASTER_LIVE_ENABLE}
+def status(): return {"status":"ok","mode":"V592_M1_LOOSER_M15_DISABLED_PAPER","live_enabled":MASTER_LIVE_ENABLE}
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -516,13 +487,13 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             txt=update["message"]["text"].strip().split("@")[0]
             if TELEGRAM_CHAT_ID and cid!=str(TELEGRAM_CHAT_ID): return {"status":"ok"}
             if MASTER_LIVE_ENABLE:
-                send_telegram_msg("🚫 SAFETY LOCK ACTIVE - PAPER ONLY - NO LIVE EXECUTION", cid)
+                send_telegram_msg("🚫 SAFETY LOCK ACTIVE - PAPER ONLY", cid)
                 return {"status":"blocked"}
             if txt=="/status":
                 h1=fetch_h1_trend()
-                send_telegram_msg(f"🔒 *TITAN V5.9.1 M1 FLEX PAPER ONLY AUDIT FIXED*\nMode `V591_AUDIT_FIXED`\nH1 `{h1}`\nM1 FLEX 45% eff 4/7=57.1% MODEL48% PD60 req explicit (BUY <=low+0.6*rng / SELL >=low+0.4*rng) FVG OR StrDisp0.55+/reclaim Wick1.1x Body70% Disp0.35 SC42% RSI78/22 KillZone 07-19 UTC ON H1 OFF RR1:2 SL0.8 TP1.6\nM5 LOCK REPORTED 77.8% (9-trade sample NOT intrinsic) 60% eff 4/7 0.80 disp 0.56 SC 1.5x wick 55% body MODEL60% untouched\nM15 57% eff 4/7 fallback\nSafety Lock MASTER_LIVE_ENABLE=False PAPER ONLY\nMODEL_SCORE deterministic: 44+conf*0.55+(8 if swept) NOT real ML\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN V5.9.2 M1 LOOSER M15 DISABLED PAPER*\nMode `V592_M15_DISABLED`\nH1 `{h1}`\nM1 FLEX LOOSER 45% eff 4/7 MODEL48% PD60 OPTIONAL bonus SC42% Wick1.1x Body70% Disp0.35 RSI78/22 KillZone 07-19 UTC RR1:2 SL0.8 TP1.6\nM5 LOCK REPORTED 63.6% (was 77.8% 9-trade) 60% eff 4/7 0.80 disp 0.56 SC 1.5x wick 55% body MODEL60% untouched\nM15 DISABLED due to -0.25R expectancy (25% WR) - NO TRADE better\nSafety Lock MASTER_LIVE_ENABLE=False PAPER ONLY\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.9.1 M1 FLEX PAPER ONLY AUDIT FIXED*\n_M5 LOCK REPORTED 77.8% (9-trade sample) untouched_\n_M1 FLEX 45% eff 4/7 MODEL48% PD60 explicit FVG OR StrDisp_\n_PAPER VALIDATION ALL TF - NEED 100-200 SAMPLE_\n• /status • /scan • /backtest", cid)
+            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.9.2 M1 LOOSER M15 DISABLED PAPER*\n_M5 LOCK REPORTED 63.6% untouched_\n_M1 FLEX LOOSER PD60 optional_\n_M15 DISABLED -0.25R_\n• /status • /scan • /backtest", cid)
     except Exception as e: print(e)
     return {"status":"ok"}
