@@ -832,8 +832,38 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                         send_telegram_msg(f"❌ Last open Trade #{tid} LOSS -1R | WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R", cid)
                     else:
                         send_telegram_msg("No open trades", cid)
+            elif txt_base=="/testtrade":
+                # Create a dummy OPEN trade for testing dashboard when no setup found
+                trades = load_trades()
+                new_id = len(trades) + 1
+                test_sig = {
+                    "type": "BUY",
+                    "entry": 4142.47,
+                    "sl": 4140.67,
+                    "tp": 4146.07,
+                    "time": pht_now().isoformat(),
+                    "tf": "M5",
+                    "confluence": 60,
+                    "model_score": 70,
+                    "layers": ["TEST","EMA","Hammer"],
+                    "reason": "TEST TRADE - Dashboard testing"
+                }
+                tid = log_new_trade(test_sig)
+                send_telegram_msg(f"🧪 Test trade #{tid} created as OPEN BUY 4142.47 | Now try /win {tid} or /loss {tid} | Dashboard will show OPEN 1 | /dashboard", cid)
+            elif txt_base=="/reset":
+                # Reset to seed backtest history (20 trades)
+                try:
+                    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
+                        if os.path.exists(path):
+                            os.remove(path)
+                    seed = get_seed_trades()
+                    save_trades(seed)
+                    stats=calculate_stats(seed)
+                    send_telegram_msg(f"🔄 Reset to seed {stats['total_trades']} trades {stats['wr']}% WR | Dashboard /dashboard", cid)
+                except Exception as e:
+                    send_telegram_msg(f"Reset error {e}", cid)
             elif txt_base in ["/help","/start"]:
-                send_telegram_msg("🔒 *TITAN V6.1 M5 LOCK ONLY + DASHBOARD*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\nDashboard auto-updates every 5s from bot", cid)
+                send_telegram_msg("🔒 *TITAN V6.1 M5 LOCK ONLY + DASHBOARD*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade = create test OPEN trade\n• /reset = reset to 20 backtest trades\nDashboard auto-updates every 5s from bot", cid)
     except Exception as e:
         print(e)
         import traceback; traceback.print_exc()
