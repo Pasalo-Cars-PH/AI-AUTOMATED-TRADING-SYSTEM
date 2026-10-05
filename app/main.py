@@ -1,7 +1,8 @@
-import os, datetime
+import os, datetime, json
 from contextlib import asynccontextmanager
 import requests, pandas as pd
 from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi.responses import HTMLResponse, JSONResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 
@@ -14,6 +15,11 @@ TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 PHT = pytz.timezone('Asia/Manila')
 scheduler = BackgroundScheduler()
 
+# Trade storage for real-time dashboard
+TRADES_FILE = "/tmp/titan_trades_v6.json"
+# Also persist to /mnt/data for artifact access
+TRADES_FILE_PERSIST = "/mnt/data/titan_trades_v6.json"
+
 def pht_now(): return datetime.datetime.now(PHT)
 def format_time_pht(dt_str):
     try:
@@ -23,6 +29,115 @@ def format_time_pht(dt_str):
         return pht.strftime("%b %d, %I:%M %p PHT"), dt.strftime("%H:%M UTC")
     except: return str(dt_str)[:19], ""
 def format_price(p): return f"{float(p):.2f}"
+
+def load_trades():
+    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
+        try:
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    return json.load(f)
+        except: pass
+    return []
+
+def save_trades(trades):
+    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
+        try:
+            with open(path, 'w') as f:
+                json.dump(trades, f, indent=2)
+        except Exception as e:
+            print(f"Save trades error {path}: {e}")
+
+def log_new_trade(sig):
+    trades = load_trades()
+    trade_id = len(trades) + 1
+    trade = {
+        "id": trade_id,
+        "time": sig.get('time', pht_now().isoformat()),
+        "pht_time": format_time_pht(sig.get('time', ''))[0],
+        "type": sig.get('type', 'BUY'),
+        "entry": sig.get('entry', 0),
+        "sl": sig.get('sl', 0),
+        "tp": sig.get('tp', 0),
+        "tf": sig.get('tf', 'M5'),
+        "confluence": sig.get('confluence', 0),
+        "model_score": sig.get('model_score', 0),
+        "layers": sig.get('layers', []),
+        "reason": sig.get('reason', ''),
+        "status": "OPEN",
+        "result": None,
+        "r": None,
+        "closed_at": None
+    }
+    trades.append(trade)
+    save_trades(trades)
+    print(f"Logged new trade #{trade_id} {trade['type']} {trade['entry']}")
+    return trade_id
+
+def update_trade_result(trade_id, result):
+    # result: "WIN" or "LOSS"
+    trades = load_trades()
+    for t in trades:
+        if t['id'] == trade_id:
+            if result == "WIN":
+                t['status'] = "CLOSED"
+                t['result'] = "WIN"
+                t['r'] = 2.0
+            else:
+                t['status'] = "CLOSED"
+                t['result'] = "LOSS"
+                t['r'] = -1.0
+            t['closed_at'] = pht_now().isoformat()
+            save_trades(trades)
+            return True
+    return False
+
+def calculate_stats(trades):
+    closed = [t for t in trades if t.get('result') in ['WIN','LOSS']]
+    wins = len([t for t in closed if t['result']=='WIN'])
+    losses = len([t for t in closed if t['result']=='LOSS'])
+    total = wins + losses
+    net = sum([t.get('r',0) for t in closed if t.get('r') is not None])
+    wr = round(wins/total*100,1) if total>0 else 0
+    pf = round((wins*2)/(losses*1),2) if losses>0 else round(wins*2,2) if wins>0 else 0
+    exp = round(net/total,2) if total>0 else 0
+    # For evolution chart, calculate running stats
+    evolution = []
+    running_wins = 0
+    running_losses = 0
+    running_net = 0
+    for i, t in enumerate(closed):
+        if t['result']=='WIN':
+            running_wins+=1
+            running_net+=2.0
+        else:
+            running_losses+=1
+            running_net-=1.0
+        run_total = running_wins+running_losses
+        run_wr = round(running_wins/run_total*100,1) if run_total>0 else 0
+        run_pf = round((running_wins*2)/(running_losses*1),2) if running_losses>0 else 0
+        run_exp = round(running_net/run_total,2) if run_total>0 else 0
+        evolution.append({
+            "trade": i+1,
+            "wr": run_wr,
+            "pf": run_pf,
+            "exp": run_exp,
+            "net": running_net,
+            "result": t['result'],
+            "time": t.get('pht_time','')
+        })
+    return {
+        "total_trades": len(trades),
+        "closed_trades": total,
+        "open_trades": len(trades)-total,
+        "wins": wins,
+        "losses": losses,
+        "wr": wr,
+        "pf": pf,
+        "exp": exp,
+        "net": net,
+        "evolution": evolution,
+        "trades": trades
+    }
 
 def send_telegram_msg(msg, chat_id=None):
     cid = chat_id or TELEGRAM_CHAT_ID
@@ -169,12 +284,12 @@ def generate_chart_with_markings(window, sig, tf="M5"):
         ax.axhline(y=tp, color='#22c55e', linestyle=':', linewidth=1.0, label=f'TP {tp}')
         ax.fill_between(x_vals, sl, entry, color='#ef4444', alpha=0.1)
         ax.fill_between(x_vals, entry, tp, color='#22c55e', alpha=0.1)
-        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.0 M5 LOCK ONLY PAPER | {sig['reason']}", color='white', fontsize=8, fontweight='bold')
+        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.1 M5 LOCK ONLY PAPER | {sig['reason']}", color='white', fontsize=8, fontweight='bold')
         ax.set_ylabel('Price', color='white')
         ax.tick_params(colors='white')
         ax.legend(loc='upper left', fontsize=6, facecolor='black', edgecolor='white', labelcolor='white')
         ax.grid(True, alpha=0.15, color='white')
-        chart_path = f"/tmp/chart_{tf}_{sig['type']}_V60.png"
+        chart_path = f"/tmp/chart_{tf}_{sig['type']}_V61.png"
         plt.tight_layout()
         plt.savefig(chart_path, facecolor='black', dpi=150)
         plt.close()
@@ -282,7 +397,7 @@ def run_backtest(chat_id):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
-    send_telegram_msg("⏳ *TITAN V6.0 M5 LOCK ONLY PAPER*\n_M1/M15 DISABLED due to 0% WR and -0.25R_", chat_id)
+    send_telegram_msg("⏳ *TITAN V6.1 M5 LOCK ONLY PAPER + DASHBOARD*\n_M1/M15 DISABLED_", chat_id)
     try:
         rec_m5=fetch_hist_tf("5min", 5000)
         rec_m5_large=fetch_hist_tf("5min", 10000)
@@ -293,13 +408,13 @@ def run_backtest(chat_id):
         if rec_m5_large:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5")
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V6.0 M5 LOCK ONLY - M1/M15 DISABLED*\n"
+        msg=f"📊 *XAUUSD TITAN V6.1 M5 LOCK ONLY + DASHBOARD*\n"
         for key in ["M5_5k","M5_10k"]:
             if key in results:
                 t,w,l,wr,net,exp,pf, n = results[key]
                 label = "M5 5k bars" if "5k" in key else "M5 10k bars"
                 msg+=f"🔹 *{label}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
-        msg+=f"🔒 _V6.0: M5 LOCK ONLY thresholds 0.80 disp 0.56 SC 60% conf 60% MODEL 1.5x wick 55% body 07-19 UTC_\n_M1 DISABLED: 46 trades 0W-46L WR 0% - TOO LOOSE_\n_M15 DISABLED: 25% WR -0.25R_\n_45% WR PF1.64 Exp0.35R is REAL (20-trade) vs REPORTED 77.8% (9-trade) NOT intrinsic - Need 100+ trades_"
+        msg+=f"📊 Dashboard: /dashboard\n🔒 _V6.1: M5 LOCK ONLY 45% WR REAL (20-trade) vs 77.8% (9-trade) NOT intrinsic_\n_M1/M15 DISABLED_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -326,8 +441,9 @@ def manual_scan(chat_id, auto=False):
         return
     sig=analyze_titan_mtf(clean, tf="M5", h1_trend=h1)
     if sig:
+        trade_id = log_new_trade(sig)
         pht,utc=format_time_pht(sig['time'])
-        caption = f"{'🤖 AUTO' if auto else '⚡ MANUAL'} M5 5M XAUUSD M5 1:2 V6.0 PAPER 🔨\n• {sig['pair']} {sig['type']} M5 {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:2\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` MODEL `{sig['model_score']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• {sig['reason']}\n• M5 LOCK ONLY PAPER - M1/M15 DISABLED"
+        caption = f"{'🤖 AUTO' if auto else '⚡ MANUAL'} M5 5M XAUUSD M5 1:2 V6.1 PAPER 🔨 ID #{trade_id}\n• {sig['pair']} {sig['type']} M5 {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:2\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` MODEL `{sig['model_score']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• {sig['reason']}\n• M5 LOCK ONLY PAPER - ID #{trade_id} logged to dashboard\n• Close with /win {trade_id} or /loss {trade_id}"
         chart_path = generate_chart_with_markings(clean, sig, tf="M5")
         if chart_path and os.path.exists(chart_path):
             send_telegram_photo(chart_path, caption, chat_id)
@@ -335,7 +451,7 @@ def manual_scan(chat_id, auto=False):
             send_telegram_msg(caption, chat_id)
     else:
         if not auto:
-            send_telegram_msg(f"ℹ️ No setup M5 V6.0 PAPER ONLY - M1/M15 DISABLED\nH1 `{h1}`\nM5 LOCK REPORTED 45% (20-trade was 77.8% 9-trade) 60% conf 4/7 eff 0.80 disp 0.56 SC 1.5x wick 55% body\nM1 DISABLED: 0% WR 46L\nM15 DISABLED: -0.25R\nTry ulit 5 mins! PAPER ONLY", chat_id)
+            send_telegram_msg(f"ℹ️ No setup M5 V6.1 PAPER ONLY\nH1 `{h1}`\nM5 LOCK REPORTED 45% (20-trade was 77.8% 9-trade) 60% conf\nM1/M15 DISABLED\nTry ulit 5 mins! PAPER ONLY\nDashboard: /dashboard", chat_id)
 
 def auto_scan_job():
     try:
@@ -343,7 +459,7 @@ def auto_scan_job():
         now_utc = datetime.datetime.utcnow()
         if not TELEGRAM_CHAT_ID: return
         if not (7 <= now_utc.hour <= 19): return
-        print(f"[AUTO-SCAN V6.0 M5 LOCK ONLY] {now_utc} scanning M5 only...")
+        print(f"[AUTO-SCAN V6.1 M5 LOCK ONLY + DASHBOARD] {now_utc} scanning M5 only...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
     except Exception as e:
         print(f"Auto scan error: {e}")
@@ -351,19 +467,257 @@ def auto_scan_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not scheduler.running:
-        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v60_m5_lock_only_paper_autoscan_5m', replace_existing=True)
+        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v61_m5_lock_only_dashboard_paper_autoscan_5m', replace_existing=True)
         scheduler.start()
-        print("✅ TITAN V6.0 M5 LOCK ONLY PAPER AUTO-SCAN 07-19 UTC started! M1/M15 DISABLED")
+        print("✅ TITAN V6.1 M5 LOCK ONLY + DASHBOARD AUTO-SCAN 07-19 UTC started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V6.0 M5 LOCK ONLY M1/M15 DISABLED", lifespan=lifespan)
+app=FastAPI(title="TITAN V6.1 M5 LOCK ONLY + REAL-TIME DASHBOARD", lifespan=lifespan)
+
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V6.0 M5 LOCK ONLY PAPER ONLY Live","mode":"V60_M5_LOCK_ONLY_M1_M15_DISABLED","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK ONLY M1/M15 DISABLED","live_enabled":MASTER_LIVE_ENABLE}
+def root(): return {"status":"XAUUSD TITAN V6.1 M5 LOCK ONLY + DASHBOARD Live","mode":"V61_M5_LOCK_ONLY_DASHBOARD","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK ONLY + DASHBOARD","live_enabled":MASTER_LIVE_ENABLE, "dashboard":"/dashboard", "api":"/api/stats"}
+
 @app.get("/health")
-def health(): return {"status":"ok","mode":"V60_M5_LOCK_ONLY","auto_scan":"5m PAPER V6.0 M5 ONLY","live_enabled":MASTER_LIVE_ENABLE}
+def health(): return {"status":"ok","mode":"V61_M5_LOCK_ONLY_DASHBOARD","auto_scan":"5m PAPER V6.1 M5 ONLY + DASHBOARD","live_enabled":MASTER_LIVE_ENABLE}
+
 @app.get("/status")
-def status(): return {"status":"ok","mode":"V60_M5_LOCK_ONLY","live_enabled":MASTER_LIVE_ENABLE}
+def status(): return {"status":"ok","mode":"V61_M5_LOCK_ONLY_DASHBOARD","live_enabled":MASTER_LIVE_ENABLE}
+
+@app.get("/api/trades")
+def api_trades():
+    trades = load_trades()
+    return JSONResponse(calculate_stats(trades))
+
+@app.get("/api/stats")
+def api_stats():
+    trades = load_trades()
+    return JSONResponse(calculate_stats(trades))
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    # Return the connected dashboard HTML that fetches from /api/stats
+    html_content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TITAN V6.1 REAL-TIME HONEST DASHBOARD</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#fff;font-family:'Courier New',monospace;padding:12px}
+.header{border:1px solid #22c55e;padding:12px;margin-bottom:12px;background:#0a0a0a}
+.header h1{color:#22c55e;font-size:16px;margin-bottom:4px}
+.header p{color:#888;font-size:11px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px}
+.card{border:1px solid #333;padding:10px;background:#0a0a0a}
+.card.green{border-color:#22c55e}
+.card.red{border-color:#ef4444}
+.card h3{font-size:10px;color:#888;margin-bottom:4px}
+.card .val{font-size:18px;font-weight:bold}
+.card .val.green{color:#22c55e}
+.card .val.red{color:#ef4444}
+.card .val.white{color:#fff}
+.evolution{border:1px solid #333;padding:10px;margin-bottom:12px;background:#0a0a0a;overflow-x:auto}
+.evolution h3{font-size:11px;color:#22c55e;margin-bottom:8px}
+.bar{display:flex;gap:2px;align-items:end;height:60px;margin:8px 0}
+.bar div{flex:1;min-width:4px}
+.win{background:#22c55e}
+.loss{background:#ef4444}
+table{width:100%;border-collapse:collapse;font-size:10px;margin-top:8px}
+th,td{border:1px solid #333;padding:4px;text-align:left}
+th{background:#111;color:#888}
+.trades{max-height:300px;overflow-y:auto;border:1px solid #333;padding:8px;background:#0a0a0a}
+.lesson{border:1px solid #f59e0b;padding:10px;background:#0a0a0a;margin-bottom:12px}
+.lesson h3{color:#f59e0b;font-size:11px;margin-bottom:6px}
+.lesson li{font-size:10px;margin:2px 0;color:#ccc}
+.btn{padding:6px 10px;border:1px solid #22c55e;background:#000;color:#22c55e;cursor:pointer;font-size:10px;margin:2px}
+.btn:hover{background:#22c55e;color:#000}
+.btn.red{border-color:#ef4444;color:#ef4444}
+.btn.red:hover{background:#ef4444;color:#000}
+#auto{color:#22c55e;font-size:10px;animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+</style>
+</head>
+<body>
+<div class="header">
+<h1>🔒 TITAN V6.1 M5 LOCK ONLY - REAL-TIME HONEST DASHBOARD <span id="auto">● LIVE CONNECTED</span></h1>
+<p>REPORTED 77.8% (9-trade) → 63.6% (11-trade) → 45% (20-trade) REAL - NOT intrinsic - Regression to mean - Need 100+ trades</p>
+<p>M5 LOCK ONLY thresholds 0.80 disp 0.56 SC 60% conf 60% MODEL 1.5x wick 55% body 07-19 UTC | M1 DISABLED 0% WR 46L | M15 DISABLED 25% WR -0.25R</p>
+<p id="lastUpdate" style="color:#666;font-size:9px;margin-top:4px">Last update: loading...</p>
+</div>
+
+<div class="grid" id="statsGrid">
+<div class="card"><h3>TOTAL TRADES</h3><div class="val white" id="total">0</div></div>
+<div class="card green"><h3>WINS</h3><div class="val green" id="wins">0</div></div>
+<div class="card red"><h3>LOSSES</h3><div class="val red" id="losses">0</div></div>
+<div class="card"><h3>WIN RATE</h3><div class="val white" id="wr">0%</div></div>
+<div class="card"><h3>PROFIT FACTOR</h3><div class="val white" id="pf">0</div></div>
+<div class="card"><h3>EXPECTANCY</h3><div class="val white" id="exp">0R</div></div>
+<div class="card green"><h3>NET R</h3><div class="val green" id="net">0R</div></div>
+<div class="card"><h3>OPEN</h3><div class="val white" id="open">0</div></div>
+</div>
+
+<div class="evolution">
+<h3>📈 EVOLUTION - WR Decay as Sample Grows (Real-time from Telegram bot)</h3>
+<canvas id="wrChart" width="800" height="120" style="width:100%;background:#000;border:1px solid #222"></canvas>
+<div class="bar" id="tradeBar"></div>
+<div style="display:flex;gap:8px;margin-top:8px">
+<button class="btn" onclick="manualRefresh()">🔄 REFRESH FROM BOT</button>
+<button class="btn" onclick="simulateWin()">+WIN (+2R) TEST</button>
+<button class="btn red" onclick="simulateLoss()">+LOSS (-1R) TEST</button>
+</div>
+<p style="font-size:9px;color:#666;margin-top:6px">Backtest history: 9 trades 77.8% WR PF7.0 Exp1.33R → 11 trades 63.6% PF3.5 Exp0.91R → 20 trades 45% PF1.64 Exp0.35R (REAL) - V6.1 live trades auto-logged from Telegram /scan</p>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+<div class="lesson">
+<h3>🎯 BREAKEVEN MATH - 1:2 RR</h3>
+<ul>
+<li>Need 33.3% WR to breakeven: 1 win (+2R) per 2 losses (-1R)</li>
+<li>45% WR = +0.35R per trade → 100 trades = +35R</li>
+<li>Progress: <span id="progress">20/100</span> trades</li>
+<li>Bar: <span style="background:#22c55e;display:inline-block;width:60px;height:8px"></span> 20% of 100-trade validation goal</li>
+</ul>
+</div>
+<div class="lesson" style="border-color:#ef4444">
+<h3>🚨 LESSONS - Why M1/M15 DISABLED</h3>
+<ul>
+<li>M1 LOOSER V3: 46 trades 0W-46L 0% WR -1R - TOO LOOSE = noise</li>
+<li>M15: 12 trades 3W-9L 25% WR PF0.67 -0.25R - NEGATIVE</li>
+<li>Frequency without quality = 0% WR</li>
+<li>NO TRADE better than negative trade</li>
+<li>Small sample bias: 9 trades 77.8% is FAKE, 20 trades 45% is REAL</li>
+</ul>
+</div>
+</div>
+
+<div class="trades">
+<h3 style="font-size:11px;color:#22c55e;margin-bottom:8px">📋 LIVE TRADES FROM TELEGRAM BOT (Auto-logged via /scan → /win /loss)</h3>
+<table id="tradesTable">
+<tr><th>ID</th><th>Time</th><th>Type</th><th>Entry</th><th>SL</th><th>TP</th><th>Conf</th><th>Result</th><th>R</th></tr>
+</table>
+<p style="font-size:9px;color:#666;margin-top:6px">Commands: /scan → logs OPEN trade with ID, /win [id] → marks WIN (+2R), /loss [id] → marks LOSS (-1R), /trades → shows in Telegram, /dashboard → this page</p>
+</div>
+
+<script>
+let tradesData = {evolution:[], trades:[]};
+
+async function fetchStats(){
+ try{
+  const res = await fetch('/api/stats');
+  const data = await res.json();
+  tradesData = data;
+  updateUI(data);
+ }catch(e){
+  console.error('Fetch error', e);
+  document.getElementById('lastUpdate').textContent = 'Fetch failed - bot offline? Using backtest data';
+  // Fallback to backtest evolution
+  const fallback = [
+   {trade:9, wr:77.8, pf:7.0, exp:1.33, net:12, result:'WIN'},
+   {trade:11, wr:63.6, pf:3.5, exp:0.91, net:10},
+   {trade:20, wr:45.0, pf:1.64, exp:0.35, net:7}
+  ];
+  updateChart(fallback);
+ }
+}
+
+function updateUI(data){
+ document.getElementById('total').textContent = data.total_trades;
+ document.getElementById('wins').textContent = data.wins;
+ document.getElementById('losses').textContent = data.losses;
+ document.getElementById('wr').textContent = data.wr + '%';
+ document.getElementById('pf').textContent = data.pf;
+ document.getElementById('exp').textContent = data.exp + 'R';
+ document.getElementById('net').textContent = data.net + 'R';
+ document.getElementById('open').textContent = data.open_trades;
+ document.getElementById('progress').textContent = data.closed_trades + '/100';
+ document.getElementById('lastUpdate').textContent = 'Last update: ' + new Date().toLocaleString() + ' | Auto-refresh every 5s';
+
+ // Trade bar
+ const bar = document.getElementById('tradeBar');
+ bar.innerHTML = '';
+ data.trades.slice(-60).forEach(t=>{
+  const d = document.createElement('div');
+  d.style.height = t.result==='WIN' ? '40px' : '20px';
+  d.className = t.result==='WIN' ? 'win' : t.result==='LOSS' ? 'loss' : 'win';
+  d.style.opacity = t.result ? '1' : '0.3';
+  d.title = `#${t.id} ${t.type} ${t.result||'OPEN'} ${t.r||0}R`;
+  bar.appendChild(d);
+ });
+
+ // Table
+ const table = document.getElementById('tradesTable');
+ table.innerHTML = '<tr><th>ID</th><th>Time</th><th>Type</th><th>Entry</th><th>SL</th><th>TP</th><th>Conf</th><th>Result</th><th>R</th></tr>';
+ data.trades.slice().reverse().slice(0,20).forEach(t=>{
+  const row = table.insertRow();
+  row.innerHTML = `<td>#${t.id}</td><td>${t.pht_time||''}</td><td style="color:${t.type==='BUY'?'#22c55e':'#ef4444'}">${t.type}</td><td>${t.entry}</td><td>${t.sl}</td><td>${t.tp}</td><td>${t.confluence?.toFixed(0)||0}%</td><td style="color:${t.result==='WIN'?'#22c55e':t.result==='LOSS'?'#ef4444':'#888'}">${t.result||'OPEN'}</td><td>${t.r!==null?t.r+'R':'-'}</td>`;
+ });
+
+ updateChart(data.evolution);
+}
+
+function updateChart(evolution){
+ const canvas = document.getElementById('wrChart');
+ const ctx = canvas.getContext('2d');
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ ctx.strokeStyle = '#222';
+ ctx.beginPath();
+ ctx.moveTo(0, canvas.height*0.3);
+ ctx.lineTo(canvas.width, canvas.height*0.3);
+ ctx.stroke();
+ ctx.fillStyle = '#666';
+ ctx.font = '10px monospace';
+ ctx.fillText('70% WR', 0, canvas.height*0.3 -2);
+ ctx.fillText('45% WR REAL (20 trades)', 0, canvas.height*0.6);
+ ctx.fillText('33.3% breakeven', 0, canvas.height*0.8);
+
+ if(evolution.length<2) return;
+ const maxTrades = Math.max(20, evolution.length);
+ evolution.forEach((p,i)=>{
+  const x = (p.trade / maxTrades) * canvas.width;
+  const y = canvas.height - (p.wr/100)*canvas.height;
+  if(i===0){
+   ctx.beginPath();
+   ctx.moveTo(x,y);
+  } else {
+   ctx.lineTo(x,y);
+  }
+ });
+ ctx.strokeStyle = '#22c55e';
+ ctx.lineWidth = 2;
+ ctx.stroke();
+
+ // Points
+ evolution.forEach(p=>{
+  const x = (p.trade / maxTrades) * canvas.width;
+  const y = canvas.height - (p.wr/100)*canvas.height;
+  ctx.beginPath();
+  ctx.arc(x,y,3,0,Math.PI*2);
+  ctx.fillStyle = p.result==='WIN' ? '#22c55e' : '#ef4444';
+  ctx.fill();
+ });
+}
+
+function manualRefresh(){ fetchStats(); }
+function simulateWin(){
+ // Local simulation only, not saved to bot
+ tradesData.trades.push({id: tradesData.trades.length+1, type:'BUY', entry:0, sl:0, tp:0, confluence:60, result:'WIN', r:2.0, pht_time:'SIM'});
+ fetchStats();
+}
+function simulateLoss(){
+ tradesData.trades.push({id: tradesData.trades.length+1, type:'SELL', entry:0, sl:0, tp:0, confluence:60, result:'LOSS', r:-1.0, pht_time:'SIM'});
+ fetchStats();
+}
+
+fetchStats();
+setInterval(fetchStats, 5000);
+</script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html_content)
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -372,16 +726,72 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         update=await request.json()
         if "message" in update and "text" in update["message"]:
             cid=str(update["message"]["chat"]["id"])
-            txt=update["message"]["text"].strip().split("@")[0]
+            txt=update["message"]["text"].strip()
+            txt_base=txt.split("@")[0].split()[0]
+            args=txt.split()[1:]
             if TELEGRAM_CHAT_ID and cid!=str(TELEGRAM_CHAT_ID): return {"status":"ok"}
             if MASTER_LIVE_ENABLE:
                 send_telegram_msg("🚫 SAFETY LOCK ACTIVE - PAPER ONLY", cid)
                 return {"status":"blocked"}
-            if txt=="/status":
+            if txt_base=="/status":
                 h1=fetch_h1_trend()
-                send_telegram_msg(f"🔒 *TITAN V6.0 M5 LOCK ONLY PAPER*\nMode `V60_M5_ONLY`\nH1 `{h1}`\nM5 LOCK REPORTED 45% (20-trade was 77.8% 9-trade) 60% eff 4/7 0.80 disp 0.56 SC 1.5x wick 55% body MODEL60% untouched RR1:2 SL1.8 TP3.6\nM1 DISABLED: 46 trades 0W-46L WR 0% - TOO LOOSE\nM15 DISABLED: 25% WR -0.25R\nSafety Lock PAPER ONLY\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
-            elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
-            elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V6.0 M5 LOCK ONLY PAPER*\n_M1 DISABLED 0% WR_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest", cid)
-    except Exception as e: print(e)
+                stats=calculate_stats(load_trades())
+                send_telegram_msg(f"🔒 *TITAN V6.1 M5 LOCK ONLY + DASHBOARD*\nMode `V61_DASHBOARD`\nH1 `{h1}`\nLive Trades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nM5 LOCK 45% REAL (20-trade) was 77.8% (9-trade) NOT intrinsic\nM1 DISABLED 0% WR 46L\nM15 DISABLED -0.25R\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+            elif txt_base=="/scan": background_tasks.add_task(manual_scan, cid)
+            elif txt_base=="/backtest": background_tasks.add_task(run_backtest, cid)
+            elif txt_base=="/dashboard":
+                host = str(request.base_url).rstrip('/')
+                send_telegram_msg(f"📊 *DASHBOARD*\n{host}/dashboard\nAPI {host}/api/stats\nTrades auto-logged from /scan\nClose with /win [id] or /loss [id]", cid)
+            elif txt_base=="/trades":
+                stats=calculate_stats(load_trades())
+                msg=f"📋 *LIVE TRADES* Total `{stats['total_trades']}` Closed `{stats['closed_trades']}` Open `{stats['open_trades']}`\n"
+                for t in stats['trades'][-10:]:
+                    msg+=f"#{t['id']} {t['type']} {t['entry']} {t.get('result','OPEN')} {t.get('r','-')}R\n"
+                send_telegram_msg(msg, cid)
+            elif txt_base=="/win":
+                if args:
+                    try:
+                        tid=int(args[0])
+                        if update_trade_result(tid, "WIN"):
+                            stats=calculate_stats(load_trades())
+                            send_telegram_msg(f"✅ Trade #{tid} WIN +2R | WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R Net {stats['net']}R | Dashboard /dashboard", cid)
+                        else:
+                            send_telegram_msg(f"Trade #{tid} not found", cid)
+                    except: send_telegram_msg("Usage /win [id]", cid)
+                else:
+                    # Win last open
+                    trades=load_trades()
+                    open_trades=[t for t in trades if t['status']=='OPEN']
+                    if open_trades:
+                        tid=open_trades[-1]['id']
+                        update_trade_result(tid, "WIN")
+                        stats=calculate_stats(load_trades())
+                        send_telegram_msg(f"✅ Last open Trade #{tid} WIN +2R | WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R", cid)
+                    else:
+                        send_telegram_msg("No open trades", cid)
+            elif txt_base=="/loss":
+                if args:
+                    try:
+                        tid=int(args[0])
+                        if update_trade_result(tid, "LOSS"):
+                            stats=calculate_stats(load_trades())
+                            send_telegram_msg(f"❌ Trade #{tid} LOSS -1R | WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R Net {stats['net']}R | Dashboard /dashboard", cid)
+                        else:
+                            send_telegram_msg(f"Trade #{tid} not found", cid)
+                    except: send_telegram_msg("Usage /loss [id]", cid)
+                else:
+                    trades=load_trades()
+                    open_trades=[t for t in trades if t['status']=='OPEN']
+                    if open_trades:
+                        tid=open_trades[-1]['id']
+                        update_trade_result(tid, "LOSS")
+                        stats=calculate_stats(load_trades())
+                        send_telegram_msg(f"❌ Last open Trade #{tid} LOSS -1R | WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R", cid)
+                    else:
+                        send_telegram_msg("No open trades", cid)
+            elif txt_base in ["/help","/start"]:
+                send_telegram_msg("🔒 *TITAN V6.1 M5 LOCK ONLY + DASHBOARD*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\nDashboard auto-updates every 5s from bot", cid)
+    except Exception as e:
+        print(e)
+        import traceback; traceback.print_exc()
     return {"status":"ok"}
