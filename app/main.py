@@ -1,4 +1,4 @@
-import os, datetime
+import os, datetime, io
 from contextlib import asynccontextmanager
 import requests, pandas as pd
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -21,6 +21,7 @@ def format_time_pht(dt_str):
         return pht.strftime("%b %d, %I:%M %p PHT"), dt.strftime("%H:%M UTC")
     except: return str(dt_str)[:19], ""
 def format_price(p): return f"{float(p):.2f}"
+
 def send_telegram_msg(msg, chat_id=None):
     cid = chat_id or TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -29,6 +30,18 @@ def send_telegram_msg(msg, chat_id=None):
         if r.status_code!=200:
             requests.post(url, json={"chat_id": cid, "text": msg}, timeout=10)
     except: pass
+
+def send_telegram_photo(photo_path, caption, chat_id=None):
+    cid = chat_id or TELEGRAM_CHAT_ID
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    try:
+        with open(photo_path, 'rb') as f:
+            files = {'photo': f}
+            data = {'chat_id': cid, 'caption': caption, 'parse_mode': 'Markdown'}
+            requests.post(url, files=files, data=data, timeout=15)
+    except Exception as e:
+        print(f"Photo send error: {e}")
+        send_telegram_msg(caption, chat_id)
 
 def calculate_ema(closes, p):
     if len(closes)<p: return None
@@ -116,19 +129,85 @@ def fetch_hist(outputsize=3000):
     df=df[df['weekday']<5]; df=df[df['high']>df['low']]
     return df.to_dict('records')
 
+def generate_chart_with_markings(window, sig, tf="M1"):
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        candles = list(reversed(window))[-50:]
+        candles = candles[-40:]
+        opens = [c['open'] for c in candles]
+        highs = [c['high'] for c in candles]
+        lows = [c['low'] for c in candles]
+        closes = [c['close'] for c in candles]
+        ema20_vals=[]; ema50_vals=[]
+        for i in range(len(closes)):
+            if i>=19:
+                e20=calculate_ema(closes[:i+1],20)
+                ema20_vals.append(e20)
+            else:
+                ema20_vals.append(None)
+            if i>=49:
+                e50=calculate_ema(closes[:i+1],50)
+                ema50_vals.append(e50)
+            else:
+                ema50_vals.append(None)
+        fig, ax = plt.subplots(figsize=(10,6), facecolor='black')
+        ax.set_facecolor('black')
+        for i in range(len(candles)):
+            o=opens[i]; h=highs[i]; l=lows[i]; c=closes[i]
+            color = '#22c55e' if c>=o else '#ef4444'
+            ax.plot([i,i],[l,h], color=color, linewidth=1)
+            body_bottom = min(o,c)
+            body_height = abs(c-o)
+            if body_height < (max(highs)-min(lows))*0.002:
+                body_height = (max(highs)-min(lows))*0.005
+            rect = mpatches.Rectangle((i-0.3, body_bottom), 0.6, body_height, facecolor=color, edgecolor=color)
+            ax.add_patch(rect)
+            if i==len(candles)-1:
+                ax.annotate(f'HAMMER\nSC{int(sig["confluence"])}%\n{tf} {sig["type"]}', xy=(i, l), xytext=(i-8, l- (max(highs)-min(lows))*0.08),
+                            color='#22c55e', fontsize=8, fontweight='bold',
+                            arrowprops=dict(facecolor='#22c55e', shrink=0.05, width=1, headwidth=5),
+                            bbox=dict(boxstyle="round,pad=0.3", facecolor='black', edgecolor='#22c55e'))
+        x_vals = list(range(len(candles)))
+        e20_plot = [v for v in ema20_vals if v is not None]
+        e50_plot = [v for v in ema50_vals if v is not None]
+        if len(e20_plot)>0:
+            ax.plot(x_vals[-len(e20_plot):], e20_plot, color='#22c55e', linewidth=1.2, label='EMA20', alpha=0.8)
+        if len(e50_plot)>0:
+            ax.plot(x_vals[-len(e50_plot):], e50_plot, color='white', linewidth=1.0, label='EMA50', alpha=0.7)
+        entry = sig['entry']; sl = sig['sl']; tp = sig['tp']
+        ax.axhline(y=entry, color='#22c55e', linestyle='--', linewidth=1.2, label=f'Entry {entry}')
+        ax.axhline(y=sl, color='#ef4444', linestyle='--', linewidth=1.0, label=f'SL {sl}')
+        ax.axhline(y=tp, color='#22c55e', linestyle=':', linewidth=1.0, label=f'TP {tp}')
+        ax.fill_between(x_vals, sl, entry, color='#ef4444', alpha=0.1)
+        ax.fill_between(x_vals, entry, tp, color='#22c55e', alpha=0.1)
+        ax.set_title(f"XAUUSD {tf} {sig['type']} | {sig['reason']} | {format_time_pht(sig['time'])[0]}", color='white', fontsize=11, fontweight='bold')
+        ax.set_ylabel('Price', color='white')
+        ax.tick_params(colors='white')
+        ax.legend(loc='upper left', fontsize=7, facecolor='black', edgecolor='white', labelcolor='white')
+        ax.grid(True, alpha=0.15, color='white')
+        chart_path = f"/tmp/chart_{tf}_{sig['type']}.png"
+        plt.tight_layout()
+        plt.savefig(chart_path, facecolor='black', dpi=150)
+        plt.close()
+        return chart_path
+    except Exception as e:
+        print(f"Chart gen error: {e}")
+        import traceback; traceback.print_exc()
+        return None
+
 def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
     if tf!="M1" and (dt.hour<7 or dt.hour>19): return None
-
     oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
     e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
     rsi=calculate_rsi(closes,14)
     if not e20 or not e50: return None
-
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
-
     if tf=="M1":
         disp_req, sc_req, conf_req, ml_req = 0.40, 0.45, 40, 50
         bullish=is_bullish_pinbar_relaxed(c0, "M1")
@@ -141,17 +220,14 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         disp_req, sc_req, conf_req, ml_req = 0.75, 0.52, 55, 55
         bullish=is_bullish_pinbar(c0)
         bearish=is_bearish_pinbar(c0)
-
     if body<prev*disp_req: return None
     if not bullish and not bearish: return None
-
     rng=c0['high']-c0['low']
     if rng==0: return None
     if bullish and not (c0['close']>e20>e50): return None
     if bearish and not (c0['close']<e20<e50): return None
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
     if sc<sc_req: return None
-
     layers=0; logs=[]
     if (bullish and c0['close']>e20>e50) or (bearish and c0['close']<e20<e50):
         layers+=1; logs.append("EMA")
@@ -163,7 +239,6 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     else:
         if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
             layers+=1; logs.append(f"H1_{h1_trend}")
-
     try:
         high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
         mid=low_n+(high_n-low_n)*0.6
@@ -176,27 +251,21 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03:
             layers+=1; logs.append("FVG")
     except: pass
-
     conf=layers/7*100 if tf!="M1" else layers/5*100
     if conf<conf_req: return None
-
     if tf=="M5":
         if bullish and h1_trend=="BEAR" and conf<68: return None
         if bearish and h1_trend=="BULL" and conf<68: return None
         if bullish and rsi>70: return None
         if bearish and rsi<30: return None
-
     last_10_lows=[c['low'] for c in window[1:11]]
     last_10_highs=[c['high'] for c in window[1:11]]
     swept = (bullish and c0['low']<=min(last_10_lows)+0.05) or (bearish and c0['high']>=max(last_10_highs)-0.05)
-
     ai_score=min(98, 44+conf*0.55+(8 if swept else 0))
     if ai_score<ml_req: return None
-
     if tf=="M1": sl_d, tp_d = 0.8, 1.6
     elif tf=="M5": sl_d, tp_d = 1.8, 3.6
     else: sl_d, tp_d = 3.0, 6.0
-
     entry=round(c0['close'],2)
     sl=round(entry-sl_d if bullish else entry+sl_d,2)
     tp=round(entry+tp_d if bullish else entry-tp_d,2)
@@ -235,14 +304,14 @@ def run_sim(records):
     return total,wins,losses,wr,net,exp
 
 def run_backtest(chat_id):
-    send_telegram_msg("⏳ *TITAN V5.8 MULTI-TF V2 M1/M5/M15*\n_M5 77.8% LOCK + M1 RELAXED_", chat_id)
+    send_telegram_msg("⏳ *TITAN V5.8 V3 WITH CHART*\n_M5 77.8% LOCK + M1 RELAXED + Chart_", chat_id)
     try:
         rec=fetch_hist(3000)
         if not rec: send_telegram_msg("Data fail", chat_id); return
         split=int(len(rec)*0.66); ins=rec[:split]; outs=rec[split:]
         t,w,l,wr,net,exp=run_sim(ins)
         t2,w2,l2,wr2,net2,exp2=run_sim(outs)
-        msg=f"📊 *XAUUSD TITAN V5.8 MULTI-TF V2*\n_M5 LOCK 77.8% WR 12R 1.33R exp_\n\n🔹 M5 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 M5 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n🔒 _M5 77.8% LOCK + M1 RELAXED 40% + M15_\n_M1 SL0.8 TP1.6 M5 SL1.8 TP3.6 M15 SL3.0 TP6.0_"
+        msg=f"📊 *XAUUSD TITAN V5.8 V3 WITH CHART*\n_M5 LOCK 77.8% WR 12R 1.33R exp_\n\n🔹 M5 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 M5 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n🔒 _WITH AUTO CHART SCREENSHOT_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         send_telegram_msg(f"Err {e}", chat_id)
@@ -261,9 +330,12 @@ def manual_scan(chat_id, auto=False):
             sig=analyze_titan_mtf(clean, tf=tf, h1_trend=h1)
             if sig:
                 pht,utc=format_time_pht(sig['time'])
-                auto_tag = f"🤖 AUTO {tf} 5M" if auto else f"⚡ MANUAL {tf}"
-                msg=f"{auto_tag} *XAUUSD {tf} 1:2* 🔨\n\n• {sig['pair']} {sig['type']} {sig['tf']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• {tf} {'LOCK 77.8%' if tf=='M5' else 'RELAXED'}"
-                send_telegram_msg(msg, chat_id)
+                caption = f"🤖 AUTO {tf} 5M XAUUSD {tf} 1:2 🔨\n\n• {sig['pair']} {sig['type']} {sig['tf']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• {tf} {'LOCK 77.8%' if tf=='M5' else 'RELAXED'} WITH CHART"
+                chart_path = generate_chart_with_markings(clean, sig, tf=tf)
+                if chart_path and os.path.exists(chart_path):
+                    send_telegram_photo(chart_path, caption, chat_id)
+                else:
+                    send_telegram_msg(caption, chat_id)
                 found=True
                 if not auto: break
                 else: return
@@ -275,7 +347,7 @@ def auto_scan_job():
         now_utc = datetime.datetime.utcnow()
         if not TELEGRAM_CHAT_ID: return
         if not (7 <= now_utc.hour <= 19): return
-        print(f"[AUTO-SCAN MULTI M1/M5/M15 V2] {now_utc} scanning...")
+        print(f"[AUTO-SCAN V3 CHART] {now_utc} scanning...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
     except Exception as e:
         print(f"Auto scan error: {e}")
@@ -283,19 +355,19 @@ def auto_scan_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not scheduler.running:
-        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v58_mtf_v2_autoscan_5m', replace_existing=True)
+        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v58_mtf_v3_chart_autoscan_5m', replace_existing=True)
         scheduler.start()
-        print("✅ TITAN V5.8 MULTI-TF V2 M1 RELAXED AUTO-SCAN every 5 mins 7-19 UTC started!")
+        print("✅ TITAN V5.8 V3 WITH CHART AUTO-SCAN every 5 mins started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V5.8 MULTI-TF V2 M1 RELAXED 77.8% WR + AUTO 5M", lifespan=lifespan)
+app=FastAPI(title="TITAN V5.8 V3 WITH CHART 77.8% WR + AUTO 5M", lifespan=lifespan)
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V5.8 MULTI-TF V2 M1 RELAXED 77.8% + AUTO 5M Live","mode":"FINAL_LOCK_77_8_WR_MULTI_M1_M5_M15_V2","time":pht_now().isoformat(),"auto_scan":"every 5 mins 7-19 UTC M1/M5/M15"}
+def root(): return {"status":"XAUUSD TITAN V5.8 V3 WITH CHART Live","mode":"V3_CHART","time":pht_now().isoformat(),"auto_scan":"5m WITH CHART"}
 @app.get("/health")
-def health(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR_MULTI_M1_M5_M15_V2","auto_scan":"5m M1/M5/M15"}
+def health(): return {"status":"ok","mode":"V3_CHART","auto_scan":"5m CHART"}
 @app.get("/status")
-def status(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR_MULTI_M1_M5_M15_V2"}
+def status(): return {"status":"ok","mode":"V3_CHART"}
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -308,9 +380,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if TELEGRAM_CHAT_ID and cid!=str(TELEGRAM_CHAT_ID): return {"status":"ok"}
             if txt=="/status":
                 h1=fetch_h1_trend()
-                send_telegram_msg(f"🔒 *TITAN V5.8 MULTI-TF V2 M1 RELAXED 77.8% WR + AUTO 5M*\nMode `MULTI_M1_M5_M15_V2`\nH1 `{h1}`\nM1 SL0.8 TP1.6 40%conf RELAXED 24/7\nM5 SL1.8 TP3.6 60%conf LOCK 77.8% WR\nM15 SL3.0 TP6.0 55%conf\nAuto-scan every 5 mins 7-19 UTC\nManual /scan scans M5->M1->M15\n9 trades M5 77.8% WR 12R 1.33R exp 7.0 PF\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN V5.8 V3 WITH CHART*\nMode `V3_CHART`\nH1 `{h1}`\nM1 SL0.8 TP1.6 40% RELAXED\nM5 SL1.8 TP3.6 60% LOCK 77.8% WR\nM15 SL3.0 TP6.0 55%\nAuto-scan with chart screenshot\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.8 MULTI-TF V2 M1 RELAXED*\n_M5 LOCK 77.8% WR + M1 RELAXED_\n_Auto-scan every 5 mins M1/M5/M15_\n• /status • /scan • /backtest\n*M1 0.8/1.6 40% M5 1.8/3.6 60% M15 3.0/6.0*", cid)
+            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.8 V3 WITH CHART*\n_M5 77.8% + M1 RELAXED + CHART_\n• /status • /scan • /backtest", cid)
     except Exception as e: print(e)
     return {"status":"ok"}
