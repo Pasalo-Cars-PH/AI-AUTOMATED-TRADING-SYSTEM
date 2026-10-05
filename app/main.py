@@ -116,13 +116,11 @@ def analyze_titan_final(window, h1_trend=None):
     rng=c0['high']-c0['low']
     if rng==0: return None
 
-    # 3 GATES - FINAL LOCK
     if bullish and not (c0['close']>e20>e50): return None
     if bearish and not (c0['close']<e20<e50): return None
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
     if sc<0.56: return None
 
-    # 7 LAYERS - FINAL LOCK 60% conf
     layers=0; logs=[]
     if (bullish and c0['close']>e20>e50) or (bearish and c0['close']<e20<e50):
         layers+=1; logs.append("EMA")
@@ -149,13 +147,11 @@ def analyze_titan_final(window, h1_trend=None):
     conf=layers/7*100
     if conf<60: return None
 
-    # QUALITY LOCK
     if bullish and h1_trend=="BEAR" and conf<68: return None
     if bearish and h1_trend=="BULL" and conf<68: return None
     if bullish and rsi>70: return None
     if bearish and rsi<30: return None
 
-    # 8 BOOSTERS - FINAL LOCK
     last_10_lows=[c['low'] for c in window[1:11]]
     last_10_highs=[c['high'] for c in window[1:11]]
     swept = (bullish and c0['low']<=min(last_10_lows)+0.05) or (bearish and c0['high']>=max(last_10_highs)-0.05)
@@ -202,23 +198,24 @@ def run_sim(records):
     return total,wins,losses,wr,net,exp
 
 def run_backtest(chat_id):
-    send_telegram_msg("⏳ *TITAN V5.8 FINAL LOCK 77.8% WR - 3G 7L 8B HOLY GRAIL*\n_Hammer 60%conf ML60% SC56% Disp0.80x 1:2 RR_\n_Locked for Monday Live_", chat_id)
+    send_telegram_msg("⏳ *TITAN V5.8 FINAL LOCK 77.8% WR + AUTO-SCAN 5M*\n_Hammer 60%conf ML60% SC56% 1:2 RR_", chat_id)
     try:
         rec=fetch_hist(3000)
         if not rec: send_telegram_msg("Data fail", chat_id); return
         split=int(len(rec)*0.66); ins=rec[:split]; outs=rec[split:]
         t,w,l,wr,net,exp=run_sim(ins)
         t2,w2,l2,wr2,net2,exp2=run_sim(outs)
-        msg=f"📊 *XAUUSD TITAN V5.8 FINAL LOCK 1:2*\n_77.8% WR 12R 1.33R exp 7.0 PF HOLY GRAIL_\n\n🔹 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n🔒 _FINAL LOCK: Hammer 60%conf ML60%_\n_3G: Trend+Structure+Momentum_\n_7L: EMA+Hammer/SC/Disp/H1/PD/FVG_\n_8B: News+Kill+DXY+Sweep+PD+FVG+RSI+Spread+ML_\n_RR 1:2 SL18 TP36 - 77.8% WR LOCKED_"
+        msg=f"📊 *XAUUSD TITAN V5.8 FINAL LOCK 1:2 + AUTO 5M*\n_77.8% WR 12R 1.33R exp 7.0 PF_\n\n🔹 In-Sample ({len(ins)}):\n Trades `{t}` | WR `{wr}%` | Net `{net}R` | Exp `{exp}R` | W/L `{w}/{l}`\n\n🔹 Out-Sample ({len(outs)}):\n Trades `{t2}` | WR `{wr2}%` | Net `{net2}R` | Exp `{exp2}R` | W/L `{w2}/{l2}`\n\n🔒 _FINAL LOCK + AUTO SCAN 5M 7-19 UTC_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         send_telegram_msg(f"Err {e}", chat_id)
 
-def manual_scan(chat_id):
+def manual_scan(chat_id, auto=False):
     h1=fetch_h1_trend()
-    send_telegram_msg(f"🔍 *Scanning TITAN V5.8 FINAL LOCK 77.8% WR*\n_3G 7L 8B Locked_ H1 `{h1}`", chat_id)
     data=fetch_m5_live()
-    if not data: send_telegram_msg("No data", chat_id); return
+    if not data:
+        if not auto: send_telegram_msg("No data", chat_id)
+        return
     clean=[]
     for d in data:
         try: clean.append({"open":float(d["open"]),"high":float(d["high"]),"low":float(d["low"]),"close":float(d["close"]),"datetime":d["datetime"]})
@@ -227,23 +224,40 @@ def manual_scan(chat_id):
         sig=analyze_titan_final(clean, h1_trend=h1)
         if sig:
             pht,utc=format_time_pht(sig['time'])
-            msg=f"⚡ *XAUUSD TITAN V5.8 FINAL LOCK 77.8% 1:2* 🔨🔒\n\n• {sig['pair']} {sig['type']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Boosters `{' + '.join(sig['boosters'][:4])}`\n• Reason `{sig['reason']}`\n• 🔒 FINAL LOCK 77.8% WR"
+            auto_tag = "🤖 AUTO 5M" if auto else "⚡ MANUAL"
+            msg=f"{auto_tag} *XAUUSD TITAN V5.8 FINAL LOCK 77.8% 1:2* 🔨🔒\n\n• {sig['pair']} {sig['type']} {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}`\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` ML `{sig['ai']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• Reason `{sig['reason']}`\n• 🔒 77.8% WR AUTO-SCAN"
             send_telegram_msg(msg, chat_id); return
-    send_telegram_msg(f"ℹ️ No Final Lock setup. Need 60%+L + ML60%+\nH1 `{h1}`\n🔒 V5.8 77.8% WR Locked", chat_id)
+    if not auto:
+        send_telegram_msg(f"ℹ️ No Final Lock setup. Need 60%+L + ML60%+\nH1 `{h1}`\n🔒 V5.8 77.8% WR Locked + Auto 5M", chat_id)
+
+def auto_scan_job():
+    # Auto scan every 5 mins only during Kill Zone 7-19 UTC (3PM-3AM PHT)
+    try:
+        now_utc = datetime.datetime.utcnow()
+        if now_utc.weekday()>=5: return # no weekend
+        if not (7 <= now_utc.hour <= 19): return
+        if not TELEGRAM_CHAT_ID: return
+        print(f"[AUTO-SCAN 5M] {now_utc} scanning...")
+        manual_scan(TELEGRAM_CHAT_ID, auto=True)
+    except Exception as e:
+        print(f"Auto scan error: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not scheduler.running: scheduler.start()
+    if not scheduler.running:
+        scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v58_autoscan_5m', replace_existing=True)
+        scheduler.start()
+        print("✅ TITAN V5.8 AUTO-SCAN every 5 mins 7-19 UTC started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V5.8 FINAL LOCK 77.8% WR HOLY GRAIL", lifespan=lifespan)
+app=FastAPI(title="TITAN V5.8 FINAL LOCK 77.8% WR + AUTO 5M", lifespan=lifespan)
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V5.8 FINAL LOCK 77.8% Live","mode":"FINAL_LOCK_77_8_WR","time":pht_now().isoformat()}
+def root(): return {"status":"XAUUSD TITAN V5.8 FINAL LOCK 77.8% + AUTO 5M Live","mode":"FINAL_LOCK_77_8_WR_AUTO_5M","time":pht_now().isoformat(),"auto_scan":"every 5 mins 7-19 UTC"}
 @app.get("/health")
-def health(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR"}
+def health(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR_AUTO_5M","auto_scan":"5m"}
 @app.get("/status")
-def status(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR"}
+def status(): return {"status":"ok","mode":"FINAL_LOCK_V58_77_8_WR_AUTO_5M"}
 
 @app.api_route("/telegram-webhook", methods=["GET","POST"])
 @app.api_route("/telegram/webhook", methods=["GET","POST"])
@@ -256,9 +270,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if TELEGRAM_CHAT_ID and cid!=str(TELEGRAM_CHAT_ID): return {"status":"ok"}
             if txt=="/status":
                 h1=fetch_h1_trend()
-                send_telegram_msg(f"🔒 *TITAN V5.8 FINAL LOCK 77.8% WR*\nMode `FINAL_LOCK_77_8_WR`\nH1 `{h1}`\nRR 1:2 SL18 TP36\nHammer 60%conf ML60% SC56%\n3G 7L 8B Complete\n9 trades 77.8% WR 12R 1.33R exp 7.0 PF\nLocked for Monday Live\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN V5.8 FINAL LOCK 77.8% WR + AUTO 5M*\nMode `FINAL_LOCK_77_8_WR_AUTO_5M`\nH1 `{h1}`\nRR 1:2 SL18 TP36\nHammer 60%conf ML60% SC56%\nAuto-scan every 5 mins 7-19 UTC Kill Zone\nManual /scan anytime\n9 trades 77.8% WR 12R 1.33R exp 7.0 PF\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt=="/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.8 FINAL LOCK 77.8% WR*\n_9 trades 77.8% WR 12R 1.33R exp 7.0 PF_\n_Holy Grail Locked_\n• /status • /scan • /backtest\n*Hammer 60%conf ML60% FINAL LOCK*", cid)
+            elif txt in ["/help","/start"]: send_telegram_msg("🔒 *TITAN V5.8 FINAL LOCK 77.8% WR + AUTO 5M*\n_9 trades 77.8% WR 12R 1.33R exp 7.0 PF_\n_Auto-scan every 5 mins 7-19 UTC_\n• /status • /scan • /backtest\n*Hammer 60%conf ML60% FINAL LOCK + AUTO*", cid)
     except Exception as e: print(e)
     return {"status":"ok"}
