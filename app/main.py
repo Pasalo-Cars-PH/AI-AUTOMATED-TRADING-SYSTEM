@@ -560,7 +560,7 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
 
 def generate_chart_with_markings(window, sig, tf="M5"):
     try:
-         import matplotlib
+        import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
@@ -790,7 +790,7 @@ def auto_scan_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not scheduler.running:
-        scheduler.add_job(auto_scan_job, 'interval', minutes=15,  # Increased from 5 to 15 to save TwelveData credits (800/day limit) id='titan_v61_m5_lock_only_dashboard_paper_autoscan_5m', replace_existing=True)
+        scheduler.add_job(auto_scan_job, 'interval', minutes=15, id='titan_v61_m5_lock_only_dashboard_paper_autoscan_5m', replace_existing=True)  # Increased from 5 to 15 to save credits
         scheduler.start()
         print("✅ TITAN V6.5 M5 LOCK ONLY + DASHBOARD + PRETRADE + REAL PRICE + CACHED AUTO-SCAN 07-19 UTC started!")
     yield
