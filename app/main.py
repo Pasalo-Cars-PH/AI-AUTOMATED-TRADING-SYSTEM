@@ -1259,7 +1259,7 @@ body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px
 <body>
 <div class="header">
 <h1>🔍 TITAN V6.6 PRE-TRADE + ICHIMOKU H1 FILTER - 3 GATES 7 LAYERS 8 BOOSTERS <span style="color:#22c55e">● LIVE</span></h1>
-<p>Shows WHY signals pass/fail BEFORE execution + Ichimoku H1 Trend Filter (20,60,120)</p>
+<p>Shows WHY signals pass/fail BEFORE execution + Ichimoku H1 Trend Filter (16,44,88,28) IN-BETWEEN • Tenkan 16 | Kijun 44 | Senkou B 88 | Chikou 28 • Balance of 20,60,120,30 & 12,26,52,26</p>
 <p id="last" style="font-size:9px;color:#666"></p>
 </div>
 <div id="decision" class="decision skip">Loading...</div>
