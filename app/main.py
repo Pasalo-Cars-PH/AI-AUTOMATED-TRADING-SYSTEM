@@ -301,13 +301,17 @@ def fetch_live_tf(interval):
 fetch_live_tf.last_source = "UNKNOWN"
 
 def fetch_h1_trend():
-    vals=fetch_data("XAU/USD","1h",100)
-    if not vals: return None
-    df=pd.DataFrame(vals); df['close']=df['close'].astype(float)
-    df=df.sort_values('datetime'); closes=list(df['close'])
-    e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
-    if not e20 or not e50: return None
-    return "BULL" if e20>e50 else "BEAR" if e20<e50 else None
+    try:
+        vals, source = fetch_data_with_fallback("XAU/USD","1h",100)
+        if not vals: 
+            return "UNKNOWN"
+        df=pd.DataFrame(vals); df['close']=df['close'].astype(float)
+        df=df.sort_values('datetime'); closes=list(df['close'])
+        e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
+        if not e20 or not e50: return "UNKNOWN"
+        return "BULL" if e20>e50 else "BEAR" if e20<e50 else "UNKNOWN"
+    except:
+        return "UNKNOWN"
 
 def fetch_hist_tf(interval, outputsize=3000):
     for sz in [outputsize, 5000, 3000, 1000]:
@@ -825,6 +829,89 @@ def api_signal():
             return JSONResponse({"signal": None, "reason": detailed.get("reason","No setup"), "detailed": detailed, "h1": h1})
     except Exception as e:
         return JSONResponse({"error": str(e)})
+
+
+@app.get("/api/debug")
+def api_debug():
+    """Debug TwelveData API key and connection"""
+    try:
+        # Check env vars
+        has_key = bool(TWELVE_DATA_API_KEY)
+        key_preview = TWELVE_DATA_API_KEY[:8] + "..." + TWELVE_DATA_API_KEY[-4:] if has_key and len(TWELVE_DATA_API_KEY)>12 else "NOT SET or TOO SHORT"
+        
+        # Try direct API call
+        url="https://api.twelvedata.com/time_series"
+        params={"symbol":"XAU/USD","interval":"5min","outputsize":5,"timezone":"UTC","apikey":TWELVE_DATA_API_KEY}
+        direct_test = {}
+        try:
+            res = requests.get(url, params=params, timeout=15).json()
+            direct_test = res
+            has_values = "values" in res
+            error_msg = res.get("message", res.get("code", "No message")) if not has_values else "OK"
+        except Exception as e:
+            has_values = False
+            error_msg = str(e)
+            direct_test = {"exception": str(e)}
+        
+        # Try free gold API as alternative
+        gold_price = None
+        try:
+            gold_res = requests.get("https://api.gold-api.com/price/XAU", timeout=10).json()
+            gold_price = gold_res.get("price", gold_res)
+        except Exception as e:
+            gold_price = f"Error: {e}"
+        
+        return JSONResponse({
+            "has_api_key": has_key,
+            "key_preview": key_preview,
+            "key_length": len(TWELVE_DATA_API_KEY) if has_key else 0,
+            "twelvedata_test": {
+                "has_values": has_values,
+                "error": error_msg,
+                "raw_response": str(direct_test)[:1000]
+            },
+            "free_gold_api_price": gold_price,
+            "fallback_source": getattr(fetch_live_tf, 'last_source', 'UNKNOWN'),
+            "timestamp": pht_now().isoformat(),
+            "hint": "If has_values=False, check: 1) API key valid? 2) Rate limit? Free tier 1000 req/day, 8 req/min 3) Try new key from twelvedata.com"
+        })
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()[:500]})
+
+@app.get("/api/live-price")
+def api_live_price():
+    """Get only live price from multiple sources"""
+    try:
+        # Try TwelveData
+        td_price = None
+        td_error = None
+        try:
+            vals, src = fetch_data_with_fallback("XAU/USD", "5min", 1)
+            if vals and len(vals)>0:
+                td_price = float(vals[0]['close'])
+        except Exception as e:
+            td_error = str(e)
+        
+        # Try free gold API
+        free_price = None
+        try:
+            res = requests.get("https://api.gold-api.com/price/XAU", timeout=10).json()
+            free_price = res.get("price")
+        except Exception as e:
+            free_price = None
+        
+        return JSONResponse({
+            "twelvedata_price": td_price,
+            "twelvedata_error": td_error,
+            "twelvedata_source": getattr(fetch_live_tf, 'last_source', 'UNKNOWN'),
+            "free_api_price": free_price,
+            "vantage_should_be_close_to": "Both should be ~4131-4145",
+            "timestamp": pht_now().isoformat()
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)})
+
 
 @app.get("/pretrade", response_class=HTMLResponse)
 @app.get("/signal-dashboard", response_class=HTMLResponse)
