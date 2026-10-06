@@ -2,6 +2,7 @@ import os, datetime, json
 from contextlib import asynccontextmanager
 import requests, pandas as pd
 from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
@@ -516,7 +517,7 @@ def generate_chart_with_markings(window, sig, tf="M5"):
         ax.axhline(y=tp, color='#22c55e', linestyle=':', linewidth=1.0, label=f'TP {tp}')
         ax.fill_between(x_vals, sl, entry, color='#ef4444', alpha=0.1)
         ax.fill_between(x_vals, entry, tp, color='#22c55e', alpha=0.1)
-        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.2 M5 LOCK ONLY PAPER | {sig['reason']}", color='white', fontsize=8, fontweight='bold')
+        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.3 M5 LOCK ONLY PAPER | {sig['reason']}", color='white', fontsize=8, fontweight='bold')
         ax.set_ylabel('Price', color='white')
         ax.tick_params(colors='white')
         ax.legend(loc='upper left', fontsize=6, facecolor='black', edgecolor='white', labelcolor='white')
@@ -563,7 +564,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         elif bearish and c0['close']>=sell_thr: pd60_ok=True
     except: pass
     try:
-        if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03: fvg_ok=True
+         if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03: fvg_ok=True
         elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03: fvg_ok=True
     except: pass
     layers=0; logs=[]
@@ -640,7 +641,7 @@ def run_backtest(chat_id):
         if rec_m5_large:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5")
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE*\n"
+        msg=f"📊 *XAUUSD TITAN V6.3 M5 LOCK ONLY + DASHBOARD + PRETRADE + CORS FIX*\n"
         for key in ["M5_5k","M5_10k"]:
             if key in results:
                 t,w,l,wr,net,exp,pf, n = results[key]
@@ -701,14 +702,24 @@ async def lifespan(app: FastAPI):
     if not scheduler.running:
         scheduler.add_job(auto_scan_job, 'interval', minutes=5, id='titan_v61_m5_lock_only_dashboard_paper_autoscan_5m', replace_existing=True)
         scheduler.start()
-        print("✅ TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE AUTO-SCAN 07-19 UTC started!")
+        print("✅ TITAN V6.3 M5 LOCK ONLY + DASHBOARD + PRETRADE + CORS FIX AUTO-SCAN 07-19 UTC started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
 app=FastAPI(title="TITAN V6.1 M5 LOCK ONLY + REAL-TIME DASHBOARD", lifespan=lifespan)
 
+# CORS for meta.ai/share live dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE Live","mode":"V61_M5_LOCK_ONLY_DASHBOARD","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK ONLY + DASHBOARD + PRETRADE","live_enabled":MASTER_LIVE_ENABLE, "dashboard":"/dashboard", "api":"/api/stats"}
+def root(): return {"status":"XAUUSD TITAN V6.3 M5 LOCK ONLY + DASHBOARD + PRETRADE + CORS FIX Live","mode":"V61_M5_LOCK_ONLY_DASHBOARD","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK ONLY + DASHBOARD + PRETRADE","live_enabled":MASTER_LIVE_ENABLE, "dashboard":"/dashboard", "api":"/api/stats"}
 
 @app.get("/health")
 def health(): return {"status":"ok","mode":"V61_M5_LOCK_ONLY_DASHBOARD","auto_scan":"5m PAPER V6.1 M5 ONLY + DASHBOARD","live_enabled":MASTER_LIVE_ENABLE}
@@ -730,6 +741,7 @@ def api_stats():
 @app.get("/api/pretrade")
 def api_pretrade():
     try:
+        # Add CORS headers manually for meta.ai/share
         h1 = fetch_h1_trend()
         data = fetch_live_tf("5min")
         if not data:
@@ -777,7 +789,7 @@ def pretrade_dashboard():
     html = """
 <!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TITAN V6.2 PRE-TRADE 3GATES 7LAYERS 8BOOSTERS</title>
+<title>TITAN V6.3 PRE-TRADE 3GATES 7LAYERS 8BOOSTERS</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px}
@@ -800,7 +812,7 @@ body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px
 </head>
 <body>
 <div class="header">
-<h1>🔍 TITAN V6.2 PRE-TRADE SIGNAL DASHBOARD - 3 GATES 7 LAYERS 8 BOOSTERS <span style="color:#22c55e">● LIVE</span></h1>
+<h1>🔍 TITAN V6.3 PRE-TRADE SIGNAL DASHBOARD - 3 GATES 7 LAYERS 8 BOOSTERS <span style="color:#22c55e">● LIVE</span></h1>
 <p>Shows WHY signals pass/fail BEFORE execution - Automated + Manual check</p>
 <p id="last" style="font-size:9px;color:#666"></p>
 </div>
@@ -1111,7 +1123,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if txt_base=="/status":
                 h1=fetch_h1_trend()
                 stats=calculate_stats(load_trades())
-                send_telegram_msg(f"🔒 *TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE*\nMode `V62_DASHBOARD_PRETRADE`\nH1 `{h1}`\nLive Trades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nM5 LOCK 45% REAL (20-trade) was 77.8% (9-trade) NOT intrinsic\nM1 DISABLED 0% WR 46L\nM15 DISABLED -0.25R\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN V6.3 M5 LOCK ONLY + DASHBOARD + PRETRADE + CORS FIX*\nMode `V63_DASHBOARD_PRETRADE_CORS`\nH1 `{h1}`\nLive Trades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nM5 LOCK 45% REAL (20-trade) was 77.8% (9-trade) NOT intrinsic\nM1 DISABLED 0% WR 46L\nM15 DISABLED -0.25R\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt_base=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt_base=="/backtest": background_tasks.add_task(run_backtest, cid)
             elif txt_base=="/dashboard":
@@ -1195,7 +1207,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 except Exception as e:
                     send_telegram_msg(f"Reset error {e}", cid)
             elif txt_base in ["/help","/start"]:
-                send_telegram_msg("🔒 *TITAN V6.2 M5 LOCK ONLY + DASHBOARD + PRETRADE + PRETRADE*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade = create test OPEN trade\n• /reset = reset to 20 backtest trades\nDashboard auto-updates every 5s from bot", cid)
+                send_telegram_msg("🔒 *TITAN V6.3 M5 LOCK ONLY + DASHBOARD + PRETRADE + CORS FIX*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade = create test OPEN trade\n• /reset = reset to 20 backtest trades\nDashboard auto-updates every 5s from bot", cid)
     except Exception as e:
         print(e)
         import traceback; traceback.print_exc()
