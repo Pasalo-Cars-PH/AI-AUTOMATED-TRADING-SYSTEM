@@ -224,6 +224,133 @@ def calculate_rsi(closes, period=14):
     rs=avg_gain/avg_loss
     return 100-(100/(1+rs))
 
+def calculate_ichimoku(highs, lows, closes, tenkan=20, kijun=60, senkou_b=120):
+    """Calculate Ichimoku Cloud - tuned for XAUUSD"""
+    if len(closes) < senkou_b:
+        return None
+    try:
+        # Tenkan-sen (Conversion): (9/20 high + low)/2
+        tenkan_high = max(highs[-tenkan:])
+        tenkan_low = min(lows[-tenkan:])
+        tenkan_sen = (tenkan_high + tenkan_low) / 2
+        
+        # Kijun-sen (Base): (26/60 high + low)/2
+        kijun_high = max(highs[-kijun:])
+        kijun_low = min(lows[-kijun:])
+        kijun_sen = (kijun_high + kijun_low) / 2
+        
+        # Senkou Span A: (Tenkan + Kijun)/2 - leading
+        senkou_a = (tenkan_sen + kijun_sen) / 2
+        
+        # Senkou Span B: (52/120 high + low)/2
+        senkou_b_high = max(highs[-senkou_b:])
+        senkou_b_low = min(lows[-senkou_b:])
+        senkou_span_b = (senkou_b_high + senkou_b_low) / 2
+        
+        # Chikou Span: current close vs 26/30 periods ago
+        chikou_period = 30
+        chikou = closes[-1]
+        past_close = closes[-chikou_period] if len(closes) > chikou_period else closes[0]
+        
+        # Current price vs Cloud
+        current_price = closes[-1]
+        cloud_top = max(senkou_a, senkou_span_b)
+        cloud_bottom = min(senkou_a, senkou_span_b)
+        cloud_thickness = abs(senkou_a - senkou_span_b)
+        
+        # Determine trend
+        above_cloud = current_price > cloud_top
+        below_cloud = current_price < cloud_bottom
+        inside_cloud = not above_cloud and not below_cloud
+        
+        # Cloud color
+        bullish_cloud = senkou_a > senkou_span_b  # Green cloud
+        bearish_cloud = senkou_a < senkou_span_b  # Red cloud
+        
+        # Chikou confirmation
+        chikou_above = chikou > past_close
+        chikou_below = chikou < past_close
+        
+        # Tenkan/Kijun cross
+        tk_bull_cross = tenkan_sen > kijun_sen
+        tk_bear_cross = tenkan_sen < kijun_sen
+        
+        # Overall trend strength
+        if above_cloud and bullish_cloud and chikou_above and tk_bull_cross:
+            trend = "STRONG_BULL"
+            trend_simple = "BULL"
+            strength = 90
+        elif below_cloud and bearish_cloud and chikou_below and tk_bear_cross:
+            trend = "STRONG_BEAR"
+            trend_simple = "BEAR"
+            strength = 90
+        elif above_cloud and bullish_cloud:
+            trend = "BULL"
+            trend_simple = "BULL"
+            strength = 70
+        elif below_cloud and bearish_cloud:
+            trend = "BEAR"
+            trend_simple = "BEAR"
+            strength = 70
+        elif inside_cloud:
+            trend = "NEUTRAL_CLOUD"
+            trend_simple = "NEUTRAL"
+            strength = 30
+        else:
+            trend = "WEAK"
+            trend_simple = "NEUTRAL"
+            strength = 50
+            
+        return {
+            "tenkan": tenkan_sen,
+            "kijun": kijun_sen,
+            "senkou_a": senkou_a,
+            "senkou_b": senkou_span_b,
+            "chikou": chikou,
+            "cloud_top": cloud_top,
+            "cloud_bottom": cloud_bottom,
+            "cloud_thickness": cloud_thickness,
+            "current_price": current_price,
+            "above_cloud": above_cloud,
+            "below_cloud": below_cloud,
+            "inside_cloud": inside_cloud,
+            "bullish_cloud": bullish_cloud,
+            "bearish_cloud": bearish_cloud,
+            "chikou_above": chikou_above,
+            "chikou_below": chikou_below,
+            "tk_bull_cross": tk_bull_cross,
+            "tk_bear_cross": tk_bear_cross,
+            "trend": trend,
+            "trend_simple": trend_simple,
+            "strength": strength
+        }
+    except Exception as e:
+        print(f"Ichimoku calc error: {e}")
+        return None
+
+def fetch_h1_ichimoku():
+    """Fetch H1 Ichimoku for trend filter - tuned for XAUUSD"""
+    try:
+        vals, source = fetch_data_with_fallback("XAU/USD", "1h", 200)
+        if not vals or len(vals) < 120:
+            return None
+        df = pd.DataFrame(vals)
+        df['close'] = df['close'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df = df.sort_values('datetime')
+        closes = list(df['close'])
+        highs = list(df['high'])
+        lows = list(df['low'])
+        
+        # Use tuned parameters for XAUUSD: 20,60,120,30
+        ichi = calculate_ichimoku(highs, lows, closes, tenkan=20, kijun=60, senkou_b=120)
+        return ichi
+    except Exception as e:
+        print(f"fetch_h1_ichimoku error: {e}")
+        return None
+
+
 def is_bullish_pinbar(c):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
@@ -343,17 +470,101 @@ def fetch_live_tf(interval):
 fetch_live_tf.last_source = "UNKNOWN"
 
 def fetch_h1_trend():
+    """H1 Trend with Ichimoku Cloud + EMA combo filter - V6.6"""
     try:
-        vals, source = fetch_data_with_fallback("XAU/USD","1h",100)
+        vals, source = fetch_data_with_fallback("XAU/USD","1h",200)
         if not vals: 
             return "UNKNOWN"
-        df=pd.DataFrame(vals); df['close']=df['close'].astype(float)
-        df=df.sort_values('datetime'); closes=list(df['close'])
-        e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
-        if not e20 or not e50: return "UNKNOWN"
-        return "BULL" if e20>e50 else "BEAR" if e20<e50 else "UNKNOWN"
-    except:
+        df=pd.DataFrame(vals)
+        df['close']=df['close'].astype(float)
+        df['high']=df['high'].astype(float)
+        df['low']=df['low'].astype(float)
+        df=df.sort_values('datetime')
+        closes=list(df['close'])
+        highs=list(df['high'])
+        lows=list(df['low'])
+        
+        # EMA trend
+        e20=calculate_ema(closes,20)
+        e50=calculate_ema(closes,50)
+        ema_trend = "BULL" if e20 and e50 and e20>e50 else "BEAR" if e20 and e50 and e20<e50 else "UNKNOWN"
+        
+        # Ichimoku trend - tuned 20,60,120 for XAUUSD
+        ichi = calculate_ichimoku(highs, lows, closes, tenkan=20, kijun=60, senkou_b=120)
+        if ichi:
+            ichi_trend = ichi['trend_simple']
+            ichi_strength = ichi['strength']
+            ichi_detail = ichi['trend']
+            
+            # Combo logic: Both must agree for STRONG signal, Ichimoku filters choppy
+            if ichi['inside_cloud']:
+                # Price inside cloud = CHOPPY, NO TRADE regardless of EMA
+                print(f"H1 Ichimoku: INSIDE CLOUD choppy - NO TRADE (price {ichi['current_price']:.2f} inside {ichi['cloud_bottom']:.2f}-{ichi['cloud_top']:.2f})")
+                return "NEUTRAL"  # Will block M5 trades
+            
+            if ema_trend == "BULL" and ichi_trend == "BULL":
+                if ichi_strength >= 70:
+                    return "BULL"  # Strong BULL - both agree
+                else:
+                    return "BULL"  # Weak BULL but both agree
+            elif ema_trend == "BEAR" and ichi_trend == "BEAR":
+                if ichi_strength >= 70:
+                    return "BEAR"  # Strong BEAR
+                else:
+                    return "BEAR"
+            elif ema_trend == "UNKNOWN" and ichi_trend in ["BULL","BEAR"]:
+                return ichi_trend  # Use Ichimoku if EMA unclear
+            elif ichi_strength >= 90:
+                # Strong Ichimoku overrides EMA
+                return ichi_trend
+            elif ichi_trend == "NEUTRAL":
+                return "NEUTRAL"
+            else:
+                # Conflicting - check strength
+                if ichi_strength >= 70:
+                    return ichi_trend
+                else:
+                    return ema_trend
+        else:
+            # Fallback to EMA only if Ichimoku fails
+            return ema_trend
+    except Exception as e:
+        print(f"fetch_h1_trend error: {e}")
         return "UNKNOWN"
+
+def get_h1_full_status():
+    """Get full H1 status with both EMA and Ichimoku for dashboard"""
+    try:
+        vals, source = fetch_data_with_fallback("XAU/USD","1h",200)
+        if not vals:
+            return {"ema_trend": "UNKNOWN", "ichi": None, "combined": "UNKNOWN"}
+        df=pd.DataFrame(vals)
+        df['close']=df['close'].astype(float)
+        df['high']=df['high'].astype(float)
+        df['low']=df['low'].astype(float)
+        df=df.sort_values('datetime')
+        closes=list(df['close'])
+        highs=list(df['high'])
+        lows=list(df['low'])
+        
+        e20=calculate_ema(closes,20)
+        e50=calculate_ema(closes,50)
+        ema_trend = "BULL" if e20 and e50 and e20>e50 else "BEAR" if e20 and e50 and e20<e50 else "UNKNOWN"
+        
+        ichi = calculate_ichimoku(highs, lows, closes, tenkan=20, kijun=60, senkou_b=120)
+        combined = fetch_h1_trend()
+        
+        return {
+            "ema_trend": ema_trend,
+            "ema20": e20,
+            "ema50": e50,
+            "ichi": ichi,
+            "combined": combined,
+            "source": source
+        }
+    except Exception as e:
+        return {"ema_trend": "UNKNOWN", "ichi": None, "combined": "UNKNOWN", "error": str(e)}
+
 
 def fetch_hist_tf(interval, outputsize=3000):
     for sz in [outputsize, 5000, 3000, 1000]:
@@ -607,7 +818,7 @@ def generate_chart_with_markings(window, sig, tf="M5"):
         ax.axhline(y=tp, color='#22c55e', linestyle=':', linewidth=1.0, label=f'TP {tp}')
         ax.fill_between(x_vals, sl, entry, color='#ef4444', alpha=0.1)
         ax.fill_between(x_vals, entry, tp, color='#22c55e', alpha=0.1)
-        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.5 M5 LOCK ONLY PAPER | {sig['reason']}", color='white', fontsize=8, fontweight='bold')
+        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.6 M5 LOCK ONLY PAPER | {sig['reason']}", color='white', fontsize=8, fontweight='bold')
         ax.set_ylabel('Price', color='white')
         ax.tick_params(colors='white')
         ax.legend(loc='upper left', fontsize=6, facecolor='black', edgecolor='white', labelcolor='white')
@@ -731,7 +942,7 @@ def run_backtest(chat_id):
         if rec_m5_large:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5")
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V6.5 M5 LOCK ONLY + DASHBOARD + PRETRADE + REAL PRICE + CACHED*\n"
+        msg=f"📊 *XAUUSD TITAN V6.6 M5 LOCK ONLY + ICHIMOKU H1 FILTER + REAL PRICE + CACHED*\n"
         for key in ["M5_5k","M5_10k"]:
             if key in results:
                 t,w,l,wr,net,exp,pf, n = results[key]
@@ -792,7 +1003,7 @@ async def lifespan(app: FastAPI):
     if not scheduler.running:
         scheduler.add_job(auto_scan_job, 'interval', minutes=15, id='titan_v61_m5_lock_only_dashboard_paper_autoscan_5m', replace_existing=True)  # Increased from 5 to 15 to save credits
         scheduler.start()
-        print("✅ TITAN V6.5 M5 LOCK ONLY + DASHBOARD + PRETRADE + REAL PRICE + CACHED AUTO-SCAN 07-19 UTC started!")
+        print("✅ TITAN V6.6 M5 LOCK ONLY + ICHIMOKU H1 FILTER + REAL PRICE + CACHED AUTO-SCAN 07-19 UTC started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
@@ -809,7 +1020,7 @@ app.add_middleware(
 
 
 @app.get("/")
-def root(): return {"status":"XAUUSD TITAN V6.5 M5 LOCK ONLY + DASHBOARD + PRETRADE + REAL PRICE + CACHED Live","mode":"V61_M5_LOCK_ONLY_DASHBOARD","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK ONLY + DASHBOARD + PRETRADE","live_enabled":MASTER_LIVE_ENABLE, "dashboard":"/dashboard", "api":"/api/stats"}
+def root(): return {"status":"XAUUSD TITAN V6.6 M5 LOCK ONLY + ICHIMOKU H1 FILTER + REAL PRICE + CACHED Live","mode":"V61_M5_LOCK_ONLY_DASHBOARD","time":pht_now().isoformat(),"auto_scan":"5m M5 LOCK ONLY + DASHBOARD + PRETRADE","live_enabled":MASTER_LIVE_ENABLE, "dashboard":"/dashboard", "api":"/api/stats"}
 
 @app.get("/health")
 def health(): return {"status":"ok","mode":"V61_M5_LOCK_ONLY_DASHBOARD","auto_scan":"5m PAPER V6.1 M5 ONLY + DASHBOARD","live_enabled":MASTER_LIVE_ENABLE}
@@ -854,7 +1065,8 @@ def api_pretrade():
 @app.get("/api/signal")
 def api_signal():
     try:
-        h1 = fetch_h1_trend()
+        h1_full = get_h1_full_status()
+        h1 = h1_full.get("combined", "UNKNOWN")
         data = fetch_live_tf("5min")
         if not data:
             return JSONResponse({"signal": None, "reason":"No data"})
@@ -865,10 +1077,11 @@ def api_signal():
             except: pass
         sig = analyze_titan_mtf(clean, tf="M5", h1_trend=h1)
         if sig:
-            return JSONResponse({"signal": sig, "h1": h1, "timestamp": pht_now().isoformat()})
+            return JSONResponse({"signal": sig, "h1": h1, "h1_full": h1_full, "timestamp": pht_now().isoformat()})
         else:
             detailed = analyze_titan_detailed(clean, tf="M5", h1_trend=h1)
-            return JSONResponse({"signal": None, "reason": detailed.get("reason","No setup"), "detailed": detailed, "h1": h1})
+            detailed["h1_full"] = h1_full
+            return JSONResponse({"signal": None, "reason": detailed.get("reason","No setup"), "detailed": detailed, "h1": h1, "h1_full": h1_full})
     except Exception as e:
         return JSONResponse({"error": str(e)})
 
@@ -962,7 +1175,7 @@ def pretrade_dashboard():
     html = """
 <!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TITAN V6.5 PRE-TRADE 3GATES 7LAYERS 8BOOSTERS</title>
+<title>TITAN V6.6 PRE-TRADE 3GATES 7LAYERS 8BOOSTERS</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px}
@@ -985,7 +1198,7 @@ body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px
 </head>
 <body>
 <div class="header">
-<h1>🔍 TITAN V6.5 PRE-TRADE SIGNAL DASHBOARD - 3 GATES 7 LAYERS 8 BOOSTERS <span style="color:#22c55e">● LIVE</span></h1>
+<h1>🔍 TITAN V6.6 PRE-TRADE SIGNAL DASHBOARD - 3 GATES 7 LAYERS 8 BOOSTERS <span style="color:#22c55e">● LIVE</span></h1>
 <p>Shows WHY signals pass/fail BEFORE execution - Automated + Manual check</p>
 <p id="last" style="font-size:9px;color:#666"></p>
 </div>
@@ -1296,7 +1509,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if txt_base=="/status":
                 h1=fetch_h1_trend()
                 stats=calculate_stats(load_trades())
-                send_telegram_msg(f"🔒 *TITAN V6.5 M5 LOCK ONLY + DASHBOARD + PRETRADE + REAL PRICE + CACHED*\nMode `V65_DASHBOARD_REAL_PRICE_CACHED`\nH1 `{h1}`\nLive Trades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nM5 LOCK 45% REAL (20-trade) was 77.8% (9-trade) NOT intrinsic\nM1 DISABLED 0% WR 46L\nM15 DISABLED -0.25R\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN V6.6 M5 LOCK ONLY + ICHIMOKU H1 FILTER + REAL PRICE + CACHED*\nMode `V66_TITAN_ICHIMOKU_H1_FILTER`\nH1 `{h1}`\nLive Trades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nM5 LOCK 45% REAL (20-trade) was 77.8% (9-trade) NOT intrinsic\nM1 DISABLED 0% WR 46L\nM15 DISABLED -0.25R\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt_base=="/scan": background_tasks.add_task(manual_scan, cid)
             elif txt_base=="/backtest": background_tasks.add_task(run_backtest, cid)
             elif txt_base=="/dashboard":
@@ -1380,7 +1593,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 except Exception as e:
                     send_telegram_msg(f"Reset error {e}", cid)
             elif txt_base in ["/help","/start"]:
-                send_telegram_msg("🔒 *TITAN V6.5 M5 LOCK ONLY + DASHBOARD + PRETRADE + REAL PRICE + CACHED*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade = create test OPEN trade\n• /reset = reset to 20 backtest trades\nDashboard auto-updates every 5s from bot", cid)
+                send_telegram_msg("🔒 *TITAN V6.6 M5 LOCK ONLY + ICHIMOKU H1 FILTER + REAL PRICE + CACHED*\n_M1 DISABLED 0% WR 46L_\n_M15 DISABLED -0.25R_\n_M5 LOCK ONLY 45% WR PF1.64_\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade = create test OPEN trade\n• /reset = reset to 20 backtest trades\nDashboard auto-updates every 5s from bot", cid)
     except Exception as e:
         print(e)
         import traceback; traceback.print_exc()
