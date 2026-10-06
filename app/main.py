@@ -224,8 +224,8 @@ def calculate_rsi(closes, period=14):
     rs=avg_gain/avg_loss
     return 100-(100/(1+rs))
 
-def calculate_ichimoku(highs, lows, closes, tenkan=20, kijun=60, senkou_b=120):
-    """Calculate Ichimoku Cloud - tuned for XAUUSD"""
+def calculate_ichimoku(highs, lows, closes, tenkan=16, kijun=44, senkou_b=88):
+    """Calculate Ichimoku Cloud - IN-BETWEEN tuned 16,44,88,28 - between 20,60,120,30 (conservative) and 12,26,52,26 (aggressive)"""
     if len(closes) < senkou_b:
         return None
     try:
@@ -247,8 +247,8 @@ def calculate_ichimoku(highs, lows, closes, tenkan=20, kijun=60, senkou_b=120):
         senkou_b_low = min(lows[-senkou_b:])
         senkou_span_b = (senkou_b_high + senkou_b_low) / 2
         
-        # Chikou Span: current close vs 26/30 periods ago
-        chikou_period = 30
+        # Chikou Span: current close vs 28 periods ago (in-between 30 and 26)
+        chikou_period = 28
         chikou = closes[-1]
         past_close = closes[-chikou_period] if len(closes) > chikou_period else closes[0]
         
@@ -343,8 +343,8 @@ def fetch_h1_ichimoku():
         highs = list(df['high'])
         lows = list(df['low'])
         
-        # Use tuned parameters for XAUUSD: 20,60,120,30
-        ichi = calculate_ichimoku(highs, lows, closes, tenkan=20, kijun=60, senkou_b=120)
+        # Use IN-BETWEEN parameters: 16,44,88,28 (middle of 20,60,120,30 and 12,26,52,26)
+        ichi = calculate_ichimoku(highs, lows, closes, tenkan=16, kijun=44, senkou_b=88)
         return ichi
     except Exception as e:
         print(f"fetch_h1_ichimoku error: {e}")
@@ -537,8 +537,8 @@ def fetch_h1_trend():
         e50=calculate_ema(closes,50)
         ema_trend = "BULL" if e20 and e50 and e20>e50 else "BEAR" if e20 and e50 and e20<e50 else "UNKNOWN"
         
-        # Ichimoku trend - tuned 20,60,120 for XAUUSD
-        ichi = calculate_ichimoku(highs, lows, closes, tenkan=20, kijun=60, senkou_b=120)
+        # Ichimoku trend - IN-BETWEEN 16,44,88,28
+        ichi = calculate_ichimoku(highs, lows, closes, tenkan=16, kijun=44, senkou_b=88)
         if ichi:
             ichi_trend = ichi['trend_simple']
             ichi_strength = ichi['strength']
@@ -599,7 +599,7 @@ def get_h1_full_status():
         e50=calculate_ema(closes,50)
         ema_trend = "BULL" if e20 and e50 and e20>e50 else "BEAR" if e20 and e50 and e20<e50 else "UNKNOWN"
         
-        ichi = calculate_ichimoku(highs, lows, closes, tenkan=20, kijun=60, senkou_b=120)
+        ichi = calculate_ichimoku(highs, lows, closes, tenkan=16, kijun=44, senkou_b=88)
         combined = fetch_h1_trend()
         
         return {
