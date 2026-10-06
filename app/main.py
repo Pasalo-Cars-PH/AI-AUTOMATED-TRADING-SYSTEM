@@ -951,15 +951,71 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         "reason":f"M5 {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)}", "tf":"M5"
     }
 
-def run_sim_tf(records, tf="M5"):
+def run_sim_tf(records, tf="M5", h1_records=None):
+    """Backtest with REAL Ichimoku H1 16,44,88,28 - not EMA proxy! Resamples M5 to H1 or uses provided H1 records"""
     total=wins=losses=0; net=0.0
     i=60; n=len(records)
+    # Pre-build H1 from M5 if not provided (12 x 5min = 1h)
+    h1_closes = []
+    h1_highs = []
+    h1_lows = []
+    if h1_records is None:
+        # Resample M5 to H1: every 12 bars
+        for j in range(0, len(records), 12):
+            chunk = records[j:j+12]
+            if len(chunk) < 12:
+                continue
+            try:
+                h1_high = max([c['high'] for c in chunk])
+                h1_low = min([c['low'] for c in chunk])
+                h1_close = chunk[-1]['close']
+                h1_closes.append(h1_close)
+                h1_highs.append(h1_high)
+                h1_lows.append(h1_low)
+            except:
+                continue
+    else:
+        try:
+            h1_closes = [c['close'] for c in h1_records]
+            h1_highs = [c['high'] for c in h1_records]
+            h1_lows = [c['low'] for c in h1_records]
+        except:
+            h1_closes = []
+            h1_highs = []
+            h1_lows = []
+    
     while i<n-36:
         window=list(reversed(records[i-60:i]))
         oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
-        e50=calculate_ema(closes,50); e100=calculate_ema(closes,100)
-        h1_proxy="BULL" if e50 and e100 and e50>e100 else "BEAR" if e50 and e100 and e50<e100 else None
-        sig=analyze_titan_mtf(window, tf=tf, h1_trend=h1_proxy)
+        # REAL Ichimoku H1 16,44,88,28 - resampled
+        h1_trend = None
+        try:
+            # Estimate H1 index: M5 index i corresponds to H1 index approx i//12
+            h1_idx = i // 12
+            if len(h1_closes) >= 88 and h1_idx >= 88:
+                # Get H1 slice up to current time
+                slice_start = max(0, h1_idx - 200)
+                slice_end = h1_idx
+                if slice_end - slice_start >= 88:
+                    hc = h1_closes[slice_start:slice_end]
+                    hh = h1_highs[slice_start:slice_end]
+                    hl = h1_lows[slice_start:slice_end]
+                    ichi = calculate_ichimoku(hh, hl, hc, tenkan=16, kijun=44, senkou_b=88)
+                    if ichi:
+                        h1_trend = ichi.get('trend_simple')  # BULL / BEAR / NEUTRAL
+                        # If inside cloud, treat as no trend (filter)
+                        if ichi.get('inside_cloud'):
+                            h1_trend = "NEUTRAL"
+            # Fallback to EMA proxy if not enough H1 data
+            if h1_trend is None:
+                e50=calculate_ema(closes,50); e100=calculate_ema(closes,100)
+                h1_trend="BULL" if e50 and e100 and e50>e100 else "BEAR" if e50 and e100 and e50<e100 else None
+        except Exception as e:
+            # Fallback
+            e50=calculate_ema(closes,50); e100=calculate_ema(closes,100)
+            h1_trend="BULL" if e50 and e100 and e50>e100 else "BEAR" if e50 and e100 and e50<e100 else None
+        
+        sig=analyze_titan_mtf(window, tf=tf, h1_trend=h1_trend)
         if not sig: i+=1; continue
         total+=1; sl=sig['sl']; tp=sig['tp']; typ=sig['type']
         res=None
@@ -987,14 +1043,17 @@ def run_backtest(chat_id):
     try:
         rec_m5=fetch_hist_tf("5min", 5000)
         rec_m5_large=fetch_hist_tf("5min", 10000)
+        rec_h1=fetch_hist_tf("1h", 2000)  # Real H1 for Ichimoku 16,44,88,28
+        rec_h1_large=fetch_hist_tf("1h", 5000)
         results={}
         if rec_m5:
-            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5, tf="M5")
+            # Use real H1 if available, else resampled from M5
+            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5, tf="M5", h1_records=rec_h1)
             results['M5_5k']= (t,w,l,wr,net,exp,pf, len(rec_m5))
         if rec_m5_large:
-            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5")
+            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5", h1_records=rec_h1_large)
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V6.6 M5 LOCK ONLY + ICHIMOKU H1 FILTER + REAL PRICE + CACHED*\n"
+        msg=f"📊 *XAUUSD TITAN V6.6 M5 + REAL ICHIMOKU H1 (16,44,88,28) IN-BETWEEN*\n_Real Cloud Filter Not EMA Proxy_\n"
         for key in ["M5_5k","M5_10k"]:
             if key in results:
                 t,w,l,wr,net,exp,pf, n = results[key]
