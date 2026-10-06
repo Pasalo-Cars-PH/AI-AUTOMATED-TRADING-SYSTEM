@@ -535,7 +535,7 @@ def fetch_h1_trend():
 def get_h1_full_status():
     """Get full H1 status with both EMA and Ichimoku for dashboard"""
     try:
-        vals, source = fetch_data_with_fallback("XAU/USD","1h",200)
+         vals, source = fetch_data_with_fallback("XAU/USD","1h",200)
         if not vals:
             return {"ema_trend": "UNKNOWN", "ichi": None, "combined": "UNKNOWN"}
         df=pd.DataFrame(vals)
@@ -568,16 +568,20 @@ def get_h1_full_status():
 
 def fetch_hist_tf(interval, outputsize=3000):
     for sz in [outputsize, 5000, 3000, 1000]:
-        vals=fetch_data("XAU/USD", interval, sz)
+        vals = fetch_data("XAU/USD", interval, sz)
         if vals:
             try:
-                 df=pd.DataFrame(vals); df['datetime']=pd.to_datetime(df['datetime'])
-                df=df.sort_values('datetime').reset_index(drop=True)
-                for col in ['open','high','low','close']: df[col]=df[col].astype(float)
-                df['weekday']=df['datetime'].dt.weekday
-                df=df[df['weekday']<5]; df=df[df['high']>df['low']]
+                df = pd.DataFrame(vals)
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                df = df.sort_values('datetime').reset_index(drop=True)
+                for col in ['open', 'high', 'low', 'close']:
+                    df[col] = df[col].astype(float)
+                df['weekday'] = df['datetime'].dt.weekday
+                df = df[df['weekday'] < 5]
+                df = df[df['high'] > df['low']]
                 return df.to_dict('records')
-            except: continue
+            except:
+                continue
     return None
 
 
