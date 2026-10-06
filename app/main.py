@@ -571,7 +571,7 @@ def fetch_hist_tf(interval, outputsize=3000):
         vals=fetch_data("XAU/USD", interval, sz)
         if vals:
             try:
-                df=pd.DataFrame(vals); df['datetime']=pd.to_datetime(df['datetime'])
+                 df=pd.DataFrame(vals); df['datetime']=pd.to_datetime(df['datetime'])
                 df=df.sort_values('datetime').reset_index(drop=True)
                 for col in ['open','high','low','close']: df[col]=df[col].astype(float)
                 df['weekday']=df['datetime'].dt.weekday
@@ -1042,11 +1042,12 @@ def api_stats():
 @app.get("/api/pretrade")
 def api_pretrade():
     try:
-        # Add CORS headers manually for meta.ai/share
-        h1 = fetch_h1_trend()
+        h1_full = get_h1_full_status()
+        h1 = h1_full.get("combined", "UNKNOWN")
         data = fetch_live_tf("5min")
+        source = getattr(fetch_live_tf, 'last_source', 'UNKNOWN')
         if not data:
-            return JSONResponse({"error":"No data", "timestamp": pht_now().isoformat()})
+            return JSONResponse({"error":"No data", "timestamp": pht_now().isoformat(), "h1_full": h1_full})
         clean=[]
         for d in data:
             try:
@@ -1055,8 +1056,15 @@ def api_pretrade():
                     clean.append({"open":o,"high":h,"low":lo,"close":c,"datetime":d["datetime"]})
             except: pass
         if len(clean)<60:
-            return JSONResponse({"error":f"Not enough bars {len(clean)}<60", "timestamp": pht_now().isoformat()})
+            return JSONResponse({"error":f"Not enough bars {len(clean)}<60", "timestamp": pht_now().isoformat(), "h1_full": h1_full})
         detailed = analyze_titan_detailed(clean, tf="M5", h1_trend=h1)
+        detailed["data_source"] = source
+        detailed["api_key_set"] = bool(TWELVE_DATA_API_KEY)
+        detailed["live_price"] = clean[0]['close'] if clean else 0
+        detailed["h1_full"] = h1_full
+        detailed["h1_trend"] = h1
+        detailed["ichi"] = h1_full.get("ichi")
+        detailed["version"] = "V6.6 ICHIMOKU"
         return JSONResponse(detailed)
     except Exception as e:
         import traceback
@@ -1198,12 +1206,13 @@ body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px
 </head>
 <body>
 <div class="header">
-<h1>🔍 TITAN V6.6 PRE-TRADE SIGNAL DASHBOARD - 3 GATES 7 LAYERS 8 BOOSTERS <span style="color:#22c55e">● LIVE</span></h1>
-<p>Shows WHY signals pass/fail BEFORE execution - Automated + Manual check</p>
+<h1>🔍 TITAN V6.6 PRE-TRADE + ICHIMOKU H1 FILTER - 3 GATES 7 LAYERS 8 BOOSTERS <span style="color:#22c55e">● LIVE</span></h1>
+<p>Shows WHY signals pass/fail BEFORE execution + Ichimoku H1 Trend Filter (20,60,120)</p>
 <p id="last" style="font-size:9px;color:#666"></p>
 </div>
 <div id="decision" class="decision skip">Loading...</div>
 <div class="candle" id="candleInfo">Loading candle...</div>
+<div class="candle" id="ichiInfo" style="border:2px solid #f59e0b; background:#1a1200">Loading Ichimoku H1...</div>
 <h2 style="color:#22c55e;font-size:12px;margin:8px 0">🚪 3 GATES (Must all PASS)</h2>
 <div class="grid" id="gates"></div>
 <h2 style="color:#22c55e;font-size:12px;margin:8px 0">📚 7 LAYERS (Need 60% = 4/7)</h2>
@@ -1227,7 +1236,22 @@ async function load(){
   const ci = data.candle||{};
   document.getElementById('candleInfo').innerHTML = 
    `<b>CANDLE:</b> ${ci.datetime||''} O:${ci.open} H:${ci.high} L:${ci.low} C:${ci.close} Body:${(ci.body||0).toFixed(3)} Range:${(ci.range||0).toFixed(3)} SC:${((ci.sc||0)*100).toFixed(1)}% BullPin:${ci.is_bull_pin} BearPin:${ci.is_bear_pin}<br>`+
-   `<b>INDICATORS:</b> EMA20:${(data.indicators?.ema20||0).toFixed(2)} EMA50:${(data.indicators?.ema50||0).toFixed(2)} RSI:${(data.indicators?.rsi||0).toFixed(1)} | Confluence ${data.passed_layers||0}/7=${(data.confluence||0).toFixed(1)}% Model ${data.model_score||0}% Swept ${data.swept||false}`;
+   `<b>INDICATORS:</b> EMA20:${(data.indicators?.ema20||0).toFixed(2)} EMA50:${(data.indicators?.ema50||0).toFixed(2)} RSI:${(data.indicators?.rsi||0).toFixed(1)} | Confluence ${data.passed_layers||0}/7=${(data.confluence||0).toFixed(1)}% Model ${data.model_score||0}% Swept ${data.swept||false} | Source ${data.data_source||''} Price ${data.live_price||''}`;
+  
+  // Ichimoku H1 Info
+  const ichi = data.ichi || data.h1_full?.ichi;
+  const h1f = data.h1_full || {};
+  if(ichi){
+    const cloudColor = ichi.bullish_cloud ? '<span style="color:#22c55e">🟢 GREEN BULL</span>' : ichi.bearish_cloud ? '<span style="color:#ef4444">🔴 RED BEAR</span>' : '⚪ NEUTRAL';
+    const pos = ichi.above_cloud ? '<span style="color:#22c55e">ABOVE CLOUD (BULL)</span>' : ichi.below_cloud ? '<span style="color:#ef4444">BELOW CLOUD (BEAR)</span>' : '<span style="color:#f59e0b">INSIDE CLOUD (CHOPPY - NO TRADE)</span>';
+    document.getElementById('ichiInfo').innerHTML = 
+     `<b>☁️ ICHIMOKU H1 (20,60,120):</b> ${ichi.trend} (${ichi.strength}%) - ${pos} | Cloud: ${cloudColor} Thickness:${ichi.cloud_thickness?.toFixed(2)}<br>`+
+     `<b>Tenkan:</b>${ichi.tenkan?.toFixed(2)} <b>Kijun:</b>${ichi.kijun?.toFixed(2)} <b>Senkou A:</b>${ichi.senkou_a?.toFixed(2)} <b>Senkou B:</b>${ichi.senkou_b?.toFixed(2)} <b>Price:</b>${ichi.current_price?.toFixed(2)}<br>`+
+     `<b>Cloud:</b> ${ichi.cloud_bottom?.toFixed(2)} - ${ichi.cloud_top?.toFixed(2)} | <b>Chikou:</b>${ichi.chikou_above?'Above ✅':'Below ❌'} | <b>TK Cross:</b>${ichi.tk_bull_cross?'BULL ✅':ichi.tk_bear_cross?'BEAR ✅':'NEUTRAL'}<br>`+
+     `<b>H1 COMBINED:</b> EMA ${h1f.ema_trend||''} (${h1f.ema20?.toFixed(2)}/${h1f.ema50?.toFixed(2)}) + Ichi ${ichi.trend_simple} = <b style="color:${data.h1_trend==='BULL'?'#22c55e':data.h1_trend==='BEAR'?'#ef4444':'#f59e0b'}">${data.h1_trend}</b> ${data.h1_trend==='NEUTRAL'?'⛔ NO TRADE - CHOPPY INSIDE CLOUD!':''}`;
+  } else {
+    document.getElementById('ichiInfo').innerHTML = `<b>☁️ ICHIMOKU H1:</b> Loading... H1 Combined: ${data.h1_trend} | ${h1f.ema_trend||''}`;
+  }
   const gatesDiv = document.getElementById('gates');
   gatesDiv.innerHTML='';
   (data.gates||[]).forEach(g=>{
@@ -1260,7 +1284,7 @@ async function load(){
  }
 }
 load();
-setInterval(load, 5000);
+setInterval(load, 30000); // Changed from 5s to 30s to save credits & bandwidth - real price cached 2 mins anyway
 </script>
 </body></html>
 """
