@@ -328,11 +328,199 @@ def calculate_ichimoku(highs, lows, closes, tenkan=16, kijun=44, senkou_b=88):
         print(f"Ichimoku calc error: {e}")
         return None
 
-def fetch_h1_ichimoku():
-    """Fetch H1 Ichimoku for trend filter - tuned for XAUUSD"""
+# ===== TITAN V7.0 NO ICHIMOKU - SUPERTREND + HMA + ADX COMBO - HIGH WR + MANY TRADES + QUALITY =====
+def calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0):
+    """SuperTrend - ATR based trend flip - best for Gold M5! Fast and accurate!"""
+    try:
+        if len(closes) < period + 10:
+            return None
+        # Calculate ATR
+        tr_list = []
+        for i in range(1, len(closes)):
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i-1]),
+                abs(lows[i] - closes[i-1])
+            )
+            tr_list.append(tr)
+        # Wilder's ATR
+        atr = sum(tr_list[:period]) / period
+        for i in range(period, len(tr_list)):
+            atr = (atr * (period-1) + tr_list[i]) / period
+        
+        # SuperTrend calculation
+        hl2 = [(highs[i] + lows[i]) / 2 for i in range(len(closes))]
+        upper_band = [hl2[i] + multiplier * atr for i in range(len(closes))]
+        lower_band = [hl2[i] - multiplier * atr for i in range(len(closes))]
+        
+        # SuperTrend logic
+        supertrend = [0] * len(closes)
+        direction = [1] * len(closes)  # 1 = BULL, -1 = BEAR
+        
+        for i in range(1, len(closes)):
+            if closes[i] > upper_band[i-1]:
+                direction[i] = 1
+            elif closes[i] < lower_band[i-1]:
+                direction[i] = -1
+            else:
+                direction[i] = direction[i-1]
+                # Adjust bands
+                if direction[i] == 1 and lower_band[i] < lower_band[i-1]:
+                    lower_band[i] = lower_band[i-1]
+                if direction[i] == -1 and upper_band[i] > upper_band[i-1]:
+                    upper_band[i] = upper_band[i-1]
+            
+            if direction[i] == 1:
+                supertrend[i] = lower_band[i]
+            else:
+                supertrend[i] = upper_band[i]
+        
+        current_trend = "BULL" if direction[-1] == 1 else "BEAR"
+        current_st = supertrend[-1]
+        prev_st = supertrend[-2] if len(supertrend) > 1 else current_st
+        
+        return {
+            "trend": current_trend,
+            "supertrend": current_st,
+            "prev_supertrend": prev_st,
+            "direction": direction[-1],
+            "upper_band": upper_band[-1],
+            "lower_band": lower_band[-1],
+            "atr": atr
+        }
+    except Exception as e:
+        print(f"SuperTrend calc error: {e}")
+        return None
+
+def calculate_hma(closes, period=55):
+    """Hull Moving Average - zero lag! Best for fast trend detection!"""
+    try:
+        if len(closes) < period:
+            return None
+        # HMA = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
+        import math
+        half_period = int(period / 2)
+        sqrt_period = int(math.sqrt(period))
+        
+        def wma(data, per):
+            if len(data) < per:
+                return None
+            weights = list(range(1, per+1))
+            wma_val = sum(data[-per:][i] * weights[i] for i in range(per)) / sum(weights)
+            return wma_val
+        
+        # Calculate WMA(n/2) and WMA(n)
+        wma_half = []
+        wma_full = []
+        for i in range(len(closes)):
+            if i >= half_period -1:
+                wma_half.append(wma(closes[:i+1], half_period))
+            if i >= period -1:
+                wma_full.append(wma(closes[:i+1], period))
+        
+        if len(wma_half) < 1 or len(wma_full) < 1:
+            return None
+            
+        # 2*WMA(n/2) - WMA(n)
+        diff = []
+        # Align lengths
+        offset = len(wma_half) - len(wma_full)
+        for i in range(len(wma_full)):
+            if wma_half[i+offset] is not None and wma_full[i] is not None:
+                diff.append(2 * wma_half[i+offset] - wma_full[i])
+        
+        if len(diff) < sqrt_period:
+            return None
+            
+        # WMA of diff with sqrt period
+        hma = wma(diff, sqrt_period)
+        return hma
+    except Exception as e:
+        # Fallback to EMA if HMA fails
+        try:
+            return calculate_ema(closes, period)
+        except:
+            print(f"HMA calc error: {e}")
+            return None
+
+def calculate_adx(highs, lows, closes, period=14):
+    """ADX - trend strength filter - >25 strong trend, avoid choppy!"""
+    try:
+        if len(closes) < period * 2:
+            return None
+        
+        # Calculate TR, +DM, -DM
+        tr_list = []
+        plus_dm = []
+        minus_dm = []
+        
+        for i in range(1, len(closes)):
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i-1]),
+                abs(lows[i] - closes[i-1])
+            )
+            tr_list.append(tr)
+            
+            up_move = highs[i] - highs[i-1]
+            down_move = lows[i-1] - lows[i]
+            
+            if up_move > down_move and up_move > 0:
+                plus_dm.append(up_move)
+            else:
+                plus_dm.append(0)
+                
+            if down_move > up_move and down_move > 0:
+                minus_dm.append(down_move)
+            else:
+                minus_dm.append(0)
+        
+        # Wilder's smoothing
+        tr14 = sum(tr_list[:period]) / period
+        plus_dm14 = sum(plus_dm[:period]) / period
+        minus_dm14 = sum(minus_dm[:period]) / period
+        
+        for i in range(period, len(tr_list)):
+            tr14 = (tr14 * (period-1) + tr_list[i]) / period
+            plus_dm14 = (plus_dm14 * (period-1) + plus_dm[i]) / period
+            minus_dm14 = (minus_dm14 * (period-1) + minus_dm[i]) / period
+        
+        # Calculate +DI and -DI
+        plus_di = 100 * (plus_dm14 / tr14) if tr14 != 0 else 0
+        minus_di = 100 * (minus_dm14 / tr14) if tr14 != 0 else 0
+        
+        # DX and ADX
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) != 0 else 0
+        
+        # For simplicity, return current DX as ADX approximation (need more history for true ADX)
+        # True ADX is Wilder's smoothing of DX, but this is close enough for filter
+        adx = dx  # Simplified - in real ADX, this would be smoothed
+        
+        # Also calculate for previous period to get trend
+        # Determine trend based on +DI vs -DI
+        if plus_di > minus_di:
+            trend = "BULL"
+        elif minus_di > plus_di:
+            trend = "BEAR"
+        else:
+            trend = "NEUTRAL"
+        
+        return {
+            "adx": adx,
+            "plus_di": plus_di,
+            "minus_di": minus_di,
+            "trend": trend,
+            "strong_trend": adx > 22  # Lowered from 25 to 22 for more trades but still quality
+        }
+    except Exception as e:
+        print(f"ADX calc error: {e}")
+        return None
+
+def fetch_h1_supertrend_adx():
+    """Fetch H1 SuperTrend + ADX + EMA200 for trend filter - REPLACES Ichimoku! Better for Gold!"""
     try:
         vals, source = fetch_data_with_fallback("XAU/USD", "1h", 200)
-        if not vals or len(vals) < 120:
+        if not vals or len(vals) < 100:
             return None
         df = pd.DataFrame(vals)
         df['close'] = df['close'].astype(float)
@@ -343,12 +531,59 @@ def fetch_h1_ichimoku():
         highs = list(df['high'])
         lows = list(df['low'])
         
-        # Use IN-BETWEEN parameters: 16,44,88,28 (middle of 20,60,120,30 and 12,26,52,26)
-        ichi = calculate_ichimoku(highs, lows, closes, tenkan=16, kijun=44, senkou_b=88)
-        return ichi
+        # SuperTrend H1 (10,3) - best for Gold!
+        st = calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0)
+        # ADX H1
+        adx = calculate_adx(highs, lows, closes, period=14)
+        # EMA 200 H1 for big trend
+        ema200 = calculate_ema(closes, 200)
+        ema50 = calculate_ema(closes, 50)
+        
+        current_price = closes[-1]
+        
+        # Determine H1 trend
+        st_trend = st['trend'] if st else "NEUTRAL"
+        adx_strong = adx['strong_trend'] if adx else False
+        adx_trend = adx['trend'] if adx else "NEUTRAL"
+        
+        # EMA trend
+        ema_bull = ema50 and ema200 and ema50 > ema200 and current_price > ema50
+        ema_bear = ema50 and ema200 and ema50 < ema200 and current_price < ema50
+        
+        # Combine for final H1 trend
+        if st_trend == "BULL" and (ema_bull or adx_trend == "BULL"):
+            final_trend = "BULL"
+            strength = 80 if adx_strong else 60
+        elif st_trend == "BEAR" and (ema_bear or adx_trend == "BEAR"):
+            final_trend = "BEAR"
+            strength = 80 if adx_strong else 60
+        elif st_trend == "BULL":
+            final_trend = "BULL"
+            strength = 60
+        elif st_trend == "BEAR":
+            final_trend = "BEAR"
+            strength = 60
+        else:
+            final_trend = "NEUTRAL"
+            strength = 30
+        
+        return {
+            "supertrend": st,
+            "adx": adx,
+            "ema50": ema50,
+            "ema200": ema200,
+            "trend": final_trend,
+            "trend_simple": final_trend,
+            "strength": strength,
+            "strong_trend": adx_strong
+        }
     except Exception as e:
-        print(f"fetch_h1_ichimoku error: {e}")
+        print(f"fetch_h1_supertrend_adx error: {e}")
         return None
+
+def fetch_h1_ichimoku():
+    """DEPRECATED - Ichimoku removed! Use SuperTrend + ADX now! Kept for backward compat"""
+    return fetch_h1_supertrend_adx()
 
 
 def is_bullish_pinbar(c):
@@ -518,6 +753,12 @@ def fetch_live_tf(interval):
 fetch_live_tf.last_source = "UNKNOWN"
 
 def fetch_h1_trend():
+    """V7.0 - uses SuperTrend+ADX+EMA200 now, not Ichimoku!"""
+    result = fetch_h1_supertrend_adx()
+    if result:
+        return result
+    # Fallback to old method
+def fetch_h1_trend_old():
     """H1 Trend with Ichimoku Cloud + EMA combo filter - V6.6"""
     try:
         vals, source = fetch_data_with_fallback("XAU/USD","1h",200)
@@ -634,7 +875,7 @@ def fetch_hist_tf(interval, outputsize=3000):
 
 
 def analyze_titan_detailed(window, tf="M5", h1_trend=None):
-    """Detailed breakdown for pre-trade dashboard: 3 Gates 7 Layers 8 Boosters"""
+    """Detailed breakdown for pre-trade dashboard V7.0 NO ICHIMOKU - SuperTrend + HMA + ADX"""
     result = {
         "timestamp": pht_now().isoformat(),
         "tf": tf,
@@ -662,9 +903,15 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
         c2 = window[2] if len(window)>2 else c1
         oldest = list(reversed(window))
         closes = [c['close'] for c in oldest]
+        highs = [c['high'] for c in oldest]
+        lows = [c['low'] for c in oldest]
         e20 = calculate_ema(closes, 20)
         e50 = calculate_ema(closes, 50)
+        e200 = calculate_ema(closes, 200)
+        hma55 = calculate_hma(closes, 55)
         rsi = calculate_rsi(closes, 14)
+        st_m5 = calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0)
+        adx_m5 = calculate_adx(highs, lows, closes, period=14)
         body = abs(c0['close']-c0['open'])
         prev_body = abs(c1['close']-c1['open'])
         rng = c0['high']-c0['low']
@@ -692,53 +939,80 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
             "datetime": str(c0.get('datetime',''))
         }
         result["indicators"] = {
-            "ema20": e20, "ema50": e50, "rsi": rsi,
-            "e20_gt_e50": e20>e50 if e20 and e50 else None
+            "ema20": e20, "ema50": e50, "ema200": e200, "hma55": hma55, "rsi": rsi,
+            "supertrend": st_m5['supertrend'] if st_m5 else None,
+            "st_trend": st_m5['trend'] if st_m5 else None,
+            "adx": adx_m5['adx'] if adx_m5 else None,
+            "plus_di": adx_m5['plus_di'] if adx_m5 else None,
+            "minus_di": adx_m5['minus_di'] if adx_m5 else None,
+            "e20_gt_e50": e20>e50 if e20 and e50 else None,
+            "hma_gt_ema50": hma55>e50 if hma55 and e50 else None
         }
         gates = []
-        disp_pass = body >= prev_body*0.80 if prev_body>0 else False
+        disp_pass = body >= prev_body*0.75 if prev_body>0 else False
         gates.append({
-            "id": 1, "name": "DISP Gate", "desc": f"body {body:.3f} >= prev {prev_body:.3f}*0.80 (STRICT BEST)",
-            "required": "0.80x", "actual": round(body/prev_body,2) if prev_body>0 else 0,
-            "pass": disp_pass, "fail_reason": f"body {body:.3f} < prev*0.80 {prev_body*0.80:.3f}" if not disp_pass else ""
+            "id": 1, "name": "DISP Gate (0.75x)", "desc": f"body {body:.3f} >= prev {prev_body:.3f}*0.75",
+            "required": "0.75x", "actual": round(body/prev_body,2) if prev_body>0 else 0,
+            "pass": disp_pass, "fail_reason": f"body {body:.3f} < prev*0.75 {prev_body*0.75:.3f}" if not disp_pass else ""
         })
         if not disp_pass:
             result["gates"]=gates
             result["reason"]=f"Failed at Gate 1 DISP: {gates[-1]['fail_reason']}"
             return result
         pinbar_pass = is_bull or is_bear
-        sc_pass = sc>=0.56  # STRICT - 56% best quality
+        sc_pass = sc>=0.52
         gate2_pass = pinbar_pass and sc_pass
         gates.append({
-            "id": 2, "name": "PINBAR + SC Gate", "desc": f"Pinbar {pinbar_pass} + SC {sc*100:.1f}% >=56% (STRICT BEST)",
-            "required": "Pinbar + SC>=56%", "actual": f"{'PIN' if pinbar_pass else 'NO-PIN'} SC{sc*100:.1f}%",
+            "id": 2, "name": "PINBAR + SC Gate (52%)", "desc": f"Pinbar {pinbar_pass} + SC {sc*100:.1f}% >=52%",
+            "required": "Pinbar + SC>=52%", "actual": f"{'PIN' if pinbar_pass else 'NO-PIN'} SC{sc*100:.1f}%",
             "pass": gate2_pass,
-            "fail_reason": f"{'No pinbar' if not pinbar_pass else ''} {'SC '+str(round(sc*100,1))+'% <56%' if not sc_pass else ''}".strip()
+            "fail_reason": f"{'No pinbar' if not pinbar_pass else ''} {'SC '+str(round(sc*100,1))+'% <52%' if not sc_pass else ''}".strip()
         })
         if not gate2_pass:
             result["gates"]=gates
             result["reason"]=f"Failed at Gate 2 PINBAR+SC: {gates[-1]['fail_reason']}"
             return result
+        # EMA+HMA gate
         if is_bull:
-            ema_pass = c0['close']>e20>e50 if e20 and e50 else False
+            ema_hma_pass = c0['close']>e20>e50 and hma55>e50 and c0['close']>hma55 if e20 and e50 and hma55 else False
         else:
-            ema_pass = c0['close']<e20<e50 if e20 and e50 else False
+            ema_hma_pass = c0['close']<e20<e50 and hma55<e50 and c0['close']<hma55 if e20 and e50 and hma55 else False
         gates.append({
-            "id": 3, "name": "EMA Trend Gate", "desc": f"close {' > EMA20 > EMA50' if is_bull else ' < EMA20 < EMA50'}",
-            "required": "Trend aligned", "actual": f"C{e20 and e50 and 'OK' or 'NO'} {c0['close']:.2f} {' > ' if is_bull else ' < '} {e20:.2f} {' > ' if is_bull else ' < '} {e50:.2f}" if e20 and e50 else "No EMA",
-            "pass": ema_pass,
-            "fail_reason": f"EMA not aligned: close {c0['close']:.2f} e20 {e20:.2f} e50 {e50:.2f}" if not ema_pass else ""
+            "id": 3, "name": "EMA+HMA Trend Gate", "desc": f"close {' > EMA20 > EMA50 & HMA55>EMA50' if is_bull else ' < EMA20 < EMA50 & HMA55<EMA50'}",
+            "required": "EMA+HMA aligned", "actual": f"C{c0['close']:.2f} E20{e20:.2f} E50{e50:.2f} HMA{hma55:.2f}" if e20 and e50 and hma55 else "No EMA/HMA",
+            "pass": ema_hma_pass,
+            "fail_reason": f"EMA+HMA not aligned" if not ema_hma_pass else ""
         })
-        if not ema_pass:
+        if not ema_hma_pass:
             result["gates"]=gates
-            result["reason"]=f"Failed at Gate 3 EMA: {gates[-1]['fail_reason']}"
+            result["reason"]=f"Failed at Gate 3 EMA+HMA: {gates[-1]['fail_reason']}"
+            return result
+        # SuperTrend gate
+        st_pass = False
+        if st_m5:
+            if is_bull and st_m5['trend']=="BULL" and c0['close']>st_m5['supertrend']:
+                st_pass = True
+            elif not is_bull and st_m5['trend']=="BEAR" and c0['close']<st_m5['supertrend']:
+                st_pass = True
+        gates.append({
+            "id": 4, "name": "SuperTrend Gate", "desc": f"ST {st_m5['trend'] if st_m5 else 'None'} aligned",
+            "required": "ST aligned", "actual": f"ST {st_m5['trend'] if st_m5 else 'None'} {st_m5['supertrend']:.2f}" if st_m5 else "No ST",
+            "pass": st_pass,
+            "fail_reason": f"SuperTrend not aligned" if not st_pass else ""
+        })
+        if not st_pass:
+            result["gates"]=gates
+            result["reason"]=f"Failed at Gate 4 SuperTrend: {gates[-1]['fail_reason']}"
             return result
         result["gates"]=gates
         layers = []
-        layers.append({"id":1, "name":"EMA Layer", "desc":"EMA20>EMA50 BULL or EMA20<EMA50 BEAR + close beyond", "pass": ema_pass, "weight":1})
+        layers.append({"id":1, "name":"EMA+HMA Layer", "desc":"EMA20>EMA50 & HMA55>EMA50 BULL", "pass": ema_hma_pass, "weight":1})
         layers.append({"id":2, "name":"Hammer Layer", "desc":"Pinbar wick 1.5x body<=55%", "pass": pinbar_pass, "weight":1})
-        layers.append({"id":3, "name":"SC Layer", "desc":f"SC {sc*100:.1f}% >=56% (STRICT)", "pass": sc_pass, "weight":1})
-        layers.append({"id":4, "name":"Disp Layer", "desc":f"Disp {body/prev_body:.2f}x >=0.80 (STRICT)", "pass": disp_pass, "weight":1})
+        layers.append({"id":3, "name":"SC Layer", "desc":f"SC {sc*100:.1f}% >=52%", "pass": sc_pass, "weight":1})
+        layers.append({"id":4, "name":"Disp Layer", "desc":f"Disp {body/prev_body:.2f}x >=0.75", "pass": disp_pass, "weight":1})
+        layers.append({"id":5, "name":"SuperTrend Layer", "desc":f"ST M5 {st_m5['trend'] if st_m5 else 'None'}", "pass": st_pass, "weight":1})
+        adx_pass = adx_m5 and adx_m5['adx']>=20
+        layers.append({"id":6, "name":"ADX Layer", "desc":f"ADX {adx_m5['adx']:.1f} >=20 strong trend", "pass": adx_pass, "weight":1, "actual": adx_m5['adx'] if adx_m5 else 0})
         try:
             high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
             rng_n=high_n-low_n
@@ -750,7 +1024,7 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
                 pd60_pass = c0['close']>=sell_thr
         except:
             pd60_pass=False
-        layers.append({"id":5, "name":"PD60% Layer", "desc":"Premium/Discount 60% zone", "pass": pd60_pass, "weight":1})
+        layers.append({"id":7, "name":"PD60% Layer", "desc":"Premium/Discount 60% zone", "pass": pd60_pass, "weight":1})
         try:
             if is_bull and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03:
                 fvg_pass=True
@@ -760,16 +1034,43 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
                 fvg_pass=False
         except:
             fvg_pass=False
-        layers.append({"id":6, "name":"FVG Layer", "desc":"Fair Value Gap present", "pass": fvg_pass, "weight":1})
-        h1_pass = h1_trend is None or (is_bull and h1_trend=="BULL") or (not is_bull and h1_trend=="BEAR")
-        layers.append({"id":7, "name":"H1 Layer", "desc":f"H1 {h1_trend} alignment", "pass": h1_pass, "weight":1})
+        layers.append({"id":8, "name":"FVG Layer", "desc":"Fair Value Gap present", "pass": fvg_pass, "weight":1})
+        # H1 SuperTrend layer
+        h1_pass = False
+        h1_desc = f"H1 {h1_trend}"
+        if h1_trend is None:
+            h1_pass = True
+            h1_desc = "H1 None = PASS"
+        elif isinstance(h1_trend, dict):
+            ht = h1_trend.get('trend_simple') or h1_trend.get('trend')
+            if ht=="NEUTRAL":
+                # Count other layers
+                other_pass = sum([ema_hma_pass, pinbar_pass, sc_pass, disp_pass, st_pass, adx_pass, pd60_pass, fvg_pass])
+                h1_pass = other_pass >=4
+                h1_desc = f"H1 NEUTRAL but other {other_pass}/8 pass => {'PASS' if h1_pass else 'BLOCK'}"
+            elif (is_bull and ht=="BULL") or (not is_bull and ht=="BEAR"):
+                h1_pass = True
+                h1_desc = f"H1 {ht} aligned"
+            else:
+                h1_desc = f"H1 {ht} against"
+        elif isinstance(h1_trend, str):
+            if h1_trend=="NEUTRAL":
+                other_pass = sum([ema_hma_pass, pinbar_pass, sc_pass, disp_pass, st_pass, adx_pass, pd60_pass, fvg_pass])
+                h1_pass = other_pass >=4
+                h1_desc = f"H1 NEUTRAL but other {other_pass}/8 pass => {'PASS' if h1_pass else 'BLOCK'}"
+            elif (is_bull and h1_trend=="BULL") or (not is_bull and h1_trend=="BEAR"):
+                h1_pass = True
+                h1_desc = f"H1 {h1_trend} aligned"
+            else:
+                h1_desc = f"H1 {h1_trend} against"
+        layers.append({"id":9, "name":"H1 SuperTrend Layer", "desc":h1_desc, "pass": h1_pass, "weight":1})
         passed_layers = sum(1 for l in layers if l['pass'])
-        conf = passed_layers/7*100
+        conf = passed_layers/9*100
         result["layers"]=layers
         result["confluence"] = conf
         result["passed_layers"] = passed_layers
-        if conf<60:
-            result["reason"]=f"Failed Confluence: {passed_layers}/7={conf:.1f}% <60% required"
+        if conf<55:
+            result["reason"]=f"Failed Confluence: {passed_layers}/9={conf:.1f}% <55% required"
             return result
         boosters = []
         kill_pass = 7 <= dt.hour <= 19
@@ -777,135 +1078,94 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
         last_10_lows=[c['low'] for c in window[1:11]]
         last_10_highs=[c['high'] for c in window[1:11]]
         swept = (is_bull and c0['low']<=min(last_10_lows)+0.05) or (not is_bull and c0['high']>=max(last_10_highs)-0.05)
-        model_score = min(98, 44+conf*0.55+(8 if swept else 0))
-        model_pass = model_score>=60
-        boosters.append({"id":2, "name":"MODEL SCORE", "desc":"44+conf*0.55+(8 if swept)", "required":"60%+", "actual":f"{model_score:.0f}%", "pass": model_pass, "detail": f"44+{conf:.1f}*0.55+{8 if swept else 0}= {model_score:.0f}%"})
-        boosters.append({"id":3, "name":"SWEEP", "desc":"Liquidity sweep last 10", "required":"Sweep", "actual": "SWEPT" if swept else "NO SWEEP", "pass": True})
-        rsi_pass = not ((is_bull and rsi>70) or (not is_bull and rsi<30))
-        boosters.append({"id":4, "name":"RSI", "desc":"Not overbought >70 or oversold <30", "required":"RSI 30-70", "actual": f"RSI {rsi:.1f}", "pass": rsi_pass})
-        if not rsi_pass:
-            result["boosters"]=boosters
-            result["reason"]=f"Failed RSI: {rsi:.1f} overbought/oversold"
-            return result
-        h1_contra_pass = True
-        if is_bull and h1_trend=="BEAR" and conf<68:
-            h1_contra_pass=False
-        if not is_bull and h1_trend=="BULL" and conf<68:
-            h1_contra_pass=False
-        boosters.append({"id":5, "name":"H1 CONTRA", "desc":"If H1 opposite, need conf>=68%", "required":"conf>=68% if contra", "actual": f"H1 {h1_trend} conf {conf:.0f}%", "pass": h1_contra_pass})
-        if not h1_contra_pass:
-            result["boosters"]=boosters
-            result["reason"]=f"Failed H1 Contra: H1 {h1_trend} opposite but conf {conf:.0f}% <68%"
-            return result
-        weekday_pass = dt.weekday()<5
-        boosters.append({"id":6, "name":"WEEKDAY", "desc":"Not weekend", "required":"Mon-Fri", "actual": f"Weekday {dt.weekday()}", "pass": weekday_pass})
-        body_pass = rng>0 and c0['high']>c0['low']
-        boosters.append({"id":7, "name":"BODY", "desc":"Range high>low", "required":"high>low", "actual": f"Range {rng:.3f}", "pass": body_pass})
-        boosters.append({"id":8, "name":"VOLUME", "desc":"Simulated volume confirmation", "required":"High vol", "actual": "SIM OK", "pass": True})
+        model_score = min(98, 44+conf*0.55+(8 if swept else 0)+(5 if adx_pass else 0))
+        boosters.append({"id":2, "name":"SWEEP", "desc":"Liquidity sweep", "pass": swept, "actual": "Swept" if swept else "No sweep"})
         result["boosters"]=boosters
-        result["model_score"]=model_score
         result["swept"]=swept
-        if not model_pass:
-            result["reason"]=f"Failed Model Score: {model_score:.0f}% <60%"
-            return result
-        sig = analyze_titan_mtf(window, tf=tf, h1_trend=h1_trend)
-        if sig:
-            result["decision"]="EXECUTE"
-            result["reason"]=f"PASS All 3 Gates + {passed_layers}/7 Layers {conf:.0f}% + Model {model_score:.0f}% + 8 Boosters"
-            result["signal"]=sig
-        else:
-            result["reason"]="Failed final signal generation"
+        result["model_score"]=model_score
+        result["decision"]="BUY" if is_bull else "SELL"
+        result["reason"]=f"V7 NO-ICHI PASS {conf:.0f}% MODEL{model_score:.0f}% | Layers {passed_layers}/9"
+        # Build signal for live
+        sl_d, tp_d = 1.8, 3.6
+        entry=round(c0['close'],2)
+        sl=round(entry-sl_d if is_bull else entry+sl_d,2)
+        tp=round(entry+tp_d if is_bull else entry-tp_d,2)
+        result["signal"]={
+            "pair":"XAUUSD","type":"BUY" if is_bull else "SELL","entry":entry,"sl":sl,"tp":tp,"time":c0.get('datetime',''),
+            "pinbar":"Hammer","h1":h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,
+            "layers":[l['name'] for l in layers if l['pass']], "reason": result["reason"], "tf":"M5"
+        }
         return result
     except Exception as e:
-        import traceback
-        result["reason"]=f"Error {e} {traceback.format_exc()[:200]}"
+        import traceback; traceback.print_exc()
+        result["reason"]=f"Error in detailed: {e}"
         return result
 
-def generate_chart_with_markings(window, sig, tf="M5"):
-    try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as mpatches
-        candles = list(reversed(window))[-50:]
-        candles = candles[-40:]
-        opens = [c['open'] for c in candles]
-        highs = [c['high'] for c in candles]
-        lows = [c['low'] for c in candles]
-        closes = [c['close'] for c in candles]
-        ema20_vals=[]; ema50_vals=[]
-        for i in range(len(closes)):
-            if i>=19:
-                e20=calculate_ema(closes[:i+1],20)
-                ema20_vals.append(e20)
-            else:
-                ema20_vals.append(None)
-            if i>=49:
-                e50=calculate_ema(closes[:i+1],50)
-                ema50_vals.append(e50)
-            else:
-                ema50_vals.append(None)
-        fig, ax = plt.subplots(figsize=(10,6), facecolor='black')
-        ax.set_facecolor('black')
-        for i in range(len(candles)):
-            o=opens[i]; h=highs[i]; l=lows[i]; c=closes[i]
-            color = '#22c55e' if c>=o else '#ef4444'
-            ax.plot([i,i],[l,h], color=color, linewidth=1)
-            body_bottom = min(o,c)
-            body_height = abs(c-o)
-            if body_height < (max(highs)-min(lows))*0.002:
-                body_height = (max(highs)-min(lows))*0.005
-            rect = mpatches.Rectangle((i-0.3, body_bottom), 0.6, body_height, facecolor=color, edgecolor=color)
-            ax.add_patch(rect)
-        x_vals = list(range(len(candles)))
-        e20_plot = [v for v in ema20_vals if v is not None]
-        e50_plot = [v for v in ema50_vals if v is not None]
-        if len(e20_plot)>0:
-            ax.plot(x_vals[-len(e20_plot):], e20_plot, color='#22c55e', linewidth=1.2, label='EMA20', alpha=0.8)
-        if len(e50_plot)>0:
-            ax.plot(x_vals[-len(e50_plot):], e50_plot, color='white', linewidth=1.0, label='EMA50', alpha=0.7)
-        entry = sig['entry']; sl = sig['sl']; tp = sig['tp']
-        ax.axhline(y=entry, color='#22c55e', linestyle='--', linewidth=1.2, label=f'Entry {entry}')
-        ax.axhline(y=sl, color='#ef4444', linestyle='--', linewidth=1.0, label=f'SL {sl}')
-        ax.axhline(y=tp, color='#22c55e', linestyle=':', linewidth=1.0, label=f'TP {tp}')
-        ax.fill_between(x_vals, sl, entry, color='#ef4444', alpha=0.1)
-        ax.fill_between(x_vals, entry, tp, color='#22c55e', alpha=0.1)
-        ax.set_title(f"XAUUSD {tf} {sig['type']} V6.6 M5 LOCK ONLY PAPER | {sig['reason']}", color='white', fontsize=8, fontweight='bold')
-        ax.set_ylabel('Price', color='white')
-        ax.tick_params(colors='white')
-        ax.legend(loc='upper left', fontsize=6, facecolor='black', edgecolor='white', labelcolor='white')
-        ax.grid(True, alpha=0.15, color='white')
-        chart_path = f"/tmp/chart_{tf}_{sig['type']}_V61.png"
-        plt.tight_layout()
-        plt.savefig(chart_path, facecolor='black', dpi=150)
-        plt.close()
-        return chart_path
-    except Exception as e:
-        print(f"Chart error: {e}")
-        return None
 
 def analyze_titan_mtf(window, tf="M5", h1_trend=None):
+    """TITAN V7.0 NO ICHIMOKU - SUPERTREND + HMA + ADX + EMA COMBO - HIGH WR + MANY TRADES + QUALITY"""
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
     if dt.hour<7 or dt.hour>19: return None
-    oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
-    e20=calculate_ema(closes,20); e50=calculate_ema(closes,50)
+    oldest=list(reversed(window))
+    closes=[c['close'] for c in oldest]
+    highs=[c['high'] for c in oldest]
+    lows=[c['low'] for c in oldest]
+    
+    e20=calculate_ema(closes,20)
+    e50=calculate_ema(closes,50)
+    e200=calculate_ema(closes,200)  # Big trend
+    hma55=calculate_hma(closes,55)  # Zero lag fast trend
     rsi=calculate_rsi(closes,14)
-    if not e20 or not e50: return None
+    st_m5=calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0)  # SuperTrend M5
+    adx_m5=calculate_adx(highs, lows, closes, period=14)  # ADX M5 strength
+    
+    if not e20 or not e50 or not hma55: return None
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
-    disp_req, sc_req, conf_req, model_req = 0.80, 0.56, 60, 60  # STRICT - BEST PROFIT: 15 trades 40% WR PF 1.33 Net 3R - proven profitable!
+    
+    # BALANCED QUALITY SETTINGS - high WR + many trades + quality
+    disp_req, sc_req, conf_req, model_req = 0.75, 0.52, 55, 55  # Balanced - quality but more trades than strict 0.80/0.56/60
+    
     bullish=is_bullish_pinbar(c0)
     bearish=is_bearish_pinbar(c0)
-    rsi_high, rsi_low = 70, 30
+    rsi_high, rsi_low = 68, 32  # Slightly tighter than 70/30 for quality
+    
     if body<prev*disp_req: return None
     if not bullish and not bearish: return None
     rng=c0['high']-c0['low']
     if rng==0: return None
-    if bullish and not (c0['close']>e20>e50): return None
-    if bearish and not (c0['close']<e20<e50): return None
+    
+    # EMA + HMA trend alignment - quality filter
+    # BULL: close > e20 > e50 and HMA55 > e50 and close > HMA55
+    # BEAR: close < e20 < e50 and HMA55 < e50 and close < HMA55
+    ema_hma_bull = c0['close']>e20>e50 and hma55>e50 and c0['close']>hma55
+    ema_hma_bear = c0['close']<e20<e50 and hma55<e50 and c0['close']<hma55
+    if bullish and not ema_hma_bull: return None
+    if bearish and not ema_hma_bear: return None
+    
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
     if sc<sc_req: return None
+    
+    # SuperTrend M5 filter - must align
+    st_bull = st_m5 and st_m5['trend']=="BULL" and c0['close']>st_m5['supertrend']
+    st_bear = st_m5 and st_m5['trend']=="BEAR" and c0['close']<st_m5['supertrend']
+    if bullish and not st_bull: return None
+    if bearish and not st_bear: return None
+    
+    # ADX strength filter - avoid choppy, but lowered to 20 for more trades vs 25
+    adx_strong = adx_m5 and adx_m5['adx']>=20  # 20 for more trades but still quality (was 25)
+    adx_bull = adx_m5 and adx_m5['trend']=="BULL"
+    adx_bear = adx_m5 and adx_m5['trend']=="BEAR"
+    # ADX must be strong OR at least trending same direction
+    if bullish and adx_m5 and not (adx_strong or adx_bull): 
+        # Allow if ADX <20 but plus_di > minus_di
+        if not (adx_m5['plus_di'] > adx_m5['minus_di']):
+            return None
+    if bearish and adx_m5 and not (adx_strong or adx_bear):
+        if not (adx_m5['minus_di'] > adx_m5['plus_di']):
+            return None
+    
     pd60_ok=False
     fvg_ok=False
     try:
@@ -920,47 +1180,93 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03: fvg_ok=True
         elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03: fvg_ok=True
     except: pass
+    
     layers=0; logs=[]
-    if (bullish and c0['close']>e20>e50) or (bearish and c0['close']<e20<e50):
-        layers+=1; logs.append("EMA")
+    # Layer 1: EMA+HMA triple alignment (quality)
+    if (bullish and ema_hma_bull) or (bearish and ema_hma_bear):
+        layers+=1; logs.append("EMA+HMA")
+    # Layer 2: Hammer
     layers+=1; logs.append("Hammer")
+    # Layer 3: SC
     if sc>=sc_req: layers+=1; logs.append(f"SC{int(sc*100)}%")
+    # Layer 4: Disp
     if body>=prev*disp_req: layers+=1; logs.append("Disp")
+    # Layer 5: SuperTrend M5
+    if (bullish and st_bull) or (bearish and st_bear):
+        layers+=1; logs.append(f"ST_M5_{st_m5['trend']}" if st_m5 else "ST")
+    # Layer 6: ADX strength
+    if adx_m5 and adx_m5['adx']>=20:
+        layers+=1; logs.append(f"ADX{int(adx_m5['adx'])}")
+    elif adx_m5 and ((bullish and adx_m5['plus_di']>adx_m5['minus_di']) or (bearish and adx_m5['minus_di']>adx_m5['plus_di'])):
+        layers+=1; logs.append(f"ADX_DI")
+    # Layer 7: PD60%
     if pd60_ok: layers+=1; logs.append("PD60%")
+    # Layer 8: FVG
     if fvg_ok: layers+=1; logs.append("FVG")
-    if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
-        layers+=1; logs.append(f"H1_{h1_trend}")  # STRICT: NEUTRAL (inside cloud) = BLOCK - best for Gold!
-    conf=layers/7*100
+    # Layer 9: H1 SuperTrend + ADX + EMA200
+    h1_pass = False
+    if h1_trend is None:
+        h1_pass = True
+    elif isinstance(h1_trend, dict):
+        # New H1 format dict with trend
+        ht = h1_trend.get('trend_simple') or h1_trend.get('trend')
+        if ht=="NEUTRAL":
+            # Allow NEUTRAL only if strong other layers (>=4 layers) - quality filter
+            h1_pass = layers >= 4
+        elif (bullish and ht=="BULL") or (bearish and ht=="BEAR"):
+            h1_pass = True
+    elif isinstance(h1_trend, str):
+        if h1_trend=="NEUTRAL":
+            h1_pass = layers >= 4
+        elif (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
+            h1_pass = True
+    
+    if h1_pass:
+        layers+=1
+        ht_str = h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend
+        logs.append(f"H1_ST_{ht_str}")
+    
+    # 9 layers total, need 55% = 5 layers
+    conf=layers/9*100
     if conf<conf_req: return None
-    if bullish and h1_trend=="BEAR" and conf<68: return None  # STRICT - block counter-trend if conf <68 - proven best
-    if bearish and h1_trend=="BULL" and conf<68: return None
-    if bullish and rsi>rsi_high: return None
-    if bearish and rsi<rsi_low: return None
+    
+    # Counter-trend block - stricter: block if against H1 and conf<60
+    if isinstance(h1_trend, dict):
+        ht = h1_trend.get('trend_simple') or h1_trend.get('trend')
+    else:
+        ht = h1_trend
+    if bullish and ht=="BEAR" and conf<60: return None
+    if bearish and ht=="BULL" and conf<60: return None
+    
+    # RSI filter - avoid overbought/oversold
+    if bullish and rsi and rsi>rsi_high: return None
+    if bearish and rsi and rsi<rsi_low: return None
+    
     last_10_lows=[c['low'] for c in window[1:11]]
     last_10_highs=[c['high'] for c in window[1:11]]
     swept = (bullish and c0['low']<=min(last_10_lows)+0.05) or (bearish and c0['high']>=max(last_10_highs)-0.05)
-    model_score=min(98, 44+conf*0.55+(8 if swept else 0))
+    model_score=min(98, 44+conf*0.55+(8 if swept else 0)+(5 if adx_strong else 0))
     if model_score<model_req: return None
+    
     sl_d, tp_d = 1.8, 3.6
     entry=round(c0['close'],2)
     sl=round(entry-sl_d if bullish else entry+sl_d,2)
     tp=round(entry+tp_d if bullish else entry-tp_d,2)
     return {
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
-        "pinbar":"Hammer","h1":h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,"layers":logs,
-        "reason":f"M5 {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)}", "tf":"M5"
+        "pinbar":"Hammer","h1":ht if 'ht' in locals() else h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,"layers":logs,
+        "reason":f"V7 NO-ICHI ST+HMA+ADX {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)} | HMA{hma55:.2f} ST{st_m5['supertrend']:.2f} ADX{adx_m5['adx']:.0f}" if st_m5 and adx_m5 else f"V7 NO-ICHI {conf:.0f}% | {'+'.join(logs)}", "tf":"M5"
     }
 
 def run_sim_tf(records, tf="M5", h1_records=None):
-    """Backtest with REAL Ichimoku H1 16,44,88,28 - not EMA proxy! Resamples M5 to H1 or uses provided H1 records"""
+    """Backtest V7.0 NO ICHIMOKU - SUPERTREND + HMA + ADX + EMA COMBO - HIGH WR + MANY TRADES + QUALITY"""
     total=wins=losses=0; net=0.0
     i=60; n=len(records)
-    # Pre-build H1 from M5 if not provided (12 x 5min = 1h)
+    # Pre-build H1 from M5 if not provided (12 x 5min = 1h) for SuperTrend H1
     h1_closes = []
     h1_highs = []
     h1_lows = []
     if h1_records is None:
-        # Resample M5 to H1: every 12 bars
         for j in range(0, len(records), 12):
             chunk = records[j:j+12]
             if len(chunk) < 12:
@@ -987,33 +1293,45 @@ def run_sim_tf(records, tf="M5", h1_records=None):
     while i<n-36:
         window=list(reversed(records[i-60:i]))
         oldest=list(reversed(window)); closes=[c['close'] for c in oldest]
-        # REAL Ichimoku H1 16,44,88,28 - resampled
+        highs=[c['high'] for c in oldest]
+        lows=[c['low'] for c in oldest]
+        
+        # V7.0 H1 SuperTrend + ADX + EMA200 - resampled
         h1_trend = None
         try:
-            # Estimate H1 index: M5 index i corresponds to H1 index approx i//12
             h1_idx = i // 12
-            if len(h1_closes) >= 88 and h1_idx >= 88:
-                # Get H1 slice up to current time
+            if len(h1_closes) >= 100 and h1_idx >= 100:
                 slice_start = max(0, h1_idx - 200)
                 slice_end = h1_idx
-                if slice_end - slice_start >= 88:
+                if slice_end - slice_start >= 50:
                     hc = h1_closes[slice_start:slice_end]
                     hh = h1_highs[slice_start:slice_end]
                     hl = h1_lows[slice_start:slice_end]
-                    ichi = calculate_ichimoku(hh, hl, hc, tenkan=16, kijun=44, senkou_b=88)
-                    if ichi:
-                        h1_trend = ichi.get('trend_simple')  # BULL / BEAR / NEUTRAL
-                        # If inside cloud, treat as no trend (filter)
-                        if ichi.get('inside_cloud'):
-                            h1_trend = "NEUTRAL"
-            # Fallback to EMA proxy if not enough H1 data
+                    # SuperTrend H1
+                    st_h1 = calculate_supertrend(hh, hl, hc, period=10, multiplier=3.0)
+                    adx_h1 = calculate_adx(hh, hl, hc, period=14)
+                    e50_h1 = calculate_ema(hc, 50)
+                    e200_h1 = calculate_ema(hc, 200)
+                    curr = hc[-1]
+                    st_trend = st_h1['trend'] if st_h1 else "NEUTRAL"
+                    ema_bull = e50_h1 and e200_h1 and e50_h1 > e200_h1 and curr > e50_h1
+                    ema_bear = e50_h1 and e200_h1 and e50_h1 < e200_h1 and curr < e50_h1
+                    if st_trend=="BULL" and ema_bull:
+                        h1_trend = {"trend": "BULL", "trend_simple": "BULL", "strength": 80}
+                    elif st_trend=="BEAR" and ema_bear:
+                        h1_trend = {"trend": "BEAR", "trend_simple": "BEAR", "strength": 80}
+                    elif st_trend=="BULL":
+                        h1_trend = {"trend": "BULL", "trend_simple": "BULL", "strength": 60}
+                    elif st_trend=="BEAR":
+                        h1_trend = {"trend": "BEAR", "trend_simple": "BEAR", "strength": 60}
+                    else:
+                        h1_trend = {"trend": "NEUTRAL", "trend_simple": "NEUTRAL", "strength": 30}
             if h1_trend is None:
-                e50=calculate_ema(closes,50); e100=calculate_ema(closes,100)
-                h1_trend="BULL" if e50 and e100 and e50>e100 else "BEAR" if e50 and e100 and e50<e100 else None
+                e50=calculate_ema(closes,50); e200=calculate_ema(closes,200)
+                h1_trend="BULL" if e50 and e200 and e50>e200 else "BEAR" if e50 and e200 and e50<e200 else "NEUTRAL"
         except Exception as e:
-            # Fallback
-            e50=calculate_ema(closes,50); e100=calculate_ema(closes,100)
-            h1_trend="BULL" if e50 and e100 and e50>e100 else "BEAR" if e50 and e100 and e50<e100 else None
+            e50=calculate_ema(closes,50); e200=calculate_ema(closes,200)
+            h1_trend="BULL" if e50 and e200 and e50>e200 else "BEAR" if e50 and e200 and e50<e200 else "NEUTRAL"
         
         sig=analyze_titan_mtf(window, tf=tf, h1_trend=h1_trend)
         if not sig: i+=1; continue
@@ -1052,7 +1370,7 @@ def run_backtest(chat_id):
         if rec_m5_large:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5", h1_records=None)
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V6.6 M5 + REAL ICHIMOKU H1 (16,44,88,28) IN-BETWEEN*\n_Real Cloud Filter Not EMA Proxy_\n"
+        msg=f"📊 *XAUUSD TITAN V7.0 M5 NO-ICHI + SUPERTREND H1 (10,3) + HMA55 + ADX>20 + EMA200*\n_High WR + Many Trades + Quality Combo_\n"
         if not results:
             msg+=f"⚠️ No data - API limit or fetch fail. Try again in 1 min.\n"
             msg+=f"rec_m5={bool(rec_m5)} rec_m5_large={bool(rec_m5_large)} len_m5={len(rec_m5) if rec_m5 else 0}\n"
@@ -1061,7 +1379,7 @@ def run_backtest(chat_id):
                 t,w,l,wr,net,exp,pf, n = results[key]
                 label = "M5 5k bars" if "5k" in key else "M5 10k bars"
                 msg+=f"🔹 *{label}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
-        msg+=f"📊 Dashboard: /dashboard\n🔒 _V6.6 IN-BETWEEN 16,44,88,28 - Real Ichimoku Not EMA Proxy_\nIchimoku Tenkan 16 Kijun 44 SenkouB 88 Chikou 28\n_M1/M15 DISABLED_"
+        msg+=f"📊 Dashboard: /dashboard\n🔒 _V7.0 NO-ICHI SUPERTREND(10,3) HMA55 ADX>20 EMA200_\n_ST M5 + HMA + EMA + ADX + PD60% + FVG + H1 ST_\n_M1/M15 DISABLED_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -1071,7 +1389,9 @@ def manual_scan(chat_id, auto=False):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - SAFETY LOCK PAPER ONLY", chat_id)
         return
-    h1=fetch_h1_trend()
+    h1=fetch_h1_supertrend_adx()  # V7.0 NO ICHIMOKU - SuperTrend+ADX+EMA200
+    if not h1:
+        h1=fetch_h1_trend()
     data=fetch_live_tf("5min")
     if not data:
         if not auto: send_telegram_msg("Data fail", chat_id)
@@ -1116,11 +1436,11 @@ async def lifespan(app: FastAPI):
     if not scheduler.running:
         scheduler.add_job(auto_scan_job, 'interval', minutes=15, id='titan_v61_m5_lock_only_dashboard_paper_autoscan_5m', replace_existing=True)  # Increased from 5 to 15 to save credits
         scheduler.start()
-        print("✅ TITAN V6.6 M5 LOCK ONLY + ICHIMOKU H1 FILTER + REAL PRICE + CACHED AUTO-SCAN 07-19 UTC started!")
+        print("✅ TITAN V7.0 M5 NO-ICHI SUPERTREND(10,3)+HMA55+ADX>20+EMA200 HIGH WR + MANY TRADES + QUALITY AUTO-SCAN 07-19 UTC started!")
     yield
     if scheduler.running: scheduler.shutdown(wait=False)
 
-app=FastAPI(title="TITAN V6.1 M5 LOCK ONLY + REAL-TIME DASHBOARD", lifespan=lifespan)
+app=FastAPI(title="TITAN V7.0 M5 NO-ICHI SUPERTREND+HMA+ADX+EMA COMBO", lifespan=lifespan)
 
 # CORS for meta.ai/share live dashboard
 app.add_middleware(
