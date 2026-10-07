@@ -1043,23 +1043,25 @@ def run_backtest(chat_id):
     try:
         rec_m5=fetch_hist_tf("5min", 5000)
         rec_m5_large=fetch_hist_tf("5min", 10000)
-        rec_h1=fetch_hist_tf("1h", 2000)  # Real H1 for Ichimoku 16,44,88,28
-        rec_h1_large=fetch_hist_tf("1h", 5000)
+        # Note: H1 is resampled from M5 inside run_sim_tf (12x M5 = 1H) to avoid extra API calls / rate limit
+        # Real Ichimoku 16,44,88,28 is calculated from resampled H1, not EMA proxy!
         results={}
         if rec_m5:
-            # Use real H1 if available, else resampled from M5
-            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5, tf="M5", h1_records=rec_h1)
+            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5, tf="M5", h1_records=None)  # None = resample M5->H1
             results['M5_5k']= (t,w,l,wr,net,exp,pf, len(rec_m5))
         if rec_m5_large:
-            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5", h1_records=rec_h1_large)
+            t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5", h1_records=None)
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
         msg=f"📊 *XAUUSD TITAN V6.6 M5 + REAL ICHIMOKU H1 (16,44,88,28) IN-BETWEEN*\n_Real Cloud Filter Not EMA Proxy_\n"
+        if not results:
+            msg+=f"⚠️ No data - API limit or fetch fail. Try again in 1 min.\n"
+            msg+=f"rec_m5={bool(rec_m5)} rec_m5_large={bool(rec_m5_large)} len_m5={len(rec_m5) if rec_m5 else 0}\n"
         for key in ["M5_5k","M5_10k"]:
             if key in results:
                 t,w,l,wr,net,exp,pf, n = results[key]
                 label = "M5 5k bars" if "5k" in key else "M5 10k bars"
                 msg+=f"🔹 *{label}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
-        msg+=f"📊 Dashboard: /dashboard\n🔒 _V6.1: M5 LOCK ONLY 45% WR REAL (20-trade) vs 77.8% (9-trade) NOT intrinsic_\n_M1/M15 DISABLED_"
+        msg+=f"📊 Dashboard: /dashboard\n🔒 _V6.6 IN-BETWEEN 16,44,88,28 - Real Ichimoku Not EMA Proxy_\nIchimoku Tenkan 16 Kijun 44 SenkouB 88 Chikou 28\n_M1/M15 DISABLED_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
