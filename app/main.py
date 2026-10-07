@@ -430,10 +430,19 @@ def calculate_hma(closes, period=55):
                 diff.append(2 * wma_half[i+offset] - wma_full[i])
         
         if len(diff) < sqrt_period:
-            return None
+            # Not enough data for sqrt period, fallback to EMA
+            try:
+                return calculate_ema(closes, period)
+            except:
+                return None
             
         # WMA of diff with sqrt period
         hma = wma(diff, sqrt_period)
+        if hma is None:
+            try:
+                return calculate_ema(closes, period)
+            except:
+                return None
         return hma
     except Exception as e:
         # Fallback to EMA if HMA fails
@@ -908,7 +917,9 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
         e20 = calculate_ema(closes, 20)
         e50 = calculate_ema(closes, 50)
         e200 = calculate_ema(closes, 200)
-        hma55 = calculate_hma(closes, 55)
+        hma55 = calculate_hma(closes, 21)  # Fixed 21 not 55
+        if not hma55:
+            hma55 = e50
         rsi = calculate_rsi(closes, 14)
         st_m5 = calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0)
         adx_m5 = calculate_adx(highs, lows, closes, period=14)
@@ -1115,12 +1126,15 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     e20=calculate_ema(closes,20)
     e50=calculate_ema(closes,50)
     e200=calculate_ema(closes,200)  # Big trend
-    hma55=calculate_hma(closes,55)  # Zero lag fast trend
+    hma21=calculate_hma(closes,21)  # Zero lag fast trend - 21 not 55 to work with 60 bars!
+    hma55=hma21  # Keep var name for compat
+    if not hma55:
+        hma55 = e50  # Fallback to EMA50 if HMA fails
     rsi=calculate_rsi(closes,14)
-    st_m5=calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0)  # SuperTrend M5
-    adx_m5=calculate_adx(highs, lows, closes, period=14)  # ADX M5 strength
+    st_m5=calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0)
+    adx_m5=calculate_adx(highs, lows, closes, period=14)
     
-    if not e20 or not e50 or not hma55: return None
+    if not e20 or not e50: return None  # HMA optional now, fallback to EMA50
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
     
@@ -1129,6 +1143,17 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     
     bullish=is_bullish_pinbar(c0)
     bearish=is_bearish_pinbar(c0)
+    # If no strict pinbar, try lenient pinbar for more trades
+    if not bullish and not bearish:
+        # Lenient pinbar: 1.2x wick, body 0.65
+        o,h,l,cl=c0['open'],c0['high'],c0['low'],c0['close']
+        body_l=abs(cl-o); rng_l=h-l
+        if rng_l>0:
+            low_w_l=min(o,cl)-l; up_w_l=h-max(o,cl)
+            if low_w_l>=1.2*max(body_l,rng_l*0.05) and up_w_l<=body_l*2.5 and body_l<=rng_l*0.65:
+                bullish=True
+            elif up_w_l>=1.2*max(body_l,rng_l*0.05) and low_w_l<=body_l*2.5 and body_l<=rng_l*0.65:
+                bearish=True
     rsi_high, rsi_low = 68, 32  # Slightly tighter than 70/30 for quality
     
     if body<prev*disp_req: return None
@@ -1225,7 +1250,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
             h1_pass = layers >= 4
         elif (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
             h1_pass = True
-
+    
     if h1_pass:
         layers+=1
         ht_str = h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend
