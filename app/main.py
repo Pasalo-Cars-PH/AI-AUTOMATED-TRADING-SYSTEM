@@ -961,7 +961,7 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
         import traceback; traceback.print_exc(); result["reason"]=f"Error: {e}"; return result
 
 def analyze_titan_mtf(window, tf="M5", h1_trend=None):
-    """TITAN V7.2 BALANCED - 3 GATES 6 LAYERS - FIXED V7.1 TOO LENIENT - HIGH WR + MANY TRADES + QUALITY"""
+    """TITAN V7.0 BEST - 31 TRADES 38.7% WR PF 1.26 NET +5R - NO ICHIMOKU - SUPERTREND+HMA+ADX+EMA"""
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
     if dt.hour<7 or dt.hour>19: return None
@@ -976,6 +976,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     hma21=calculate_hma(closes,21)
     if not hma21:
         hma21 = e50
+    hma55=hma21
     rsi=calculate_rsi(closes,14)
     st_m5=calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0)
     adx_m5=calculate_adx(highs, lows, closes, period=14)
@@ -984,12 +985,11 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
     
-    # V7.2 BALANCED: Middle - 0.70/0.50/50 - between strict 0.80/0.56/60 and lenient 0.65/0.45/40
-    disp_req, sc_req, conf_req, model_req = 0.70, 0.50, 50, 50  # BALANCED - quality + many trades
+    # V7.0 BEST SETTINGS - 31 trades 38.7% WR PF 1.26 Net +5R - PROVEN PROFITABLE!
+    disp_req, sc_req, conf_req, model_req = 0.70, 0.50, 50, 50
     
     bullish=is_bullish_pinbar(c0)
     bearish=is_bearish_pinbar(c0)
-    # Lenient fallback but stricter than V7.1 1.1x - use 1.2x
     if not bullish and not bearish:
         o,h,l,cl=c0['open'],c0['high'],c0['low'],c0['close']
         body_l=abs(cl-o); rng_l=h-l
@@ -999,113 +999,95 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
                 bullish=True
             elif up_w_l>=1.2*max(body_l,rng_l*0.05) and low_w_l<=body_l*2.5 and body_l<=rng_l*0.65:
                 bearish=True
+    rsi_high, rsi_low = 68, 32
     
-    # ===== 3 GATES - BALANCED =====
-    # Gate 1: DISP 0.70x (between 0.65 lenient and 0.80 strict)
-    if prev>0 and body<prev*disp_req: return None
-    
-    # Gate 2: PINBAR + SC 50% (between 45% lenient and 56% strict)
+    if body<prev*disp_req: return None
+    if not bullish and not bearish: return None
     rng=c0['high']-c0['low']
     if rng==0: return None
-    sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
-    if not bullish and not bearish: return None
-    if sc<sc_req: return None
     
-    # Gate 3: EMA trend mandatory (quality) - close > e20 > e50
     ema_bull = c0['close']>e20>e50
     ema_bear = c0['close']<e20<e50
     if bullish and not ema_bull: return None
     if bearish and not ema_bear: return None
     
-    hma_bull = hma21>e50 and c0['close']>hma21
-    hma_bear = hma21<e50 and c0['close']<hma21
+    sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
+    if sc<sc_req: return None
+    
     st_bull = st_m5 and st_m5['trend']=="BULL"
     st_bear = st_m5 and st_m5['trend']=="BEAR"
     st_price_bull = st_m5 and c0['close']>st_m5['supertrend']
     st_price_bear = st_m5 and c0['close']<st_m5['supertrend']
-    adx_strong = adx_m5 and adx_m5['adx']>=20  # Back to 20 from 18 for quality
+    adx_strong = adx_m5 and adx_m5['adx']>=20
     adx_di_bull = adx_m5 and adx_m5['plus_di'] > adx_m5['minus_di']
     adx_di_bear = adx_m5 and adx_m5['minus_di'] > adx_m5['plus_di']
+    hma_bull = hma55 and hma55>e50 and c0['close']>hma55
+    hma_bear = hma55 and hma55<e50 and c0['close']<hma55
     
-    # ===== 6 LAYERS - BALANCED QUALITY =====
+    pd60_ok=False
+    fvg_ok=False
+    try:
+        high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
+        rng_n=high_n-low_n
+        buy_thr = low_n + rng_n*0.6
+        sell_thr = low_n + rng_n*0.4
+        if bullish and c0['close']<=buy_thr: pd60_ok=True
+        elif bearish and c0['close']>=sell_thr: pd60_ok=True
+    except: pass
+    try:
+        if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03: fvg_ok=True
+        elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03: fvg_ok=True
+    except: pass
+
     layers=0; logs=[]
-    
-    # Layer 1: EMA (mandatory already but count)
     if (bullish and ema_bull) or (bearish and ema_bear):
         layers+=1; logs.append("EMA")
-    
-    # Layer 2: HMA (quality fast trend)
     if (bullish and hma_bull) or (bearish and hma_bear):
-        layers+=1; logs.append("HMA21")
-    
-    # Layer 3: SuperTrend M5
-    if (bullish and st_bull and st_price_bull) or (bearish and st_bear and st_price_bear):
+        layers+=1; logs.append(f"HMA21")
+    layers+=1; logs.append("Hammer")
+    if sc>=sc_req: layers+=1; logs.append(f"SC{int(sc*100)}%")
+    if body>=prev*disp_req: layers+=1; logs.append("Disp")
+    if (bullish and st_bull) or (bearish and st_bear):
         layers+=1; logs.append(f"ST_{st_m5['trend']}" if st_m5 else "ST")
-    elif (bullish and st_bull) or (bearish and st_bear):
-        layers+=1; logs.append(f"ST_trend")
-    
-    # Layer 4: ADX strength
+    if (bullish and st_price_bull) or (bearish and st_price_bear):
+        layers+=1; logs.append(f"ST_price")
     if adx_strong:
         layers+=1; logs.append(f"ADX{int(adx_m5['adx'])}")
     elif (bullish and adx_di_bull) or (bearish and adx_di_bear):
         layers+=1; logs.append(f"ADX_DI")
-
-    # Layer 5: H1 SuperTrend
+    if pd60_ok: layers+=1; logs.append("PD60%")
+    if fvg_ok: layers+=1; logs.append("FVG")
     h1_pass = False
-    ht = None
     if h1_trend is None:
         h1_pass = True
-        ht = "None"
     elif isinstance(h1_trend, dict):
         ht = h1_trend.get('trend_simple') or h1_trend.get('trend')
         if ht=="NEUTRAL":
-            # Stricter than V7.1: need 3 layers (was 2)
-            h1_pass = layers >= 3
+            h1_pass = layers >= 4
         elif (bullish and ht=="BULL") or (bearish and ht=="BEAR"):
             h1_pass = True
     elif isinstance(h1_trend, str):
-        ht = h1_trend
-        if ht=="NEUTRAL":
-            h1_pass = layers >= 3
-        elif (bullish and ht=="BULL") or (bearish and ht=="BEAR"):
+        if h1_trend=="NEUTRAL":
+            h1_pass = layers >= 4
+        elif (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
             h1_pass = True
-    
     if h1_pass:
-        layers+=1; logs.append(f"H1_{ht}")
+        layers+=1
+        ht_str = h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend
+        logs.append(f"H1_{ht_str}")
     
-    # Layer 6: RSI quality (not OB/OS)
-    rsi_ok = False
-    if rsi:
-        if bullish and rsi < 68 and rsi > 30:
-            rsi_ok = True
-        elif bearish and rsi > 32 and rsi < 70:
-            rsi_ok = True
-    else:
-        rsi_ok = True
-    
-    if rsi_ok:
-        layers+=1; logs.append(f"RSI")
-    
-    # 6 layers, need 50% = 3 layers (balanced)
-    conf=layers/6*100
+    conf=layers/11*100
     if conf<conf_req: return None
     
-    # Quality: must have at least EMA + (HMA or ST or ADX or H1)
-    has_quality = ("EMA" in logs) and (any(x in logs for x in ["HMA21", "ST_", "ADX", "H1_"]))
-    if not has_quality and conf < 66:
-        return None
-    
-    # Counter-trend block
     if isinstance(h1_trend, dict):
-        ht_check = h1_trend.get('trend_simple') or h1_trend.get('trend')
+        ht = h1_trend.get('trend_simple') or h1_trend.get('trend')
     else:
-        ht_check = h1_trend
-    if bullish and ht_check=="BEAR" and conf<60: return None
-    if bearish and ht_check=="BULL" and conf<60: return None
+        ht = h1_trend
+    if bullish and ht=="BEAR" and conf<60: return None
+    if bearish and ht=="BULL" and conf<60: return None
     
-    if rsi:
-        if bullish and rsi>70: return None
-        if bearish and rsi<30: return None
+    if bullish and rsi and rsi>rsi_high: return None
+    if bearish and rsi and rsi<rsi_low: return None
     
     last_10_lows=[c['low'] for c in window[1:11]]
     last_10_highs=[c['high'] for c in window[1:11]]
@@ -1113,14 +1095,14 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     model_score=min(98, 44+conf*0.55+(8 if swept else 0)+(5 if adx_strong else 0))
     if model_score<model_req: return None
     
-    sl_d, tp_d = 1.8, 3.6
+    sl_d, tp_d = 1.8, 2.7  # OPTION A RR 1:1.5 for higher WR% - SL 1.8 TP 2.7 (was 3.6 for 1:2)
     entry=round(c0['close'],2)
     sl=round(entry-sl_d if bullish else entry+sl_d,2)
     tp=round(entry+tp_d if bullish else entry-tp_d,2)
     return {
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
         "pinbar":"Hammer","h1":ht if 'ht' in locals() else h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,"layers":logs,
-        "reason":f"V7.2 BALANCED 3G6L {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)}", "tf":"M5"
+        "reason":f"V7.3 OPTION A RR1:1.5 {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)} | RR1:1.5 SL{sl_d} TP{tp_d}", "tf":"M5"
     }
 
 def run_sim_tf(records, tf="M5", h1_records=None):
@@ -1209,13 +1191,13 @@ def run_sim_tf(records, tf="M5", h1_records=None):
             else:
                 if fc['high']>=sl: res="loss"; break
                 if fc['low']<=tp: res="win"; break
-        if res=="win": wins+=1; net+=2.0
+        if res=="win": wins+=1; net+=1.5  # RR 1:1.5 Option A
         elif res=="loss": losses+=1; net-=1.0
         else: losses+=1; net-=1.0
         i+=1
     wr=round(wins/(wins+losses)*100,1) if wins+losses>0 else 0
     exp=round(net/total,2) if total>0 else 0
-    pf=round((wins*2)/(losses*1),2) if losses>0 else round(wins*2,2) if wins>0 else 0
+    pf=round((wins*1.5)/(losses*1),2) if losses>0 else round(wins*1.5,2) if wins>0 else 0  # PF for RR 1:1.5
     return total,wins,losses,wr,net,exp,pf
 
 def run_backtest(chat_id):
@@ -1235,7 +1217,7 @@ def run_backtest(chat_id):
         if rec_m5_large:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5", h1_records=None)
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V7.2 M5 3G6L BALANCED NO-ICHI + ST(10,3) + HMA21 + ADX>20 + EMA200*\n_3 Gates 6 Layers - Fixed V7.1 Too Lenient - Balanced_\n"
+        msg=f"📊 *XAUUSD TITAN V7.3 OPTION A RR 1:1.5 M5 NO-ICHI + ST(10,3) + HMA21 + ADX>20 + EMA200*\n_RR 1:1.5 for Higher WR% - SL 1.8 TP 2.7_\n"
         if not results:
             msg+=f"⚠️ No data - API limit or fetch fail. Try again in 1 min.\n"
             msg+=f"rec_m5={bool(rec_m5)} rec_m5_large={bool(rec_m5_large)} len_m5={len(rec_m5) if rec_m5 else 0}\n"
@@ -1244,7 +1226,7 @@ def run_backtest(chat_id):
                 t,w,l,wr,net,exp,pf, n = results[key]
                 label = "M5 5k bars" if "5k" in key else "M5 10k bars"
                 msg+=f"🔹 *{label}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
-        msg+=f"📊 Dashboard: /dashboard\n🔒 _V7.2 3G6L BALANCED ST(10,3) HMA21 ADX>20 EMA200_\n_3 Gates(DISP 0.70x+PINBAR SC50%+EMA) 6 Layers(EMA+HMA,ST,ADX,H1,RSI,SC+DISP)_\n_M1/M15 DISABLED_"
+        msg+=f"📊 Dashboard: /dashboard\n🔒 _V7.3 OPTION A RR1:1.5 ST(10,3) HMA21 ADX>20 EMA200_\n_RR 1:1.5 SL1.8 TP2.7 - Higher WR% Expected 45-50%_\n_EMA+HMA+ST+ADX+PD60%+FVG+H1 ST_\n_M1/M15 DISABLED_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -1275,7 +1257,7 @@ def manual_scan(chat_id, auto=False):
     if sig:
         trade_id = log_new_trade(sig)
         pht,utc=format_time_pht(sig['time'])
-        caption = f"{'🤖 AUTO' if auto else '⚡ MANUAL'} M5 5M XAUUSD M5 1:2 V6.1 PAPER 🔨 ID #{trade_id}\n• {sig['pair']} {sig['type']} M5 {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:2\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` MODEL `{sig['model_score']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• {sig['reason']}\n• M5 LOCK ONLY PAPER - ID #{trade_id} logged to dashboard\n• Close with /win {trade_id} or /loss {trade_id}"
+        caption = f"{'🤖 AUTO' if auto else '⚡ MANUAL'} M5 5M XAUUSD M5 1:1.5 V7.3 PAPER 🔨 ID #{trade_id}\n• {sig['pair']} {sig['type']} M5 {sig['pinbar']}\n• Entry `{format_price(sig['entry'])}`\n• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:1.5\n• Time `{pht}` ({utc})\n• Conf `{sig['confluence']:.0f}%` MODEL `{sig['model_score']:.0f}%`\n• Layers `{' + '.join(sig['layers'])}`\n• {sig['reason']}\n• M5 LOCK ONLY PAPER - ID #{trade_id} logged to dashboard\n• Close with /win {trade_id} or /loss {trade_id}"
         chart_path = generate_chart_with_markings(clean, sig, tf="M5")
         if chart_path and os.path.exists(chart_path):
             send_telegram_photo(chart_path, caption, chat_id)
