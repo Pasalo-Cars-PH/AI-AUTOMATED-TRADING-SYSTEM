@@ -356,13 +356,13 @@ def is_bullish_pinbar(c):
     body=abs(cl-o); rng=h-l
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
-    return low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
+    return low_w>=1.2*max(body,rng*0.05) and up_w<=body*2.5 and body<=rng*0.65  # AGGRESSIVE: 1.5->1.2, 2.2->2.5, 0.55->0.65
 def is_bearish_pinbar(c):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
-    return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
+    return up_w>=1.2*max(body,rng*0.05) and low_w<=body*2.5 and body<=rng*0.65  # AGGRESSIVE: 1.5->1.2, 2.2->2.5, 0.55->0.65
 
 def fetch_data(symbol, interval, outputsize):
     url="https://api.twelvedata.com/time_series"
@@ -674,14 +674,14 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
         is_bull = False
         is_bear = False
         if c0['close']>=c0['open']:
-            is_bull = low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
+            is_bull = low_w>=1.2*max(body,rng*0.05) and up_w<=body*2.5 and body<=rng*0.65  # AGGRESSIVE
             if not is_bull:
-                is_bear = up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
+                is_bear = up_w>=1.2*max(body,rng*0.05) and low_w<=body*2.5 and body<=rng*0.65  # AGGRESSIVE
                 sc = (c0['high']-c0['close'])/rng if rng>0 else 0
         else:
-            is_bear = up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
+            is_bear = up_w>=1.2*max(body,rng*0.05) and low_w<=body*2.5 and body<=rng*0.65  # AGGRESSIVE
             if not is_bear:
-                is_bull = low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
+                is_bull = low_w>=1.2*max(body,rng*0.05) and up_w<=body*2.5 and body<=rng*0.65  # AGGRESSIVE
             sc = (c0['high']-c0['close'])/rng if rng>0 else 0
         
         result["candle"] = {
@@ -928,12 +928,13 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if body>=prev*disp_req: layers+=1; logs.append("Disp")
     if pd60_ok: layers+=1; logs.append("PD60%")
     if fvg_ok: layers+=1; logs.append("FVG")
-    if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
-        layers+=1; logs.append(f"H1_{h1_trend}")
+    if h1_trend is None or h1_trend=="NEUTRAL" or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
+        layers+=1; logs.append(f"H1_{h1_trend}_AGG")  # AGGRESSIVE: NEUTRAL also counts as PASS for more trades
     conf=layers/7*100
     if conf<conf_req: return None
-    if bullish and h1_trend=="BEAR" and conf<60: return None  # Lowered from 68 to 60 for more trades
-    if bearish and h1_trend=="BULL" and conf<60: return None
+    # AGGRESSIVE: Allow counter-trend trades even with lower conf - only block if conf <50 and against H1
+    if bullish and h1_trend=="BEAR" and conf<50: return None
+    if bearish and h1_trend=="BULL" and conf<50: return None
     if bullish and rsi>rsi_high: return None
     if bearish and rsi<rsi_low: return None
     last_10_lows=[c['low'] for c in window[1:11]]
