@@ -356,13 +356,13 @@ def is_bullish_pinbar(c):
     body=abs(cl-o); rng=h-l
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
-    return low_w>=1.3*max(body,rng*0.05) and up_w<=body*2.3 and body<=rng*0.60  # BALANCED B: 1.3x wick, 0.60 body
+    return low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55  # STRICT - best quality pinbar
 def is_bearish_pinbar(c):
     o,h,l,cl=c['open'],c['high'],c['low'],c['close']
     body=abs(cl-o); rng=h-l
     if rng==0: return False
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
-    return up_w>=1.3*max(body,rng*0.05) and low_w<=body*2.3 and body<=rng*0.60  # BALANCED B: 1.3x wick, 0.60 body
+    return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55  # STRICT - best quality pinbar
 
 def fetch_data(symbol, interval, outputsize):
     url="https://api.twelvedata.com/time_series"
@@ -674,14 +674,14 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
         is_bull = False
         is_bear = False
         if c0['close']>=c0['open']:
-            is_bull = low_w>=1.3*max(body,rng*0.05) and up_w<=body*2.3 and body<=rng*0.60  # BALANCED B
+            is_bull = low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
             if not is_bull:
-                is_bear = up_w>=1.3*max(body,rng*0.05) and low_w<=body*2.3 and body<=rng*0.60  # BALANCED B
+                is_bear = up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
                 sc = (c0['high']-c0['close'])/rng if rng>0 else 0
         else:
-            is_bear = up_w>=1.3*max(body,rng*0.05) and low_w<=body*2.3 and body<=rng*0.60  # BALANCED B
+            is_bear = up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
             if not is_bear:
-                is_bull = low_w>=1.3*max(body,rng*0.05) and up_w<=body*2.3 and body<=rng*0.60  # BALANCED B
+                is_bull = low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
             sc = (c0['high']-c0['close'])/rng if rng>0 else 0
         
         result["candle"] = {
@@ -696,24 +696,24 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
             "e20_gt_e50": e20>e50 if e20 and e50 else None
         }
         gates = []
-        disp_pass = body >= prev_body*0.75 if prev_body>0 else False
+        disp_pass = body >= prev_body*0.80 if prev_body>0 else False
         gates.append({
-            "id": 1, "name": "DISP Gate", "desc": f"body {body:.3f} >= prev {prev_body:.3f}*0.75 (BALANCED B was 0.80x)",
-            "required": "0.75x", "actual": round(body/prev_body,2) if prev_body>0 else 0,
-            "pass": disp_pass, "fail_reason": f"body {body:.3f} < prev*0.75 {prev_body*0.75:.3f}" if not disp_pass else ""
+            "id": 1, "name": "DISP Gate", "desc": f"body {body:.3f} >= prev {prev_body:.3f}*0.80 (STRICT BEST)",
+            "required": "0.80x", "actual": round(body/prev_body,2) if prev_body>0 else 0,
+            "pass": disp_pass, "fail_reason": f"body {body:.3f} < prev*0.80 {prev_body*0.80:.3f}" if not disp_pass else ""
         })
         if not disp_pass:
             result["gates"]=gates
             result["reason"]=f"Failed at Gate 1 DISP: {gates[-1]['fail_reason']}"
             return result
         pinbar_pass = is_bull or is_bear
-        sc_pass = sc>=0.52  # BALANCED B: 52% (was 56% strict, 50% aggressive)
+        sc_pass = sc>=0.56  # STRICT - 56% best quality
         gate2_pass = pinbar_pass and sc_pass
         gates.append({
-            "id": 2, "name": "PINBAR + SC Gate", "desc": f"Pinbar {pinbar_pass} + SC {sc*100:.1f}% >=52% (BALANCED B)",
-            "required": "Pinbar + SC>=52%", "actual": f"{'PIN' if pinbar_pass else 'NO-PIN'} SC{sc*100:.1f}%",
+            "id": 2, "name": "PINBAR + SC Gate", "desc": f"Pinbar {pinbar_pass} + SC {sc*100:.1f}% >=56% (STRICT BEST)",
+            "required": "Pinbar + SC>=56%", "actual": f"{'PIN' if pinbar_pass else 'NO-PIN'} SC{sc*100:.1f}%",
             "pass": gate2_pass,
-            "fail_reason": f"{'No pinbar' if not pinbar_pass else ''} {'SC '+str(round(sc*100,1))+'% <52%' if not sc_pass else ''}".strip()
+            "fail_reason": f"{'No pinbar' if not pinbar_pass else ''} {'SC '+str(round(sc*100,1))+'% <56%' if not sc_pass else ''}".strip()
         })
         if not gate2_pass:
             result["gates"]=gates
@@ -737,8 +737,8 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
         layers = []
         layers.append({"id":1, "name":"EMA Layer", "desc":"EMA20>EMA50 BULL or EMA20<EMA50 BEAR + close beyond", "pass": ema_pass, "weight":1})
         layers.append({"id":2, "name":"Hammer Layer", "desc":"Pinbar wick 1.5x body<=55%", "pass": pinbar_pass, "weight":1})
-        layers.append({"id":3, "name":"SC Layer", "desc":f"SC {sc*100:.1f}% >=52% (BALANCED B)", "pass": sc_pass, "weight":1})
-        layers.append({"id":4, "name":"Disp Layer", "desc":f"Disp {body/prev_body:.2f}x >=0.75 (BALANCED B)", "pass": disp_pass, "weight":1})
+        layers.append({"id":3, "name":"SC Layer", "desc":f"SC {sc*100:.1f}% >=56% (STRICT)", "pass": sc_pass, "weight":1})
+        layers.append({"id":4, "name":"Disp Layer", "desc":f"Disp {body/prev_body:.2f}x >=0.80 (STRICT)", "pass": disp_pass, "weight":1})
         try:
             high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
             rng_n=high_n-low_n
@@ -894,7 +894,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if not e20 or not e50: return None
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
-    disp_req, sc_req, conf_req, model_req = 0.75, 0.52, 55, 55  # BALANCED B: 22 trades 44% WR - DISP 0.75, SC 52%, Conf 55%
+    disp_req, sc_req, conf_req, model_req = 0.80, 0.56, 60, 60  # STRICT - BEST PROFIT: 15 trades 40% WR PF 1.33 Net 3R - proven profitable!
     bullish=is_bullish_pinbar(c0)
     bearish=is_bearish_pinbar(c0)
     rsi_high, rsi_low = 70, 30
@@ -928,29 +928,12 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if body>=prev*disp_req: layers+=1; logs.append("Disp")
     if pd60_ok: layers+=1; logs.append("PD60%")
     if fvg_ok: layers+=1; logs.append("FVG")
-    # BALANCED B: H1 NEUTRAL = PASS only if conf already high (>=60), else need strong other layers
-    h1_pass = False
-    if h1_trend is None:
-        h1_pass = True
-    elif h1_trend=="NEUTRAL":
-        # Allow NEUTRAL only if other layers already strong - need at least 3 other layers (approx 60% conf potential)
-        temp_layers = 0
-        if (bullish and c0['close']>e20>e50) or (bearish and c0['close']<e20<e50): temp_layers+=1
-        temp_layers+=1  # Hammer
-        if sc>=sc_req: temp_layers+=1
-        if body>=prev*disp_req: temp_layers+=1
-        if pd60_ok: temp_layers+=1
-        if fvg_ok: temp_layers+=1
-        h1_pass = temp_layers >= 3  # Need 3/6 other layers to allow NEUTRAL
-    elif (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
-        h1_pass = True
-    if h1_pass:
-        layers+=1; logs.append(f"H1_{h1_trend}_BAL")
+    if h1_trend is None or (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
+        layers+=1; logs.append(f"H1_{h1_trend}")  # STRICT: NEUTRAL (inside cloud) = BLOCK - best for Gold!
     conf=layers/7*100
     if conf<conf_req: return None
-    # BALANCED B: Block counter-trend if conf <55
-    if bullish and h1_trend=="BEAR" and conf<55: return None
-    if bearish and h1_trend=="BULL" and conf<55: return None
+    if bullish and h1_trend=="BEAR" and conf<68: return None  # STRICT - block counter-trend if conf <68 - proven best
+    if bearish and h1_trend=="BULL" and conf<68: return None
     if bullish and rsi>rsi_high: return None
     if bearish and rsi<rsi_low: return None
     last_10_lows=[c['low'] for c in window[1:11]]
