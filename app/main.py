@@ -1124,8 +1124,8 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
     
-    # BALANCED QUALITY SETTINGS - high WR + many trades + quality
-    disp_req, sc_req, conf_req, model_req = 0.75, 0.52, 55, 55  # Balanced - quality but more trades than strict 0.80/0.56/60
+    # V7.0 FIXED: More lenient to get trades - 0.70/0.50/50 for many trades + quality
+    disp_req, sc_req, conf_req, model_req = 0.70, 0.50, 50, 50  # Lenient for V7.0 combo to get 25-35 trades
     
     bullish=is_bullish_pinbar(c0)
     bearish=is_bearish_pinbar(c0)
@@ -1136,35 +1136,34 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     rng=c0['high']-c0['low']
     if rng==0: return None
     
-    # EMA + HMA trend alignment - quality filter
-    # BULL: close > e20 > e50 and HMA55 > e50 and close > HMA55
-    # BEAR: close < e20 < e50 and HMA55 < e50 and close < HMA55
-    ema_hma_bull = c0['close']>e20>e50 and hma55>e50 and c0['close']>hma55
-    ema_hma_bear = c0['close']<e20<e50 and hma55<e50 and c0['close']<hma55
-    if bullish and not ema_hma_bull: return None
-    if bearish and not ema_hma_bear: return None
+    # V7.0 FIX: Make filters lenient to get trades - EMA+HMA now layer only, not mandatory gate
+    # Basic EMA trend only (less strict than triple HMA)
+    ema_bull = c0['close']>e20>e50
+    ema_bear = c0['close']<e20<e50
+    if bullish and not ema_bull: return None
+    if bearish and not ema_bear: return None
     
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
     if sc<sc_req: return None
     
-    # SuperTrend M5 filter - must align
-    st_bull = st_m5 and st_m5['trend']=="BULL" and c0['close']>st_m5['supertrend']
-    st_bear = st_m5 and st_m5['trend']=="BEAR" and c0['close']<st_m5['supertrend']
-    if bullish and not st_bull: return None
-    if bearish and not st_bear: return None
+    # SuperTrend M5 - now LAYER only, not mandatory gate (to get more trades)
+    st_bull = st_m5 and st_m5['trend']=="BULL"
+    st_bear = st_m5 and st_m5['trend']=="BEAR"
+    st_price_bull = st_m5 and c0['close']>st_m5['supertrend']
+    st_price_bear = st_m5 and c0['close']<st_m5['supertrend']
     
-    # ADX strength filter - avoid choppy, but lowered to 20 for more trades vs 25
-    adx_strong = adx_m5 and adx_m5['adx']>=20  # 20 for more trades but still quality (was 25)
+    # ADX - now LAYER only, not mandatory gate (to get more trades)
+    adx_strong = adx_m5 and adx_m5['adx']>=20
     adx_bull = adx_m5 and adx_m5['trend']=="BULL"
     adx_bear = adx_m5 and adx_m5['trend']=="BEAR"
-    # ADX must be strong OR at least trending same direction
-    if bullish and adx_m5 and not (adx_strong or adx_bull): 
-        # Allow if ADX <20 but plus_di > minus_di
-        if not (adx_m5['plus_di'] > adx_m5['minus_di']):
-            return None
-    if bearish and adx_m5 and not (adx_strong or adx_bear):
-        if not (adx_m5['minus_di'] > adx_m5['plus_di']):
-            return None
+    adx_di_bull = adx_m5 and adx_m5['plus_di'] > adx_m5['minus_di']
+    adx_di_bear = adx_m5 and adx_m5['minus_di'] > adx_m5['plus_di']
+    
+    # HMA check - layer only
+    hma_bull = hma55 and hma55>e50 and c0['close']>hma55
+    hma_bear = hma55 and hma55<e50 and c0['close']<hma55
+    ema_hma_bull = ema_bull and hma_bull
+    ema_hma_bear = ema_bear and hma_bear
     
     pd60_ok=False
     fvg_ok=False
@@ -1182,22 +1181,28 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     except: pass
     
     layers=0; logs=[]
-    # Layer 1: EMA+HMA triple alignment (quality)
-    if (bullish and ema_hma_bull) or (bearish and ema_hma_bear):
-        layers+=1; logs.append("EMA+HMA")
-    # Layer 2: Hammer
+    # Layer 1: EMA basic (mandatory already)
+    if (bullish and ema_bull) or (bearish and ema_bear):
+        layers+=1; logs.append("EMA")
+    # Layer 2: HMA (bonus quality)
+    if (bullish and hma_bull) or (bearish and hma_bear):
+        layers+=1; logs.append(f"HMA55")
+    # Layer 3: Hammer (mandatory)
     layers+=1; logs.append("Hammer")
-    # Layer 3: SC
+    # Layer 4: SC
     if sc>=sc_req: layers+=1; logs.append(f"SC{int(sc*100)}%")
-    # Layer 4: Disp
+    # Layer 5: Disp
     if body>=prev*disp_req: layers+=1; logs.append("Disp")
-    # Layer 5: SuperTrend M5
+    # Layer 6: SuperTrend M5 trend
     if (bullish and st_bull) or (bearish and st_bear):
-        layers+=1; logs.append(f"ST_M5_{st_m5['trend']}" if st_m5 else "ST")
-    # Layer 6: ADX strength
-    if adx_m5 and adx_m5['adx']>=20:
+        layers+=1; logs.append(f"ST_{st_m5['trend']}" if st_m5 else "ST")
+    # Layer 7: SuperTrend price above/below
+    if (bullish and st_price_bull) or (bearish and st_price_bear):
+        layers+=1; logs.append(f"ST_price")
+    # Layer 8: ADX strength
+    if adx_strong:
         layers+=1; logs.append(f"ADX{int(adx_m5['adx'])}")
-    elif adx_m5 and ((bullish and adx_m5['plus_di']>adx_m5['minus_di']) or (bearish and adx_m5['minus_di']>adx_m5['plus_di'])):
+    elif (bullish and adx_di_bull) or (bearish and adx_di_bear):
         layers+=1; logs.append(f"ADX_DI")
     # Layer 7: PD60%
     if pd60_ok: layers+=1; logs.append("PD60%")
@@ -1220,14 +1225,14 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
             h1_pass = layers >= 4
         elif (bullish and h1_trend=="BULL") or (bearish and h1_trend=="BEAR"):
             h1_pass = True
-    
+
     if h1_pass:
         layers+=1
         ht_str = h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend
         logs.append(f"H1_ST_{ht_str}")
     
-    # 9 layers total, need 55% = 5 layers
-    conf=layers/9*100
+    # 10 layers total, need 50% = 5 layers (lenient to get many trades)
+    conf=layers/10*100
     if conf<conf_req: return None
     
     # Counter-trend block - stricter: block if against H1 and conf<60
