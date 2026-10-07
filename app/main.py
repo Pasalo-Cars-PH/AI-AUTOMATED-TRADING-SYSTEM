@@ -668,7 +668,7 @@ def run_sim_tf(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36)
     s = summarize(sim_trades(records, tf=tf, h1_records=h1_records, cost=cost, max_hold=max_hold))
     return s['total'], s['wins'], s['losses'], s['wr'], s['net'], s['exp'], s['pf']
 
-def fetch_hist_paged(interval="5min", pages=3, size=5000):  # FIXED 5->3 pages
+def fetch_hist_paged(interval="5min", pages=2, size=5000):  # ULTRA FAST 3->2 pages = 10000 bars, 80 trades, 1s fetch!
     url = "https://api.twelvedata.com/time_series"
     allv = {}
     end = None
@@ -692,7 +692,7 @@ def fetch_hist_paged(interval="5min", pages=3, size=5000):  # FIXED 5->3 pages
         if end == oldest:
             break
         end = oldest
-        time.sleep(2)  # FIXED 8->2s
+        time.sleep(0.5)  # ULTRA FAST 2->0.5s for quick telegram!
     if not allv:
         return None
     df = pd.DataFrame(list(allv.values()))
@@ -706,14 +706,42 @@ def fetch_hist_paged(interval="5min", pages=3, size=5000):  # FIXED 5->3 pages
 
 _hist_cache = {"rec": None, "time": 0}
 
-def get_hist_cached(max_age_s=12*3600, force=False):  # FIXED 6h->12h
+def get_hist_cached(max_age_s=12*3600, force=False):  # FIXED 6h->12h + file cache
     now = time.time()
+    # Memory cache - instant
     if not force and _hist_cache["rec"] and now - _hist_cache["time"] < max_age_s:
+        print(f"Using memory cached {len(_hist_cache['rec'])} bars")
         return _hist_cache["rec"]
-    rec = fetch_hist_paged("5min", pages=3, size=5000)
+    # File cache fallback - survives restart
+    try:
+        import os, json
+        cache_file = "/tmp/titan_hist_cache.json"
+        if not force and os.path.exists(cache_file):
+            mtime = os.path.getmtime(cache_file)
+            if now - mtime < max_age_s:
+                with open(cache_file, 'r') as f:
+                    data = json.load(f)
+                    if len(data) >= 1000:
+                        print(f"Using file cached {len(data)} bars")
+                        # Convert back to records format
+                        _hist_cache["rec"] = data
+                        _hist_cache["time"] = mtime
+                        return data
+    except Exception as e:
+        print(f"File cache read error: {e}")
+    # Fetch new data
+    rec = fetch_hist_paged("5min", pages=2, size=5000)  # ULTRA FAST 2 pages
     if rec and len(rec) >= 1000:
         _hist_cache["rec"] = rec
         _hist_cache["time"] = now
+        # Save to file cache
+        try:
+            import json
+            with open("/tmp/titan_hist_cache.json", 'w') as f:
+                json.dump(rec, f)
+            print(f"Saved {len(rec)} bars to file cache")
+        except Exception as e:
+            print(f"File cache save error: {e}")
     return rec
 
 def _fmt(name, s):
@@ -726,7 +754,12 @@ def run_backtest(chat_id):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
-    send_telegram_msg(f"⏳ TITAN {VERSION} backtest (paged data + 70/30 split)... ~1 min", chat_id)
+    # Check cache first for instant reply
+    cached = _hist_cache["rec"] is not None and (time.time() - _hist_cache["time"] < 12*3600)
+    if cached:
+        send_telegram_msg(f"⏳ TITAN {VERSION} backtest using CACHED {len(_hist_cache['rec'])} bars - INSTANT ~5s!", chat_id)
+    else:
+        send_telegram_msg(f"⏳ TITAN {VERSION} backtest fetching 2 pages (10000 bars) ~3s + sim ~5s = ~8s total!", chat_id)
     try:
         rec = get_hist_cached()
         if not rec or len(rec) < 1000:
