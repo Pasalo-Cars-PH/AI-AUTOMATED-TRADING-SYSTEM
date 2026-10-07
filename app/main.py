@@ -676,7 +676,7 @@ def fetch_data_with_fallback(symbol="XAU/USD", interval="5min", outputsize=100):
     # Fallback: Get REAL price from free API
     real_price = get_free_gold_price()
     print(f"TwelveData {interval} credits exhausted, using REAL price {real_price} FREE_API")
-
+    
     # Generate synthetic data with REALISTIC volatility per timeframe
     base_price = real_price
     synthetic = []
@@ -884,203 +884,84 @@ def fetch_hist_tf(interval, outputsize=3000):
 
 
 def analyze_titan_detailed(window, tf="M5", h1_trend=None):
-    """Detailed breakdown V7.1 SIMPLIFIED - 2 GATES 5 LAYERS 2 BOOSTERS"""
-    result = {
-        "timestamp": pht_now().isoformat(),
-        "tf": tf,
-        "h1_trend": h1_trend,
-        "gates": [],
-        "layers": [],
-        "boosters": [],
-        "candle": None,
-        "indicators": None,
-        "decision": "SKIP",
-        "reason": "",
-        "signal": None,
-        "confluence": 0,
-        "passed_layers": 0,
-        "model_score": 0,
-        "swept": False
-    }
+    """Detailed V7.2 BALANCED 3G6L"""
+    result = {"timestamp": pht_now().isoformat(),"tf": tf,"h1_trend": h1_trend,"gates": [],"layers": [],"boosters": [],"candle": None,"indicators": None,"decision": "SKIP","reason": "","signal": None,"confluence": 0,"passed_layers": 0,"model_score": 0,"swept": False}
     if len(window)<60:
         result["reason"] = f"Not enough bars {len(window)}<60"
         return result
     try:
         dt = pd.to_datetime(window[0]['datetime'])
-        c0 = window[0]
-        c1 = window[1] if len(window)>1 else c0
-        oldest = list(reversed(window))
-        closes = [c['close'] for c in oldest]
-        highs = [c['high'] for c in oldest]
-        lows = [c['low'] for c in oldest]
-        e20 = calculate_ema(closes, 20)
-        e50 = calculate_ema(closes, 50)
-        e200 = calculate_ema(closes, 200)
-        hma21 = calculate_hma(closes, 21)
-        if not hma21:
-            hma21 = e50
-        rsi = calculate_rsi(closes, 14)
-        st_m5 = calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0)
-        adx_m5 = calculate_adx(highs, lows, closes, period=14)
-        body = abs(c0['close']-c0['open'])
-        prev_body = abs(c1['close']-c1['open'])
-        rng = c0['high']-c0['low']
-        low_w = min(c0['open'],c0['close'])-c0['low']
-        up_w = c0['high']-max(c0['open'],c0['close'])
-        sc = (c0['close']-c0['low'])/rng if rng>0 else 0
-        is_bull = False
-        is_bear = False
+        c0 = window[0]; c1 = window[1] if len(window)>1 else c0
+        oldest = list(reversed(window)); closes = [c['close'] for c in oldest]; highs = [c['high'] for c in oldest]; lows = [c['low'] for c in oldest]
+        e20 = calculate_ema(closes, 20); e50 = calculate_ema(closes, 50); e200 = calculate_ema(closes, 200); hma21 = calculate_hma(closes, 21)
+        if not hma21: hma21 = e50
+        rsi = calculate_rsi(closes, 14); st_m5 = calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0); adx_m5 = calculate_adx(highs, lows, closes, period=14)
+        body = abs(c0['close']-c0['open']); prev_body = abs(c1['close']-c1['open']); rng = c0['high']-c0['low']
+        low_w = min(c0['open'],c0['close'])-c0['low']; up_w = c0['high']-max(c0['open'],c0['close']); sc = (c0['close']-c0['low'])/rng if rng>0 else 0
+        is_bull=False; is_bear=False
         if c0['close']>=c0['open']:
             is_bull = low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
+            if not is_bull and low_w>=1.2*max(body,rng*0.05) and up_w<=body*2.5 and body<=rng*0.65: is_bull=True
             if not is_bull:
-                # Lenient fallback 1.1x
-                if low_w>=1.1*max(body,rng*0.05) and up_w<=body*2.8 and body<=rng*0.70:
-                    is_bull = True
-                else:
-                    is_bear = up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
-                    if not is_bear and up_w>=1.1*max(body,rng*0.05) and low_w<=body*2.8 and body<=rng*0.70:
-                        is_bear = True
-                    sc = (c0['high']-c0['close'])/rng if rng>0 else 0
+                is_bear = up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
+                if not is_bear and up_w>=1.2*max(body,rng*0.05) and low_w<=body*2.5 and body<=rng*0.65: is_bear=True
+                sc = (c0['high']-c0['close'])/rng if rng>0 else 0
         else:
             is_bear = up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55
+            if not is_bear and up_w>=1.2*max(body,rng*0.05) and low_w<=body*2.5 and body<=rng*0.65: is_bear=True
             if not is_bear:
-                if up_w>=1.1*max(body,rng*0.05) and low_w<=body*2.8 and body<=rng*0.70:
-                    is_bear = True
-                else:
-                    is_bull = low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
-                    if not is_bull and low_w>=1.1*max(body,rng*0.05) and up_w<=body*2.8 and body<=rng*0.70:
-                        is_bull = True
+                is_bull = low_w>=1.5*max(body,rng*0.05) and up_w<=body*2.2 and body<=rng*0.55
+                if not is_bull and low_w>=1.2*max(body,rng*0.05) and up_w<=body*2.5 and body<=rng*0.65: is_bull=True
             sc = (c0['high']-c0['close'])/rng if rng>0 else 0
-        
-        result["candle"] = {
-            "open": c0['open'], "high": c0['high'], "low": c0['low'], "close": c0['close'],
-            "body": body, "prev_body": prev_body, "range": rng,
-            "low_wick": low_w, "up_wick": up_w,
-            "sc": sc, "is_bull_pin": is_bull, "is_bear_pin": is_bear,
-            "datetime": str(c0.get('datetime',''))
-        }
-        result["indicators"] = {
-            "ema20": e20, "ema50": e50, "ema200": e200, "hma21": hma21, "rsi": rsi,
-            "supertrend": st_m5['supertrend'] if st_m5 else None,
-            "st_trend": st_m5['trend'] if st_m5 else None,
-            "adx": adx_m5['adx'] if adx_m5 else None,
-        }
-        # ===== 2 GATES ONLY =====
-        gates = []
-        disp_pass = body >= prev_body*0.65 if prev_body>0 else False
-        gates.append({
-            "id": 1, "name": "DISP Gate (0.65x)", "desc": f"body {body:.3f} >= prev {prev_body:.3f}*0.65 SIMPLIFIED",
-            "required": "0.65x", "actual": round(body/prev_body,2) if prev_body>0 else 0,
-            "pass": disp_pass, "fail_reason": f"body {body:.3f} < prev*0.65" if not disp_pass else ""
-        })
+        result["candle"]={"open": c0['open'], "high": c0['high'], "low": c0['low'], "close": c0['close'],"body": body, "prev_body": prev_body, "range": rng,"low_wick": low_w, "up_wick": up_w,"sc": sc, "is_bull_pin": is_bull, "is_bear_pin": is_bear,"datetime": str(c0.get('datetime',''))}
+        result["indicators"]={"ema20": e20, "ema50": e50, "ema200": e200, "hma21": hma21, "rsi": rsi,"supertrend": st_m5['supertrend'] if st_m5 else None,"st_trend": st_m5['trend'] if st_m5 else None,"adx": adx_m5['adx'] if adx_m5 else None,}
+        gates=[]; disp_pass = body >= prev_body*0.70 if prev_body>0 else False
+        gates.append({"id": 1, "name": "DISP Gate (0.70x)", "desc": f"body {body:.3f} >= prev {prev_body:.3f}*0.70 BALANCED","required": "0.70x", "actual": round(body/prev_body,2) if prev_body>0 else 0,"pass": disp_pass, "fail_reason": f"body < prev*0.70" if not disp_pass else ""})
         if not disp_pass:
-            result["gates"]=gates
-            result["reason"]=f"Failed Gate 1 DISP 0.65x"
-            return result
-        pinbar_pass = is_bull or is_bear
-        sc_pass = sc>=0.45
-        gate2_pass = pinbar_pass and sc_pass
-        gates.append({
-            "id": 2, "name": "PINBAR+SC Gate (45%)", "desc": f"Pinbar {pinbar_pass} + SC {sc*100:.1f}% >=45% SIMPLIFIED",
-            "required": "Pinbar+SC>=45%", "actual": f"{'PIN' if pinbar_pass else 'NO-PIN'} SC{sc*100:.1f}%",
-            "pass": gate2_pass,
-            "fail_reason": f"{'No pinbar' if not pinbar_pass else ''} SC {sc*100:.1f}% <45%" if not gate2_pass else ""
-        })
+            result["gates"]=gates; result["reason"]=f"Failed Gate 1 DISP"; return result
+        pinbar_pass = is_bull or is_bear; sc_pass = sc>=0.50; gate2_pass = pinbar_pass and sc_pass
+        gates.append({"id": 2, "name": "PINBAR+SC Gate (50%)", "desc": f"Pinbar {pinbar_pass} + SC {sc*100:.1f}% >=50% BALANCED","required": "Pinbar+SC>=50%", "actual": f"{'PIN' if pinbar_pass else 'NO-PIN'} SC{sc*100:.1f}%","pass": gate2_pass,"fail_reason": f"No pinbar or SC<50%" if not gate2_pass else ""})
         if not gate2_pass:
-            result["gates"]=gates
-            result["reason"]=f"Failed Gate 2 PINBAR+SC 45%"
-            return result
+            result["gates"]=gates; result["reason"]=f"Failed Gate 2 PINBAR+SC"; return result
+        ema_bull = c0['close']>e20>e50 if e20 and e50 else False; ema_bear = c0['close']<e20<e50 if e20 and e50 else False; ema_pass = (is_bull and ema_bull) or (not is_bull and ema_bear)
+        gates.append({"id": 3, "name": "EMA Gate", "desc": f"close > EMA20 > EMA50 BULL","required": "EMA aligned","actual": f"C{c0['close']:.2f} E20{e20:.2f} E50{e50:.2f}" if e20 and e50 else "No EMA","pass": ema_pass,"fail_reason": f"EMA not aligned" if not ema_pass else ""})
+        if not ema_pass:
+            result["gates"]=gates; result["reason"]=f"Failed Gate 3 EMA"; return result
         result["gates"]=gates
-        # ===== 5 LAYERS ONLY =====
-        layers = []
-        ema_bull = c0['close']>e20>e50 if e20 and e50 else False
-        ema_bear = c0['close']<e20<e50 if e20 and e50 else False
-        hma_bull = hma21>e50 and c0['close']>hma21 if hma21 and e50 else False
-        hma_bear = hma21<e50 and c0['close']<hma21 if hma21 and e50 else False
-        ema_hma_bull = ema_bull and hma_bull
-        ema_hma_bear = ema_bear and hma_bear
-        st_bull = st_m5 and st_m5['trend']=="BULL"
-        st_bear = st_m5 and st_m5['trend']=="BEAR"
-        adx_strong = adx_m5 and adx_m5['adx']>=18
-        adx_di_bull = adx_m5 and adx_m5['plus_di'] > adx_m5['minus_di']
-        adx_di_bear = adx_m5 and adx_m5['minus_di'] > adx_m5['plus_di']
-        
-        # Layer 1: EMA+HMA
-        ema_hma_pass = (is_bull and (ema_hma_bull or ema_bull)) or (not is_bull and (ema_hma_bear or ema_bear))
-        layers.append({"id":1, "name":"EMA+HMA Layer", "desc":f"EMA20>EMA50 + HMA21>EMA50 BULL", "pass": ema_hma_pass, "weight":1})
-        # Layer 2: SuperTrend
-        st_pass = (is_bull and st_bull) or (not is_bull and st_bear)
-        layers.append({"id":2, "name":"SuperTrend Layer", "desc":f"ST M5 {st_m5['trend'] if st_m5 else 'None'}", "pass": st_pass, "weight":1})
-        # Layer 3: ADX
-        adx_pass = adx_strong or (is_bull and adx_di_bull) or (not is_bull and adx_di_bear)
-        layers.append({"id":3, "name":"ADX Layer", "desc":f"ADX {adx_m5['adx']:.1f} >=18", "pass": adx_pass, "weight":1, "actual": adx_m5['adx'] if adx_m5 else 0})
-        # Layer 4: H1 SuperTrend
-        h1_pass = False
-        h1_desc = f"H1 {h1_trend}"
-        if h1_trend is None:
-            h1_pass = True
+        layers=[]; hma_bull = hma21>e50 and c0['close']>hma21 if hma21 and e50 else False; hma_bear = hma21<e50 and c0['close']<hma21 if hma21 and e50 else False
+        ema_hma_pass = (is_bull and (ema_bull and hma_bull)) or (not is_bull and (ema_bear and hma_bear)); layers.append({"id":1, "name":"EMA+HMA Layer", "desc":f"EMA+HMA", "pass": ema_hma_pass or ema_pass, "weight":1})
+        st_bull = st_m5 and st_m5['trend']=="BULL"; st_bear = st_m5 and st_m5['trend']=="BEAR"; st_pass = (is_bull and st_bull) or (not is_bull and st_bear); layers.append({"id":2, "name":"SuperTrend Layer", "desc":f"ST {st_m5['trend'] if st_m5 else 'None'}", "pass": st_pass, "weight":1})
+        adx_strong = adx_m5 and adx_m5['adx']>=20; adx_di_bull = adx_m5 and adx_m5['plus_di'] > adx_m5['minus_di']; adx_di_bear = adx_m5 and adx_m5['minus_di'] > adx_m5['plus_di']; adx_pass = adx_strong or (is_bull and adx_di_bull) or (not is_bull and adx_di_bear); layers.append({"id":3, "name":"ADX Layer", "desc":f"ADX {adx_m5['adx']:.1f}", "pass": adx_pass, "weight":1, "actual": adx_m5['adx'] if adx_m5 else 0})
+        h1_pass=False; h1_desc=f"H1 {h1_trend}"
+        if h1_trend is None: h1_pass=True
         elif isinstance(h1_trend, dict):
             ht = h1_trend.get('trend_simple') or h1_trend.get('trend')
-            if ht=="NEUTRAL":
-                h1_pass = True  # Lenient for simplified
-                h1_desc = f"H1 NEUTRAL PASS (simplified)"
-            elif (is_bull and ht=="BULL") or (not is_bull and ht=="BEAR"):
-                h1_pass = True
-                h1_desc = f"H1 {ht} aligned"
+            if ht=="NEUTRAL": h1_pass = len([l for l in layers if l['pass']])>=2; h1_desc=f"H1 NEUTRAL need 2 layers"
+            elif (is_bull and ht=="BULL") or (not is_bull and ht=="BEAR"): h1_pass=True; h1_desc=f"H1 {ht} aligned"
         elif isinstance(h1_trend, str):
-            if h1_trend=="NEUTRAL":
-                h1_pass = True
-                h1_desc = f"H1 NEUTRAL PASS"
-            elif (is_bull and h1_trend=="BULL") or (not is_bull and h1_trend=="BEAR"):
-                h1_pass = True
-                h1_desc = f"H1 {h1_trend} aligned"
-        layers.append({"id":4, "name":"H1 SuperTrend Layer", "desc":h1_desc, "pass": h1_pass, "weight":1})
-        # Layer 5: RSI
-        rsi_pass = True
+            if h1_trend=="NEUTRAL": h1_pass = len([l for l in layers if l['pass']])>=2; h1_desc=f"H1 NEUTRAL"
+            elif (is_bull and h1_trend=="BULL") or (not is_bull and h1_trend=="BEAR"): h1_pass=True; h1_desc=f"H1 {h1_trend}"
+        layers.append({"id":4, "name":"H1 Layer", "desc":h1_desc, "pass": h1_pass, "weight":1})
+        rsi_pass=True
         if rsi:
             if is_bull and rsi>70: rsi_pass=False
             if not is_bull and rsi<30: rsi_pass=False
-        layers.append({"id":5, "name":"RSI Layer", "desc":f"RSI {rsi:.1f} not OB/OS", "pass": rsi_pass, "weight":1})
-        
-        passed_layers = sum(1 for l in layers if l['pass'])
-        conf = passed_layers/5*100
-        result["layers"]=layers
-        result["confluence"] = conf
-        result["passed_layers"] = passed_layers
-        if conf<40:
-            result["reason"]=f"Failed Confluence: {passed_layers}/5={conf:.1f}% <40%"
-            return result
-        # ===== 2 BOOSTERS ONLY =====
-        boosters = []
-        kill_pass = 7 <= dt.hour <= 19
-        boosters.append({"id":1, "name":"KILL ZONE", "desc":"07-19 UTC", "required":"07-19 UTC", "actual":f"{dt.hour} UTC", "pass": kill_pass})
-        last_10_lows=[c['low'] for c in window[1:11]]
-        last_10_highs=[c['high'] for c in window[1:11]]
-        swept = (is_bull and c0['low']<=min(last_10_lows)+0.05) or (not is_bull and c0['high']>=max(last_10_highs)-0.05)
-        boosters.append({"id":2, "name":"SWEEP", "desc":"Liquidity sweep", "pass": swept, "actual": "Swept" if swept else "No sweep"})
-        model_score = min(98, 44+conf*0.55+(8 if swept else 0))
-        result["boosters"]=boosters
-        result["swept"]=swept
-        result["model_score"]=model_score
-        result["decision"]="BUY" if is_bull else "SELL"
-        result["reason"]=f"V7.1 SIMPLE 2G5L PASS {conf:.0f}% MODEL{model_score:.0f}% | {passed_layers}/5 layers"
-        sl_d, tp_d = 1.8, 3.6
-        entry=round(c0['close'],2)
-        sl=round(entry-sl_d if is_bull else entry+sl_d,2)
-        tp=round(entry+tp_d if is_bull else entry-tp_d,2)
-        result["signal"]={
-            "pair":"XAUUSD","type":"BUY" if is_bull else "SELL","entry":entry,"sl":sl,"tp":tp,"time":c0.get('datetime',''),
-            "pinbar":"Hammer","h1":h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,
-            "layers":[l['name'] for l in layers if l['pass']], "reason": result["reason"], "tf":"M5"
-        }
+        layers.append({"id":5, "name":"RSI Layer", "desc":f"RSI {rsi:.1f}", "pass": rsi_pass, "weight":1})
+        # Layer 6: SC+DISP already gates but count as layer for conf
+        sc_disp_pass = sc>=0.50 and disp_pass; layers.append({"id":6, "name":"SC+DISP Layer", "desc":f"SC{sc*100:.0f}% Disp{body/prev_body:.2f}x", "pass": sc_disp_pass, "weight":1})
+        passed_layers = sum(1 for l in layers if l['pass']); conf = passed_layers/6*100; result["layers"]=layers; result["confluence"] = conf; result["passed_layers"] = passed_layers
+        if conf<50:
+            result["reason"]=f"Failed Confluence: {passed_layers}/6={conf:.1f}% <50%"; return result
+        boosters=[]; kill_pass = 7 <= dt.hour <= 19; boosters.append({"id":1, "name":"KILL ZONE", "desc":"07-19 UTC", "required":"07-19 UTC", "actual":f"{dt.hour} UTC", "pass": kill_pass})
+        last_10_lows=[c['low'] for c in window[1:11]]; last_10_highs=[c['high'] for c in window[1:11]]; swept = (is_bull and c0['low']<=min(last_10_lows)+0.05) or (not is_bull and c0['high']>=max(last_10_highs)-0.05); boosters.append({"id":2, "name":"SWEEP", "desc":"Liquidity sweep", "pass": swept, "actual": "Swept" if swept else "No sweep"})
+        model_score = min(98, 44+conf*0.55+(8 if swept else 0)); result["boosters"]=boosters; result["swept"]=swept; result["model_score"]=model_score; result["decision"]="BUY" if is_bull else "SELL"; result["reason"]=f"V7.2 BALANCED PASS {conf:.0f}% MODEL{model_score:.0f}% | {passed_layers}/6"; sl_d, tp_d = 1.8, 3.6; entry=round(c0['close'],2); sl=round(entry-sl_d if is_bull else entry+sl_d,2); tp=round(entry+tp_d if is_bull else entry-tp_d,2)
+        result["signal"]={"pair":"XAUUSD","type":"BUY" if is_bull else "SELL","entry":entry,"sl":sl,"tp":tp,"time":c0.get('datetime',''),"pinbar":"Hammer","h1":h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,"layers":[l['name'] for l in layers if l['pass']], "reason": result["reason"], "tf":"M5"}
         return result
     except Exception as e:
-        import traceback; traceback.print_exc()
-        result["reason"]=f"Error in detailed: {e}"
-        return result
+        import traceback; traceback.print_exc(); result["reason"]=f"Error: {e}"; return result
 
 def analyze_titan_mtf(window, tf="M5", h1_trend=None):
-    """TITAN V7.1 SIMPLIFIED - 2 GATES 5 LAYERS 2 BOOSTERS - HIGH WR + MANY TRADES + QUALITY"""
+    """TITAN V7.2 BALANCED - 3 GATES 6 LAYERS - FIXED V7.1 TOO LENIENT - HIGH WR + MANY TRADES + QUALITY"""
     if len(window)<60: return None
     dt=pd.to_datetime(window[0]['datetime'])
     if dt.hour<7 or dt.hour>19: return None
@@ -1100,72 +981,76 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     adx_m5=calculate_adx(highs, lows, closes, period=14)
     
     if not e20 or not e50: return None
-    c0=window[0]; c1=window[1]
+    c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
     
-    # V7.1 SIMPLIFIED: More lenient for many trades - 0.65/0.45/40
-    disp_req, sc_req, conf_req, model_req = 0.65, 0.45, 40, 40  # SIMPLIFIED - more trades!
+    # V7.2 BALANCED: Middle - 0.70/0.50/50 - between strict 0.80/0.56/60 and lenient 0.65/0.45/40
+    disp_req, sc_req, conf_req, model_req = 0.70, 0.50, 50, 50  # BALANCED - quality + many trades
     
     bullish=is_bullish_pinbar(c0)
     bearish=is_bearish_pinbar(c0)
-    # Lenient pinbar fallback for more trades
+    # Lenient fallback but stricter than V7.1 1.1x - use 1.2x
     if not bullish and not bearish:
         o,h,l,cl=c0['open'],c0['high'],c0['low'],c0['close']
         body_l=abs(cl-o); rng_l=h-l
         if rng_l>0:
             low_w_l=min(o,cl)-l; up_w_l=h-max(o,cl)
-            if low_w_l>=1.1*max(body_l,rng_l*0.05) and up_w_l<=body_l*2.8 and body_l<=rng_l*0.70:
+            if low_w_l>=1.2*max(body_l,rng_l*0.05) and up_w_l<=body_l*2.5 and body_l<=rng_l*0.65:
                 bullish=True
-            elif up_w_l>=1.1*max(body_l,rng_l*0.05) and low_w_l<=body_l*2.8 and body_l<=rng_l*0.70:
+            elif up_w_l>=1.2*max(body_l,rng_l*0.05) and low_w_l<=body_l*2.5 and body_l<=rng_l*0.65:
                 bearish=True
     
-    # ===== 2 GATES ONLY (was 4) - SIMPLIFIED FOR MANY TRADES =====
-    # Gate 1: DISP Gate - 0.65x only (was 0.70x) - more lenient
+    # ===== 3 GATES - BALANCED =====
+    # Gate 1: DISP 0.70x (between 0.65 lenient and 0.80 strict)
     if prev>0 and body<prev*disp_req: return None
     
-    # Gate 2: PINBAR + SC Gate - 45% only (was 50%) - more lenient
+    # Gate 2: PINBAR + SC 50% (between 45% lenient and 56% strict)
     rng=c0['high']-c0['low']
     if rng==0: return None
     sc=(c0['close']-c0['low'])/rng if bullish else (c0['high']-c0['close'])/rng
     if not bullish and not bearish: return None
     if sc<sc_req: return None
     
-    # ===== NO MORE MANDATORY EMA GATE - now part of layers for flexibility =====
+    # Gate 3: EMA trend mandatory (quality) - close > e20 > e50
     ema_bull = c0['close']>e20>e50
     ema_bear = c0['close']<e20<e50
+    if bullish and not ema_bull: return None
+    if bearish and not ema_bear: return None
+    
     hma_bull = hma21>e50 and c0['close']>hma21
     hma_bear = hma21<e50 and c0['close']<hma21
     st_bull = st_m5 and st_m5['trend']=="BULL"
     st_bear = st_m5 and st_m5['trend']=="BEAR"
     st_price_bull = st_m5 and c0['close']>st_m5['supertrend']
     st_price_bear = st_m5 and c0['close']<st_m5['supertrend']
-    adx_strong = adx_m5 and adx_m5['adx']>=18  # Lowered from 20 to 18 for more trades
+    adx_strong = adx_m5 and adx_m5['adx']>=20  # Back to 20 from 18 for quality
     adx_di_bull = adx_m5 and adx_m5['plus_di'] > adx_m5['minus_di']
     adx_di_bear = adx_m5 and adx_m5['minus_di'] > adx_m5['plus_di']
     
-    # ===== 5 LAYERS ONLY (was 10) - SIMPLIFIED FOR HIGH WR + MANY TRADES + QUALITY =====
-    # Quality trend filters only - no PD60% and FVG (too restrictive)
+    # ===== 6 LAYERS - BALANCED QUALITY =====
     layers=0; logs=[]
     
-    # Layer 1: EMA + HMA combo (quality trend) - EMA20>EMA50 + HMA21>EMA50
-    if (bullish and ema_bull and hma_bull) or (bearish and ema_bear and hma_bear):
-        layers+=1; logs.append("EMA+HMA")
-    elif (bullish and ema_bull) or (bearish and ema_bear):
-        layers+=1; logs.append("EMA")  # At least EMA
+    # Layer 1: EMA (mandatory already but count)
+    if (bullish and ema_bull) or (bearish and ema_bear):
+        layers+=1; logs.append("EMA")
     
-    # Layer 2: SuperTrend (trend flip)
+    # Layer 2: HMA (quality fast trend)
+    if (bullish and hma_bull) or (bearish and hma_bear):
+        layers+=1; logs.append("HMA21")
+    
+    # Layer 3: SuperTrend M5
     if (bullish and st_bull and st_price_bull) or (bearish and st_bear and st_price_bear):
         layers+=1; logs.append(f"ST_{st_m5['trend']}" if st_m5 else "ST")
     elif (bullish and st_bull) or (bearish and st_bear):
-        layers+=1; logs.append(f"ST_{st_m5['trend']}_trend" if st_m5 else "ST")
+        layers+=1; logs.append(f"ST_trend")
     
-    # Layer 3: ADX strength (avoid choppy)
+    # Layer 4: ADX strength
     if adx_strong:
         layers+=1; logs.append(f"ADX{int(adx_m5['adx'])}")
     elif (bullish and adx_di_bull) or (bearish and adx_di_bear):
         layers+=1; logs.append(f"ADX_DI")
-    
-    # Layer 4: H1 SuperTrend + EMA200 (big trend)
+
+    # Layer 5: H1 SuperTrend
     h1_pass = False
     ht = None
     if h1_trend is None:
@@ -1174,44 +1059,43 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     elif isinstance(h1_trend, dict):
         ht = h1_trend.get('trend_simple') or h1_trend.get('trend')
         if ht=="NEUTRAL":
-            # Allow NEUTRAL if 2 other layers pass (lenient)
-            h1_pass = layers >= 2
+            # Stricter than V7.1: need 3 layers (was 2)
+            h1_pass = layers >= 3
         elif (bullish and ht=="BULL") or (bearish and ht=="BEAR"):
             h1_pass = True
     elif isinstance(h1_trend, str):
         ht = h1_trend
         if ht=="NEUTRAL":
-            h1_pass = layers >= 2
+            h1_pass = layers >= 3
         elif (bullish and ht=="BULL") or (bearish and ht=="BEAR"):
             h1_pass = True
     
     if h1_pass:
         layers+=1; logs.append(f"H1_{ht}")
     
-    # Layer 5: RSI not overbought/oversold (quality)
+    # Layer 6: RSI quality (not OB/OS)
     rsi_ok = False
     if rsi:
-        if bullish and rsi < 65 and rsi > 30:
+        if bullish and rsi < 68 and rsi > 30:
             rsi_ok = True
-        elif bearish and rsi > 35 and rsi < 70:
+        elif bearish and rsi > 32 and rsi < 70:
             rsi_ok = True
     else:
-        rsi_ok = True  # If no RSI, pass
+        rsi_ok = True
     
     if rsi_ok:
-        layers+=1; logs.append(f"RSI{int(rsi)}" if rsi else "RSI")
+        layers+=1; logs.append(f"RSI")
     
-    # 5 layers total, need 40% = 2 layers (very lenient for many trades but quality filters still)
-    # But need at least EMA+HMA or ST or ADX for quality
-    conf=layers/5*100
+    # 6 layers, need 50% = 3 layers (balanced)
+    conf=layers/6*100
     if conf<conf_req: return None
     
-    # Quality check: must have at least 1 trend filter (EMA/HMA or ST or ADX or H1) for quality
-    has_trend_filter = any(x in logs for x in ["EMA", "EMA+HMA", "ST_BULL", "ST_BEAR", "ST_", "ADX", "H1_"])
-    if not has_trend_filter and conf < 60:
+    # Quality: must have at least EMA + (HMA or ST or ADX or H1)
+    has_quality = ("EMA" in logs) and (any(x in logs for x in ["HMA21", "ST_", "ADX", "H1_"]))
+    if not has_quality and conf < 66:
         return None
     
-    # Counter-trend block - only block if strong against H1 and low conf
+    # Counter-trend block
     if isinstance(h1_trend, dict):
         ht_check = h1_trend.get('trend_simple') or h1_trend.get('trend')
     else:
@@ -1219,12 +1103,10 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if bullish and ht_check=="BEAR" and conf<60: return None
     if bearish and ht_check=="BULL" and conf<60: return None
     
-    # RSI overbought/oversold block (tight)
     if rsi:
         if bullish and rsi>70: return None
         if bearish and rsi<30: return None
     
-    # ===== 2 BOOSTERS ONLY (was 8) =====
     last_10_lows=[c['low'] for c in window[1:11]]
     last_10_highs=[c['high'] for c in window[1:11]]
     swept = (bullish and c0['low']<=min(last_10_lows)+0.05) or (bearish and c0['high']>=max(last_10_highs)-0.05)
@@ -1238,7 +1120,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     return {
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
         "pinbar":"Hammer","h1":ht if 'ht' in locals() else h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,"layers":logs,
-        "reason":f"V7.1 SIMPLE 2G5L {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)} | HMA{hma21:.2f} ST{st_m5['supertrend']:.2f} ADX{adx_m5['adx']:.0f}" if st_m5 and adx_m5 else f"V7.1 SIMPLE {conf:.0f}% | {'+'.join(logs)}", "tf":"M5"
+        "reason":f"V7.2 BALANCED 3G6L {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)}", "tf":"M5"
     }
 
 def run_sim_tf(records, tf="M5", h1_records=None):
@@ -1353,7 +1235,7 @@ def run_backtest(chat_id):
         if rec_m5_large:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5", h1_records=None)
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V7.1 M5 2G5L SIMPLE NO-ICHI + ST(10,3) + HMA21 + ADX>18 + EMA200*\n_2 Gates 5 Layers - Many Trades High WR Quality_\n"
+        msg=f"📊 *XAUUSD TITAN V7.2 M5 3G6L BALANCED NO-ICHI + ST(10,3) + HMA21 + ADX>20 + EMA200*\n_3 Gates 6 Layers - Fixed V7.1 Too Lenient - Balanced_\n"
         if not results:
             msg+=f"⚠️ No data - API limit or fetch fail. Try again in 1 min.\n"
             msg+=f"rec_m5={bool(rec_m5)} rec_m5_large={bool(rec_m5_large)} len_m5={len(rec_m5) if rec_m5 else 0}\n"
@@ -1362,7 +1244,7 @@ def run_backtest(chat_id):
                 t,w,l,wr,net,exp,pf, n = results[key]
                 label = "M5 5k bars" if "5k" in key else "M5 10k bars"
                 msg+=f"🔹 *{label}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
-        msg+=f"📊 Dashboard: /dashboard\n🔒 _V7.1 2G5L SIMPLE ST(10,3) HMA21 ADX>18 EMA200_\n_2 Gates(DISP 0.65x + PINBAR SC45%) 5 Layers(EMA+HMA,ST,ADX,H1,RSI)_\n_M1/M15 DISABLED_"
+        msg+=f"📊 Dashboard: /dashboard\n🔒 _V7.2 3G6L BALANCED ST(10,3) HMA21 ADX>20 EMA200_\n_3 Gates(DISP 0.70x+PINBAR SC50%+EMA) 6 Layers(EMA+HMA,ST,ADX,H1,RSI,SC+DISP)_\n_M1/M15 DISABLED_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
