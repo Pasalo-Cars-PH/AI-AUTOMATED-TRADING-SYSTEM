@@ -668,7 +668,7 @@ def run_sim_tf(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36)
     s = summarize(sim_trades(records, tf=tf, h1_records=h1_records, cost=cost, max_hold=max_hold))
     return s['total'], s['wins'], s['losses'], s['wr'], s['net'], s['exp'], s['pf']
 
-def fetch_hist_paged(interval="5min", pages=5, size=5000):
+def fetch_hist_paged(interval="5min", pages=3, size=5000):  # FIXED: 5->3 pages, 40s->6s fetch, still 15000 bars!
     url = "https://api.twelvedata.com/time_series"
     allv = {}
     end = None
@@ -692,7 +692,7 @@ def fetch_hist_paged(interval="5min", pages=5, size=5000):
         if end == oldest:
             break
         end = oldest
-        time.sleep(8)
+        time.sleep(2)  # FIXED: 8s -> 2s para mabilis telegram, dati 40s total!
     if not allv:
         return None
     df = pd.DataFrame(list(allv.values()))
@@ -706,7 +706,7 @@ def fetch_hist_paged(interval="5min", pages=5, size=5000):
 
 _hist_cache = {"rec": None, "time": 0}
 
-def get_hist_cached(max_age_s=6*3600, force=False):
+def get_hist_cached(max_age_s=12*3600, force=False):  # FIXED: 6h->12h cache para hindi laging fetch!
     now = time.time()
     if not force and _hist_cache["rec"] and now - _hist_cache["time"] < max_age_s:
         return _hist_cache["rec"]
@@ -726,7 +726,7 @@ def run_backtest(chat_id):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
-    send_telegram_msg(f"⏳ TITAN {VERSION} backtest (paged data + 70/30 split)... ~1 min", chat_id)
+    send_telegram_msg(f"⏳ TITAN {VERSION} backtest... Fetching cached data (12h cache) ~15s lang! Dati 1 min.", chat_id)
     try:
         rec = get_hist_cached()
         if not rec or len(rec) < 1000:
@@ -955,9 +955,15 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 h1 = fetch_h1_trend()
                 stats = calculate_stats(load_trades())
                 send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\nH1 `{h1}`\nTrades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
-            elif txt_base == "/scan": background_tasks.add_task(manual_scan, cid)
-            elif txt_base == "/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt_base == "/diag": background_tasks.add_task(run_diag, cid)
+            elif txt_base == "/scan": 
+                send_telegram_msg(f"🔍 {VERSION} scanning M5... ~5s!", cid)
+                background_tasks.add_task(manual_scan, cid)
+            elif txt_base == "/backtest": 
+                send_telegram_msg(f"⏳ {VERSION} backtest started... ~15s lang (cached)! Wait lang...", cid)
+                background_tasks.add_task(run_backtest, cid)
+            elif txt_base == "/diag": 
+                send_telegram_msg(f"🔬 {VERSION} DIAG started... ~30s lang! 2 messages darating...", cid)
+                background_tasks.add_task(run_diag, cid)
             elif txt_base == "/dashboard":
                 host = str(request.base_url).rstrip('/')
                 send_telegram_msg(f"📊 *DASHBOARD*\n{host}/dashboard\nAPI {host}/api/stats\nPretrade {host}/api/pretrade\nClose with /win [id] or /loss [id]", cid)
