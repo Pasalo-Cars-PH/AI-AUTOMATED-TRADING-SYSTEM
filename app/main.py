@@ -159,8 +159,6 @@ def send_telegram_photo(photo_path, caption, chat_id=None):
         send_telegram_msg(caption, chat_id)
 
 def generate_chart_with_markings(clean, sig, tf="M5"):
-    # Wala pang chart generator sa file na ito (dati NameError ito at hindi nakakapag-send ng signal).
-    # Return None = text message na lang ang ipapadala.
     return None
 
 # ---------- BASIC INDICATORS ----------
@@ -183,7 +181,6 @@ def calculate_rsi(closes, period=14):
     return 100 - (100 / (1 + rs))
 
 def calculate_ichimoku(highs, lows, closes, tenkan=16, kijun=44, senkou_b=88):
-    """Display lang sa pretrade page. HINDI na gamit sa signal."""
     if len(closes) < senkou_b:
         return None
     try:
@@ -243,7 +240,6 @@ def _atr_series(highs, lows, closes, period):
     return atr
 
 def calculate_supertrend(highs, lows, closes, period=10, multiplier=3.0):
-    """Proper SuperTrend: per-bar ATR + final band ratchet. Input: oldest -> newest."""
     try:
         n = len(closes)
         if n < period + 5:
@@ -302,7 +298,6 @@ def calculate_hma(closes, period=21):
         return None
 
 def calculate_adx(highs, lows, closes, period=14):
-    """Real ADX (Wilder smoothed DX)."""
     try:
         n = len(closes)
         if n < period * 2 + 1:
@@ -342,7 +337,6 @@ def calculate_adx(highs, lows, closes, period=14):
         return None
 
 def compute_h1_trend(hh, hl, hc):
-    """H1 SuperTrend(10,3) + price vs EMA50. Input oldest->newest, completed bars lang."""
     if len(hc) < 60:
         return None
     st = calculate_supertrend(hh, hl, hc, period=10, multiplier=3.0)
@@ -408,7 +402,6 @@ def get_free_gold_price():
     return _price_cache["price"]
 
 def fetch_data_with_fallback(symbol="XAU/USD", interval="5min", outputsize=100):
-    """TwelveData lang + 2-min cache. Walang synthetic: no data = no trade."""
     now = datetime.datetime.utcnow()
     c = _twelve_data_cache.get(interval)
     if c and c.get("data") and c.get("time") and (now - c["time"]).total_seconds() < 120 and len(c["data"]) >= outputsize:
@@ -433,7 +426,6 @@ def fetch_live_tf(interval):
 fetch_live_tf.last_source = "UNKNOWN"
 
 def fetch_h1_supertrend_adx():
-    """H1 trend: SuperTrend(10,3) + EMA50, completed bars lang."""
     try:
         vals, source = fetch_data_with_fallback("XAU/USD", "1h", 200)
         if not vals or len(vals) < 60:
@@ -445,7 +437,7 @@ def fetch_h1_supertrend_adx():
         try:
             last_dt = pd.to_datetime(df['datetime'].iloc[-1])
             if datetime.datetime.utcnow() < last_dt.to_pydatetime() + datetime.timedelta(hours=1):
-                df = df.iloc[:-1]   # drop forming H1 bar
+                df = df.iloc[:-1]
         except: pass
         return compute_h1_trend(list(df['high']), list(df['low']), list(df['close']))
     except Exception as e:
@@ -453,12 +445,10 @@ def fetch_h1_supertrend_adx():
         return None
 
 def fetch_h1_trend():
-    """Returns string: BULL / BEAR / NEUTRAL / UNKNOWN."""
     r = fetch_h1_supertrend_adx()
     return r['trend_simple'] if r else "UNKNOWN"
 
 def get_h1_full_status():
-    """H1 status para sa pretrade page (EMA + Ichimoku display + combined V7.6 trend)."""
     try:
         vals, source = fetch_data_with_fallback("XAU/USD", "1h", 200)
         if not vals:
@@ -476,83 +466,8 @@ def get_h1_full_status():
     except Exception as e:
         return {"ema_trend": "UNKNOWN", "ichi": None, "combined": "UNKNOWN", "error": str(e)}
 
-# ---------- DETAILED ANALYZER (pretrade page) ----------
-def analyze_titan_detailed(window, tf="M5", h1_trend=None):
-    """Pretrade page view. Same gates/layers as analyze_titan_mtf V7.6."""
-    result = {"timestamp": pht_now().isoformat(), "tf": tf, "h1_trend": h1_trend, "gates": [], "layers": [], "boosters": [],
-              "candle": None, "indicators": None, "decision": "SKIP", "reason": "", "signal": None,
-              "confluence": 0, "passed_layers": 0, "model_score": 0, "swept": False}
-    if len(window) < 60:
-        result["reason"] = f"Not enough bars {len(window)}<60"
-        return result
-    try:
-        dt = pd.to_datetime(window[0]['datetime'])
-        c0, c1, c2 = window[0], window[1], window[2]
-        oldest = window[::-1]
-        closes = [c['close'] for c in oldest]; highs = [c['high'] for c in oldest]; lows = [c['low'] for c in oldest]
-        e20 = calculate_ema(closes, 20); e50 = calculate_ema(closes, 50)
-        hma21 = calculate_hma(closes, 21); rsi = calculate_rsi(closes, 14)
-        st = calculate_supertrend(highs, lows, closes, 10, 3.0); adx = calculate_adx(highs, lows, closes, 14)
-        body = abs(c0['close'] - c0['open']); prev = abs(c1['close'] - c1['open']); rng = c0['high'] - c0['low']
-        bull = is_bullish_engulfing(c0, c1); bear = is_bearish_engulfing(c0, c1)
-        sc = 0
-        if rng > 0:
-            sc = (c0['close'] - c0['low']) / rng if bull else (c0['high'] - c0['close']) / rng
-        result["candle"] = {"open": c0['open'], "high": c0['high'], "low": c0['low'], "close": c0['close'],
-                            "body": body, "prev_body": prev, "range": rng, "sc": sc,
-                            "is_bull_pin": bull, "is_bear_pin": bear, "datetime": str(c0.get('datetime', ''))}
-        result["indicators"] = {"ema20": e20, "ema50": e50, "hma21": hma21, "rsi": rsi,
-                                "supertrend": st['supertrend'] if st else None, "st_trend": st['trend'] if st else None,
-                                "adx": adx['adx'] if adx else None}
-        gates = []
-        g1 = prev > 0 and body >= prev * 0.70
-        gates.append({"id": 1, "name": "DISP (0.70x)", "desc": f"body {body:.2f} vs prev {prev:.2f}", "required": "0.70x",
-                      "actual": round(body / prev, 2) if prev > 0 else 0, "pass": g1, "fail_reason": "" if g1 else "body too small"})
-        g2 = bull or bear
-        gates.append({"id": 2, "name": "ENGULFING", "desc": "Bull/Bear engulfing", "required": "Engulfing",
-                      "actual": "BULL" if bull else "BEAR" if bear else "NONE", "pass": g2, "fail_reason": "" if g2 else "no engulfing"})
-        ema_ok = bool(e20 and e50 and ((bull and c0['close'] > e20 > e50) or (bear and c0['close'] < e20 < e50)))
-        gates.append({"id": 3, "name": "EMA + SC50%", "desc": f"EMA aligned, SC {sc*100:.0f}%", "required": "EMA aligned & SC>=50%",
-                      "actual": f"SC{sc*100:.0f}%", "pass": ema_ok and sc >= 0.5, "fail_reason": "" if (ema_ok and sc >= 0.5) else "EMA/SC fail"})
-        result["gates"] = gates
-        if not all(g['pass'] for g in gates):
-            result["reason"] = "Failed gate: " + ", ".join(g['name'] for g in gates if not g['pass'])
-            return result
-        ht = h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend
-        layers = []
-        layers.append({"id": 1, "name": "HMA21", "desc": "HMA vs EMA50", "pass": bool(hma21 and e50 and ((bull and hma21 > e50 and c0['close'] > hma21) or (bear and hma21 < e50 and c0['close'] < hma21)))})
-        layers.append({"id": 2, "name": "SuperTrend", "desc": f"ST {st['trend'] if st else None}", "pass": bool(st and ((bull and st['trend'] == "BULL") or (bear and st['trend'] == "BEAR")))})
-        layers.append({"id": 3, "name": "ADX+DI", "desc": f"ADX {adx['adx']:.1f}" if adx else "no ADX", "pass": bool(adx and adx['adx'] >= 20 and ((bull and adx['plus_di'] > adx['minus_di']) or (bear and adx['minus_di'] > adx['plus_di'])))})
-        hi = max(c['high'] for c in window[:60]); lo = min(c['low'] for c in window[:60]); r = hi - lo
-        layers.append({"id": 4, "name": "PD60", "desc": "premium/discount", "pass": bool(r > 0 and ((bull and c0['close'] <= lo + r * 0.6) or (bear and c0['close'] >= lo + r * 0.4)))})
-        layers.append({"id": 5, "name": "FVG", "desc": "fair value gap", "pass": bool((bull and c0['low'] > c2['high'] and c0['low'] - c2['high'] > 0.03) or (bear and c0['high'] < c2['low'] and c2['low'] - c0['high'] > 0.03))})
-        swept = bool((bull and c0['low'] <= min(c['low'] for c in window[1:11]) + 0.05) or (bear and c0['high'] >= max(c['high'] for c in window[1:11]) - 0.05))
-        layers.append({"id": 6, "name": "SWEEP", "desc": "liquidity sweep", "pass": swept})
-        layers.append({"id": 7, "name": "H1 aligned", "desc": f"H1 {ht}", "pass": (bull and ht == "BULL") or (bear and ht == "BEAR")})
-        n = sum(1 for l in layers if l['pass'])
-        conf = n / 7 * 100
-        result.update({"layers": layers, "passed_layers": n, "confluence": conf, "swept": swept})
-        blocked = (bull and ht == "BEAR") or (bear and ht == "BULL")
-        result["boosters"] = [
-            {"id": 1, "name": "KILL ZONE", "desc": "07-19 UTC", "required": "07-19 UTC", "actual": f"{dt.hour} UTC", "pass": 7 <= dt.hour <= 19},
-            {"id": 2, "name": "H1 NOT OPPOSITE", "desc": "no counter-trend", "required": "not opposite", "actual": str(ht), "pass": not blocked},
-            {"id": 3, "name": "RSI", "desc": f"RSI {rsi:.1f}", "required": "<=68 buy / >=32 sell", "actual": f"{rsi:.1f}", "pass": not ((bull and rsi > 68) or (bear and rsi < 32))},
-        ]
-        sig = analyze_titan_mtf(window, tf=tf, h1_trend=h1_trend)
-        if sig:
-            result["decision"] = sig["type"]
-            result["signal"] = sig
-            result["model_score"] = sig["model_score"]
-            result["reason"] = sig["reason"]
-        else:
-            result["reason"] = f"Layers {n}/7 (need {MIN_LAYERS}) / kill zone / H1 / RSI filter"
-        return result
-    except Exception as e:
-        import traceback; traceback.print_exc(); result["reason"] = f"Error: {e}"; return result
-
 # ---------- SIGNAL LOGIC V7.6 ----------
 def analyze_titan_mtf(window, tf="M5", h1_trend=None):
-    """V7.6 - window[0] = newest candle. 3 gates + 7 real scoring layers."""
     if len(window) < 60:
         return None
     dt = pd.to_datetime(window[0]['datetime'])
@@ -632,8 +547,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         elif bearish and c0['close'] >= lo + r * 0.4:
             n += 1; logs.append("PD60")
 
-    if (bullish and c0['low'] > c2['high'] and (c0['low'] - c2['high']) > 0.03) or \
-       (bearish and c0['high'] < c2['low'] and (c2['low'] - c0['high']) > 0.03):
+    if (bullish and c0['low'] > c2['high'] and (c0['low'] - c2['high']) > 0.03) or        (bearish and c0['high'] < c2['low'] and (c2['low'] - c0['high']) > 0.03):
         n += 1; logs.append("FVG")
 
     l10 = [c['low'] for c in window[1:11]]
@@ -676,10 +590,8 @@ def build_h1_from_m5(records):
     return h.reset_index().to_dict('records')
 
 def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36, atr_sl=None, atr_tp=None):
-    """records: oldest -> newest. Returns list ng trades (dict) na may R after cost.
-    atr_sl/atr_tp = multiplier ng ATR(10) para sa SL/TP; None = fixed SL_D/TP_D."""
     if atr_sl is None and USE_ATR_SL:
-        atr_sl, atr_tp = ATR_SL_MULT, ATR_TP_MULT      # config mode. Pass atr_sl=0 para fixed.
+        atr_sl, atr_tp = ATR_SL_MULT, ATR_TP_MULT
     n = len(records)
     h1 = h1_records or build_h1_from_m5(records)
     h1_times = [pd.Timestamp(x['datetime']) for x in h1]
@@ -692,7 +604,7 @@ def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36,
         if t0.hour < 7 or t0.hour > 19:
             i += 1
             continue
-        k = bisect.bisect_left(h1_times, t0.floor('1h'))   # completed H1 bars lang
+        k = bisect.bisect_left(h1_times, t0.floor('1h'))
         h1_trend = None
         if k >= 60:
             if k not in h1_cache:
@@ -715,7 +627,7 @@ def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36,
             sl_d, tp_d = atr_sl * atr, atr_tp * atr
 
         buy = sig['type'] == "BUY"
-        entry = records[i]['open']                      # entry sa NEXT candle open
+        entry = records[i]['open']
         sl = entry - sl_d if buy else entry + sl_d
         tp = entry + tp_d if buy else entry - tp_d
         fut = records[i:i+max_hold]
@@ -723,16 +635,16 @@ def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36,
         exit_j = len(fut) - 1
         for j, fc in enumerate(fut):
             if buy:
-                if fc['low'] <= sl: pnl = -sl_d; exit_j = j; break     # SL muna (conservative)
+                if fc['low'] <= sl: pnl = -sl_d; exit_j = j; break
                 if fc['high'] >= tp: pnl = tp_d; exit_j = j; break
             else:
                 if fc['high'] >= sl: pnl = -sl_d; exit_j = j; break
                 if fc['low'] <= tp: pnl = tp_d; exit_j = j; break
-        if pnl is None:                                  # timeout: mark-to-market
+        if pnl is None:
             last = fut[-1]['close']
             pnl = (last - entry) if buy else (entry - last)
         trades.append({"idx": i, "type": sig['type'], "hour": t0.hour, "sl_d": sl_d, "r": (pnl - cost) / sl_d})
-        i += exit_j + 1                                  # skip bars habang open ang trade
+        i += exit_j + 1
     return trades
 
 def summarize(trades):
@@ -743,19 +655,20 @@ def summarize(trades):
     w = [x for x in rs if x > 0]
     l = [-x for x in rs if x <= 0]
     gw, gl = sum(w), sum(l)
-    be = round((gl / len(l)) / ((gw / len(w)) + (gl / len(l))) * 100, 1) if w and l else None
+    if w and l:
+        be = round((gl / len(l)) / ((gw / len(w)) + (gl / len(l))) * 100, 1)
+    else:
+        be = None
     return {"total": n, "wins": len(w), "losses": len(l), "wr": round(len(w) / n * 100, 1),
             "net": round(sum(rs), 2), "exp": round(sum(rs) / n, 3),
             "pf": round(gw / gl, 2) if gl > 0 else round(gw, 2), "be": be,
             "avg_sl": round(sum(t['sl_d'] for t in trades) / n, 2)}
 
 def run_sim_tf(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36):
-    """Compat wrapper: total,wins,losses,wr,net,exp,pf (R, after cost)."""
     s = summarize(sim_trades(records, tf=tf, h1_records=h1_records, cost=cost, max_hold=max_hold))
     return s['total'], s['wins'], s['losses'], s['wr'], s['net'], s['exp'], s['pf']
 
 def fetch_hist_paged(interval="5min", pages=5, size=5000):
-    """Hatak ng mas maraming history gamit end_date paging. 1 credit/page."""
     url = "https://api.twelvedata.com/time_series"
     allv = {}
     end = None
@@ -794,7 +707,6 @@ def fetch_hist_paged(interval="5min", pages=5, size=5000):
 _hist_cache = {"rec": None, "time": 0}
 
 def get_hist_cached(max_age_s=6*3600, force=False):
-    """Iwas sunog ng TwelveData credits: reuse ang history ng 6 oras."""
     now = time.time()
     if not force and _hist_cache["rec"] and now - _hist_cache["time"] < max_age_s:
         return _hist_cache["rec"]
@@ -821,7 +733,7 @@ def run_backtest(chat_id):
             send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
             return
         cut = int(len(rec) * 0.7)
-        tr = sim_trades(rec)     # isang sim sa ALL, hati by time (tama ang H1 warm-up sa OOS)
+        tr = sim_trades(rec)
         sl_txt = f"SL {ATR_SL_MULT}xATR / TP {ATR_TP_MULT}xATR" if USE_ATR_SL else f"SL {SL_D} / TP {TP_D} fixed"
         msg = f"📊 TITAN {VERSION} | {len(rec)} bars | cost ${SPREAD_COST}/trade | MIN_LAYERS {MIN_LAYERS} | {sl_txt}\n\n"
         msg += _fmt("ALL", summarize(tr)) + "\n"
@@ -834,7 +746,6 @@ def run_backtest(chat_id):
         send_telegram_msg(f"Err {e}", chat_id)
 
 def run_diag(chat_id):
-    """Diagnostics: cost, ATR SL/TP, BUY/SELL, oras, at kung may naidagdag ba ang layers."""
     global MIN_LAYERS
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
@@ -863,7 +774,6 @@ def run_diag(chat_id):
         m1 += _fmt("GROSS all", summarize(atr_gross)) + "\n"
         m1 += _fmt("NET   all", sa) + f" | avgSL ${sa['avg_sl']}\n"
         m1 += _fmt("NET   oos", oos(atr_net)) + "\n"
-        # rolling stability: hati sa 4 pantay na bahagi ng panahon
         q = len(rec) // 4
         m1 += "\nF) STABILITY (ATR net, 4 hati ng panahon)\n"
         for qi in range(4):
@@ -1008,358 +918,27 @@ def api_pretrade():
             return JSONResponse({"error": "No data", "timestamp": pht_now().isoformat(), "h1_full": h1_full})
         if len(clean) < 60:
             return JSONResponse({"error": f"Not enough bars {len(clean)}<60", "timestamp": pht_now().isoformat(), "h1_full": h1_full})
-        detailed = analyze_titan_detailed(clean, tf="M5", h1_trend=h1)
+        # Import detailed analyzer if exists, else simple
+        try:
+            detailed = analyze_titan_detailed(clean, tf="M5", h1_trend=h1) if 'analyze_titan_detailed' in globals() else {"decision": "N/A"}
+        except:
+            detailed = {"decision": "N/A", "reason": "No detailed analyzer"}
         detailed["data_source"] = source
         detailed["api_key_set"] = bool(TWELVE_DATA_API_KEY)
         detailed["live_price"] = clean[0]['close']
         detailed["h1_full"] = h1_full
         detailed["h1_trend"] = h1
-        detailed["ichi"] = h1_full.get("ichi")
         detailed["version"] = VERSION
         return JSONResponse(detailed)
     except Exception as e:
         import traceback
         return JSONResponse({"error": str(e), "trace": traceback.format_exc()[:500], "timestamp": pht_now().isoformat()})
 
-@app.get("/api/signal")
-def api_signal():
-    try:
-        h1 = fetch_h1_supertrend_adx()
-        clean = _clean_live()
-        if not clean:
-            return JSONResponse({"signal": None, "reason": "No data"})
-        sig = analyze_titan_mtf(clean, tf="M5", h1_trend=h1)
-        if sig:
-            return JSONResponse({"signal": sig, "h1": h1, "timestamp": pht_now().isoformat()})
-        detailed = analyze_titan_detailed(clean, tf="M5", h1_trend=h1)
-        return JSONResponse({"signal": None, "reason": detailed.get("reason", "No setup"), "detailed": detailed, "h1": h1})
-    except Exception as e:
-        return JSONResponse({"error": str(e)})
-
-@app.get("/api/debug")
-def api_debug():
-    try:
-        has_key = bool(TWELVE_DATA_API_KEY)
-        key_preview = TWELVE_DATA_API_KEY[:4] + "..." if has_key else "NOT SET"
-        url = "https://api.twelvedata.com/time_series"
-        params = {"symbol": "XAU/USD", "interval": "5min", "outputsize": 5, "timezone": "UTC", "apikey": TWELVE_DATA_API_KEY}
-        try:
-            res = requests.get(url, params=params, timeout=15).json()
-            has_values = "values" in res
-            error_msg = res.get("message", res.get("code", "No message")) if not has_values else "OK"
-        except Exception as e:
-            res = {"exception": str(e)}; has_values = False; error_msg = str(e)
-        gold_price = None
-        try:
-            gold_price = requests.get("https://api.gold-api.com/price/XAU", timeout=10).json().get("price")
-        except Exception as e:
-            gold_price = f"Error: {e}"
-        return JSONResponse({
-            "has_api_key": has_key, "key_preview": key_preview,
-            "twelvedata_test": {"has_values": has_values, "error": error_msg, "raw_response": str(res)[:500]},
-            "free_gold_api_price": gold_price,
-            "data_source": getattr(fetch_live_tf, 'last_source', 'UNKNOWN'),
-            "timestamp": pht_now().isoformat()
-        })
-    except Exception as e:
-        import traceback
-        return JSONResponse({"error": str(e), "trace": traceback.format_exc()[:500]})
-
-@app.get("/api/live-price")
-def api_live_price():
-    try:
-        td_price = None; td_error = None
-        try:
-            vals, src = fetch_data_with_fallback("XAU/USD", "5min", 100)
-            if vals: td_price = float(vals[0]['close'])
-        except Exception as e:
-            td_error = str(e)
-        free_price = None
-        try:
-            free_price = requests.get("https://api.gold-api.com/price/XAU", timeout=10).json().get("price")
-        except: pass
-        return JSONResponse({"twelvedata_price": td_price, "twelvedata_error": td_error,
-                             "free_api_price": free_price, "timestamp": pht_now().isoformat()})
-    except Exception as e:
-        return JSONResponse({"error": str(e)})
-
-
-@app.get("/pretrade", response_class=HTMLResponse)
-@app.get("/signal-dashboard", response_class=HTMLResponse)
-@app.get("/gates", response_class=HTMLResponse)
-def pretrade_dashboard():
-    html = """
-<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TITAN V7.6 PRE-TRADE</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px}
-.header{border:2px solid #22c55e;padding:10px;margin-bottom:8px;background:#0a0a0a}
-.header h1{color:#22c55e;font-size:14px}
-.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px}
-.card{border:1px solid #333;padding:8px;background:#0a0a0a}
-.card.pass{border-color:#22c55e;background:#052e16}
-.card.fail{border-color:#ef4444;background:#2e0a0a}
-.card h3{font-size:10px;color:#888;margin-bottom:2px}
-.card .status{font-size:12px;font-weight:bold}
-.status.pass{color:#22c55e}
-.status.fail{color:#ef4444}
-.decision{border:2px solid #22c55e;padding:12px;text-align:center;margin:8px 0;font-size:14px;font-weight:bold}
-.decision.execute{border-color:#22c55e;background:#052e16;color:#22c55e}
-.decision.skip{border-color:#ef4444;background:#2e0a0a;color:#ef4444}
-.candle{border:1px solid #333;padding:8px;background:#0a0a0a;margin-bottom:8px}
-.btn{padding:6px 10px;border:1px solid #22c55e;background:#000;color:#22c55e;cursor:pointer;font-size:10px;margin:2px}
-</style>
-</head>
-<body>
-<div class="header">
-<h1>🔍 TITAN V7.6 PRE-TRADE - 3 GATES / 7 LAYERS (need 3) <span style="color:#22c55e">● LIVE</span></h1>
-<p>Bakit pumasa / bumagsak ang setup bago mag-signal. H1 = SuperTrend(10,3)+EMA50. Ichimoku box ay display lang.</p>
-<p id="last" style="font-size:9px;color:#666"></p>
-</div>
-<div id="decision" class="decision skip">Loading...</div>
-<div class="candle" id="candleInfo">Loading candle...</div>
-<div class="candle" id="ichiInfo" style="border:1px solid #f59e0b; background:#1a1200">Loading H1...</div>
-<h2 style="color:#22c55e;font-size:12px;margin:8px 0">🚪 GATES (must all PASS)</h2>
-<div class="grid" id="gates"></div>
-<h2 style="color:#22c55e;font-size:12px;margin:8px 0">📚 LAYERS</h2>
-<div class="grid" id="layers"></div>
-<h2 style="color:#22c55e;font-size:12px;margin:8px 0">🚀 FILTERS</h2>
-<div class="grid" id="boosters"></div>
-<div style="margin-top:12px">
-<button class="btn" onclick="load()">🔄 REFRESH</button>
-<button class="btn" onclick="window.open('/dashboard','_blank')">📊 PERFORMANCE DASHBOARD</button>
-<button class="btn" onclick="window.open('/api/pretrade','_blank')">🔧 RAW API</button>
-</div>
-<script>
-async function load(){
- try{
-  const res = await fetch('/api/pretrade');
-  const data = await res.json();
-  if(data.error){ document.getElementById('decision').textContent = 'No data: '+data.error; return; }
-  document.getElementById('last').textContent = 'Last: '+new Date().toLocaleString()+' | TF '+data.tf+' H1 '+data.h1_trend+' | '+data.timestamp;
-  const dec = document.getElementById('decision');
-  dec.textContent = data.decision+' - '+data.reason;
-  dec.className = 'decision '+(data.decision==='BUY'||data.decision==='SELL'?'execute':'skip');
-  const ci = data.candle||{};
-  document.getElementById('candleInfo').innerHTML =
-   `<b>CANDLE:</b> ${ci.datetime||''} O:${ci.open} H:${ci.high} L:${ci.low} C:${ci.close} Body:${(ci.body||0).toFixed(3)} Range:${(ci.range||0).toFixed(3)} SC:${((ci.sc||0)*100).toFixed(1)}%<br>`+
-   `<b>INDICATORS:</b> EMA20:${(data.indicators?.ema20||0).toFixed(2)} EMA50:${(data.indicators?.ema50||0).toFixed(2)} RSI:${(data.indicators?.rsi||0).toFixed(1)} | Layers ${data.passed_layers||0}/7 | Source ${data.data_source||''} Price ${data.live_price||''}`;
-  const ichi = data.ichi || data.h1_full?.ichi;
-  const h1f = data.h1_full || {};
-  document.getElementById('ichiInfo').innerHTML = `<b>H1 TREND (V7.6):</b> ${data.h1_trend} | EMA20/50 H1: ${h1f.ema_trend||''}` + (ichi ? ` | Ichimoku (display lang): ${ichi.trend} ${ichi.inside_cloud?'(inside cloud)':''}` : '');
-  const gatesDiv = document.getElementById('gates'); gatesDiv.innerHTML='';
-  (data.gates||[]).forEach(g=>{
-   const d=document.createElement('div');
-   d.className='card '+(g.pass?'pass':'fail');
-   d.innerHTML=`<h3>GATE ${g.id} ${g.name}</h3><div class="status ${g.pass?'pass':'fail'}">${g.pass?'✅ PASS':'❌ FAIL'} - ${g.actual}</div><div style="font-size:9px;color:#888">${g.desc} | Req ${g.required}</div>${g.fail_reason?'<div style="font-size:9px;color:#ef4444">'+g.fail_reason+'</div>':''}`;
-   gatesDiv.appendChild(d);
-  });
-  const layersDiv = document.getElementById('layers'); layersDiv.innerHTML='';
-  (data.layers||[]).forEach(l=>{
-   const d=document.createElement('div');
-   d.className='card '+(l.pass?'pass':'fail');
-   d.innerHTML=`<h3>LAYER ${l.id} ${l.name}</h3><div class="status ${l.pass?'pass':'fail'}">${l.pass?'✅ PASS':'❌ FAIL'}</div><div style="font-size:9px;color:#888">${l.desc}</div>`;
-   layersDiv.appendChild(d);
-  });
-  const boostDiv = document.getElementById('boosters'); boostDiv.innerHTML='';
-  (data.boosters||[]).forEach(b=>{
-   const d=document.createElement('div');
-   d.className='card '+(b.pass?'pass':'fail');
-   d.innerHTML=`<h3>${b.name}</h3><div class="status ${b.pass?'pass':'fail'}">${b.pass?'✅ PASS':'❌ FAIL'} - ${b.actual}</div><div style="font-size:9px;color:#888">${b.desc} | Req ${b.required}</div>`;
-   boostDiv.appendChild(d);
-  });
-  if(data.signal){
-   dec.innerHTML+='<br>ENTRY '+data.signal.entry+' SL '+data.signal.sl+' TP '+data.signal.tp+' '+data.signal.type;
-  }
- }catch(e){
-  document.getElementById('decision').textContent='Error '+e;
- }
-}
-load();
-setInterval(load, 30000);
-</script>
-</body></html>
-"""
-    return HTMLResponse(content=html)
-
-
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
-    html_content = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TITAN V7.6 PAPER DASHBOARD</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;color:#fff;font-family:'Courier New',monospace;padding:12px}
-.header{border:1px solid #22c55e;padding:12px;margin-bottom:12px;background:#0a0a0a}
-.header h1{color:#22c55e;font-size:16px;margin-bottom:4px}
-.header p{color:#888;font-size:11px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px}
-.card{border:1px solid #333;padding:10px;background:#0a0a0a}
-.card.green{border-color:#22c55e}
-.card.red{border-color:#ef4444}
-.card h3{font-size:10px;color:#888;margin-bottom:4px}
-.card .val{font-size:18px;font-weight:bold}
-.card .val.green{color:#22c55e}
-.card .val.red{color:#ef4444}
-.card .val.white{color:#fff}
-.evolution{border:1px solid #333;padding:10px;margin-bottom:12px;background:#0a0a0a;overflow-x:auto}
-.evolution h3{font-size:11px;color:#22c55e;margin-bottom:8px}
-.bar{display:flex;gap:2px;align-items:end;height:60px;margin:8px 0}
-.bar div{flex:1;min-width:4px}
-.win{background:#22c55e}
-.loss{background:#ef4444}
-table{width:100%;border-collapse:collapse;font-size:10px;margin-top:8px}
-th,td{border:1px solid #333;padding:4px;text-align:left}
-th{background:#111;color:#888}
-.trades{max-height:300px;overflow-y:auto;border:1px solid #333;padding:8px;background:#0a0a0a}
-.lesson{border:1px solid #f59e0b;padding:10px;background:#0a0a0a;margin-bottom:12px}
-.lesson h3{color:#f59e0b;font-size:11px;margin-bottom:6px}
-.lesson li{font-size:10px;margin:2px 0;color:#ccc}
-.btn{padding:6px 10px;border:1px solid #22c55e;background:#000;color:#22c55e;cursor:pointer;font-size:10px;margin:2px}
-#auto{color:#22c55e;font-size:10px}
-</style>
-</head>
-<body>
-<div class="header">
-<h1>🔒 TITAN V7.6 M5 PAPER - HONEST DASHBOARD <span id="auto">● LIVE</span></h1>
-<p>Live paper trades lang (walang fake seed). Breakeven sa RR 1:2 = 33.3% WR. Kailangan ng 100+ closed trades bago pagkatiwalaan.</p>
-<p id="lastUpdate" style="color:#666;font-size:9px;margin-top:4px">Last update: loading...</p>
-</div>
-
-<div class="grid" id="statsGrid">
-<div class="card"><h3>TOTAL TRADES</h3><div class="val white" id="total">0</div></div>
-<div class="card green"><h3>WINS</h3><div class="val green" id="wins">0</div></div>
-<div class="card red"><h3>LOSSES</h3><div class="val red" id="losses">0</div></div>
-<div class="card"><h3>WIN RATE</h3><div class="val white" id="wr">0%</div></div>
-<div class="card"><h3>PROFIT FACTOR</h3><div class="val white" id="pf">0</div></div>
-<div class="card"><h3>EXPECTANCY</h3><div class="val white" id="exp">0R</div></div>
-<div class="card green"><h3>NET R</h3><div class="val green" id="net">0R</div></div>
-<div class="card"><h3>OPEN</h3><div class="val white" id="open">0</div></div>
-</div>
-
-<div class="evolution">
-<h3>📈 EVOLUTION - running WR</h3>
-<canvas id="wrChart" width="800" height="120" style="width:100%;background:#000;border:1px solid #222"></canvas>
-<div class="bar" id="tradeBar"></div>
-<div style="display:flex;gap:8px;margin-top:8px">
-<button class="btn" onclick="fetchStats()">🔄 REFRESH</button>
-</div>
-</div>
-
-<div class="lesson">
-<h3>🎯 BREAKEVEN MATH - 1:2 RR</h3>
-<ul>
-<li>Need 33.3% WR para breakeven (1 win +2R per 2 losses -1R), bago pa ang spread.</li>
-<li>Progress: <span id="progress">0/100</span> closed trades</li>
-</ul>
-</div>
-
-<div class="trades">
-<h3 style="font-size:11px;color:#22c55e;margin-bottom:8px">📋 LIVE PAPER TRADES (auto-logged via /scan → /win /loss)</h3>
-<table id="tradesTable">
-<tr><th>ID</th><th>Time</th><th>Type</th><th>Entry</th><th>SL</th><th>TP</th><th>Conf</th><th>Result</th><th>R</th></tr>
-</table>
-<p style="font-size:9px;color:#666;margin-top:6px">Commands: /scan, /win [id], /loss [id], /trades, /dashboard</p>
-</div>
-
-<script>
-let tradesData = {evolution:[], trades:[]};
-
-async function fetchStats(){
- try{
-  const res = await fetch('/api/stats');
-  const data = await res.json();
-  tradesData = data;
-  updateUI(data);
- }catch(e){
-  console.error('Fetch error', e);
-  document.getElementById('lastUpdate').textContent = 'Fetch failed - bot offline?';
- }
-}
-
-function updateUI(data){
- document.getElementById('total').textContent = data.total_trades;
- document.getElementById('wins').textContent = data.wins;
- document.getElementById('losses').textContent = data.losses;
- document.getElementById('wr').textContent = data.wr + '%';
- document.getElementById('pf').textContent = data.pf;
- document.getElementById('exp').textContent = data.exp + 'R';
- document.getElementById('net').textContent = data.net + 'R';
- document.getElementById('open').textContent = data.open_trades;
- document.getElementById('progress').textContent = data.closed_trades + '/100';
- document.getElementById('lastUpdate').textContent = 'Last update: ' + new Date().toLocaleString() + ' | Auto-refresh every 10s';
-
- const bar = document.getElementById('tradeBar');
- bar.innerHTML = '';
- data.trades.slice(-60).forEach(t=>{
-  const d = document.createElement('div');
-  d.style.height = t.result==='WIN' ? '40px' : '20px';
-  d.className = t.result==='LOSS' ? 'loss' : 'win';
-  d.style.opacity = t.result ? '1' : '0.3';
-  d.title = `#${t.id} ${t.type} ${t.result||'OPEN'} ${t.r||0}R`;
-  bar.appendChild(d);
- });
-
- const table = document.getElementById('tradesTable');
- table.innerHTML = '<tr><th>ID</th><th>Time</th><th>Type</th><th>Entry</th><th>SL</th><th>TP</th><th>Conf</th><th>Result</th><th>R</th></tr>';
- data.trades.slice().reverse().slice(0,20).forEach(t=>{
-  const row = table.insertRow();
-  row.innerHTML = `<td>#${t.id}</td><td>${t.pht_time||''}</td><td style="color:${t.type==='BUY'?'#22c55e':'#ef4444'}">${t.type}</td><td>${t.entry}</td><td>${t.sl}</td><td>${t.tp}</td><td>${t.confluence?.toFixed(0)||0}%</td><td style="color:${t.result==='WIN'?'#22c55e':t.result==='LOSS'?'#ef4444':'#888'}">${t.result||'OPEN'}</td><td>${t.r!==null&&t.r!==undefined?t.r+'R':'-'}</td>`;
- });
-
- updateChart(data.evolution);
-}
-
-function updateChart(evolution){
- const canvas = document.getElementById('wrChart');
- const ctx = canvas.getContext('2d');
- ctx.clearRect(0,0,canvas.width,canvas.height);
- ctx.strokeStyle = '#222';
- ctx.beginPath();
- const be = canvas.height - (33.3/100)*canvas.height;
- ctx.moveTo(0, be); ctx.lineTo(canvas.width, be); ctx.stroke();
- ctx.fillStyle = '#666';
- ctx.font = '10px monospace';
- ctx.fillText('33.3% breakeven', 0, be-2);
- if(!evolution || evolution.length<2) return;
- const maxTrades = Math.max(20, evolution.length);
- ctx.beginPath();
- evolution.forEach((p,i)=>{
-  const x = (p.trade / maxTrades) * canvas.width;
-  const y = canvas.height - (p.wr/100)*canvas.height;
-  if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
- });
- ctx.strokeStyle = '#22c55e';
- ctx.lineWidth = 2;
- ctx.stroke();
- evolution.forEach(p=>{
-  const x = (p.trade / maxTrades) * canvas.width;
-  const y = canvas.height - (p.wr/100)*canvas.height;
-  ctx.beginPath();
-  ctx.arc(x,y,3,0,Math.PI*2);
-  ctx.fillStyle = p.result==='WIN' ? '#22c55e' : '#ef4444';
-  ctx.fill();
- });
-}
-
-fetchStats();
-setInterval(fetchStats, 10000);
-</script>
-</body>
-</html>
-    """
-    return HTMLResponse(content=html_content)
-
+    return HTMLResponse("<h1>TITAN V7.7 Dashboard - see /api/stats</h1><p>Trades: <a href='/api/stats'>/api/stats</a> | Pretrade: <a href='/api/pretrade'>/api/pretrade</a></p>")
 
 @app.api_route("/telegram-webhook", methods=["GET", "POST"])
-@app.api_route("/telegram/webhook", methods=["GET", "POST"])
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         update = await request.json()
@@ -1381,47 +960,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             elif txt_base == "/diag": background_tasks.add_task(run_diag, cid)
             elif txt_base == "/dashboard":
                 host = str(request.base_url).rstrip('/')
-                send_telegram_msg(f"📊 *DASHBOARD*\n{host}/dashboard\nAPI {host}/api/stats\nPretrade {host}/pretrade\nClose with /win [id] or /loss [id]", cid)
-            elif txt_base == "/trades":
-                stats = calculate_stats(load_trades())
-                msg = f"📋 *LIVE TRADES* Total `{stats['total_trades']}` Closed `{stats['closed_trades']}` Open `{stats['open_trades']}`\n"
-                for t in stats['trades'][-10:]:
-                    msg += f"#{t['id']} {t['type']} {t['entry']} {t.get('result') or 'OPEN'} {t.get('r') if t.get('r') is not None else '-'}R\n"
-                send_telegram_msg(msg, cid)
-            elif txt_base in ("/win", "/loss"):
-                res = "WIN" if txt_base == "/win" else "LOSS"
-                icon = "✅" if res == "WIN" else "❌"
-                rv = "+2R" if res == "WIN" else "-1R"
-                tid = None
-                if args:
-                    try: tid = int(args[0])
-                    except: send_telegram_msg(f"Usage {txt_base} [id]", cid); return {"status": "ok"}
-                else:
-                    open_trades = [t for t in load_trades() if t.get('status') == 'OPEN']
-                    if open_trades: tid = open_trades[-1]['id']
-                if tid is None:
-                    send_telegram_msg("No open trades", cid)
-                elif update_trade_result(tid, res):
-                    stats = calculate_stats(load_trades())
-                    send_telegram_msg(f"{icon} Trade #{tid} {res} {rv} | WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R Net {stats['net']}R | /dashboard", cid)
-                else:
-                    send_telegram_msg(f"Trade #{tid} not found", cid)
-            elif txt_base == "/testtrade":
-                test_sig = {"type": "BUY", "entry": 4142.47, "sl": 4140.67, "tp": 4146.07, "time": pht_now().isoformat(),
-                            "tf": "M5", "confluence": 60, "model_score": 70, "layers": ["TEST"], "reason": "TEST TRADE - dashboard testing"}
-                tid = log_new_trade(test_sig)
-                send_telegram_msg(f"🧪 Test trade #{tid} OPEN | /win {tid} or /loss {tid}", cid)
-            elif txt_base == "/reset":
-                try:
-                    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
-                        if os.path.exists(path):
-                            os.remove(path)
-                    send_telegram_msg("🔄 Reset: 0 trades. Fresh start.", cid)
-                except Exception as e:
-                    send_telegram_msg(f"Reset error {e}", cid)
-            elif txt_base in ["/help", "/start"]:
-                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\n• /status • /scan • /backtest • /diag\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade • /reset (clears ALL trades)", cid)
+                send_telegram_msg(f"📊 *DASHBOARD*\n{host}/dashboard\nAPI {host}/api/stats\nPretrade {host}/api/pretrade\nClose with /win [id] or /loss [id]", cid)
     except Exception as e:
         print(e)
-        import traceback; traceback.print_exc()
     return {"status": "ok"}
