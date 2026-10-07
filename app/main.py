@@ -608,6 +608,35 @@ def is_bearish_pinbar(c):
     low_w=min(o,cl)-l; up_w=h-max(o,cl)
     return up_w>=1.5*max(body,rng*0.05) and low_w<=body*2.2 and body<=rng*0.55  # STRICT - best quality pinbar
 
+def is_bullish_engulfing(c0, c1):
+    # Bullish Engulfing - mas madali tignan! Previous bearish, current bullish engulfs previous body
+    try:
+        o0,h0,l0,cl0 = c0['open'],c0['high'],c0['low'],c0['close']
+        o1,h1,l1,cl1 = c1['open'],c1['high'],c1['low'],c1['close']
+        prev_bearish = cl1 < o1
+        curr_bullish = cl0 > o0
+        body0 = abs(cl0 - o0)
+        body1 = abs(cl1 - o1)
+        engulfs = (o0 <= min(cl1, o1) + body1*0.1) and (cl0 >= max(cl1, o1) - body1*0.1) and (body0 > body1*0.9)
+        return prev_bearish and curr_bullish and engulfs
+    except:
+        return False
+
+def is_bearish_engulfing(c0, c1):
+    # Bearish Engulfing - mas madali tignan! Previous bullish, current bearish engulfs
+    try:
+        o0,h0,l0,cl0 = c0['open'],c0['high'],c0['low'],c0['close']
+        o1,h1,l1,cl1 = c1['open'],c1['high'],c1['low'],c1['close']
+        prev_bullish = cl1 > o1
+        curr_bearish = cl0 < o0
+        body0 = abs(cl0 - o0)
+        body1 = abs(cl1 - o1)
+        engulfs = (o0 >= max(cl1, o1) - body1*0.1) and (cl0 <= min(cl1, o1) + body1*0.1) and (body0 > body1*0.9)
+        return prev_bullish and curr_bearish and engulfs
+    except:
+        return False
+
+
 def fetch_data(symbol, interval, outputsize):
     url="https://api.twelvedata.com/time_series"
     params={"symbol":symbol,"interval":interval,"outputsize":outputsize,"timezone":"UTC","apikey":TWELVE_DATA_API_KEY}
@@ -988,8 +1017,30 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     # V7.0 BEST SETTINGS - 31 trades 38.7% WR PF 1.26 Net +5R - PROVEN PROFITABLE!
     disp_req, sc_req, conf_req, model_req = 0.70, 0.50, 50, 50
     
-    bullish=is_bullish_pinbar(c0)
-    bearish=is_bearish_pinbar(c0)
+    # V7.4 ENGULFING + PINBAR - mas madali tignan engulfing!
+    bullish_pin = is_bullish_pinbar(c0)
+    bearish_pin = is_bearish_pinbar(c0)
+    bullish_eng = is_bullish_engulfing(c0, c1)
+    bearish_eng = is_bearish_engulfing(c0, c1)
+    
+    bullish = bullish_pin or bullish_eng
+    bearish = bearish_pin or bearish_eng
+    
+    # Track what type for logging
+    candle_type = "None"
+    if bullish_pin and bullish_eng:
+        candle_type = "Pinbar+Engulfing"
+    elif bullish_pin:
+        candle_type = "Pinbar"
+    elif bullish_eng:
+        candle_type = "Engulfing"
+    elif bearish_pin and bearish_eng:
+        candle_type = "Pinbar+Engulfing"
+    elif bearish_pin:
+        candle_type = "Pinbar"
+    elif bearish_eng:
+        candle_type = "Engulfing"
+    
     if not bullish and not bearish:
         o,h,l,cl=c0['open'],c0['high'],c0['low'],c0['close']
         body_l=abs(cl-o); rng_l=h-l
@@ -997,8 +1048,10 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
             low_w_l=min(o,cl)-l; up_w_l=h-max(o,cl)
             if low_w_l>=1.2*max(body_l,rng_l*0.05) and up_w_l<=body_l*2.5 and body_l<=rng_l*0.65:
                 bullish=True
+                candle_type="Pinbar_lenient"
             elif up_w_l>=1.2*max(body_l,rng_l*0.05) and low_w_l<=body_l*2.5 and body_l<=rng_l*0.65:
                 bearish=True
+                candle_type="Pinbar_lenient"
     rsi_high, rsi_low = 68, 32
     
     if body<prev*disp_req: return None
@@ -1038,7 +1091,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03: fvg_ok=True
         elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03: fvg_ok=True
     except: pass
-    
+
     layers=0; logs=[]
     if (bullish and ema_bull) or (bearish and ema_bear):
         layers+=1; logs.append("EMA")
@@ -1075,7 +1128,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         layers+=1
         ht_str = h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend
         logs.append(f"H1_{ht_str}")
-
+    
     conf=layers/11*100
     if conf<conf_req: return None
     
@@ -1102,7 +1155,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     return {
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
         "pinbar":"Hammer","h1":ht if 'ht' in locals() else h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,"layers":logs,
-        "reason":f"V7.0 BEST RR1:2 31T 38.7%WR +5R {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)} | RR1:2 SL{sl_d} TP{tp_d}", "tf":"M5"
+        "reason":f"V7.4 ENGULFING+PINBAR RR1:2 {candle_type} {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)} | RR1:2 SL{sl_d} TP{tp_d}", "tf":"M5"
     }
 
 def run_sim_tf(records, tf="M5", h1_records=None):
@@ -1217,7 +1270,7 @@ def run_backtest(chat_id):
         if rec_m5_large:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5", h1_records=None)
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V7.0 BEST M5 NO-ICHI + ST(10,3) + HMA21 + ADX>20 + EMA200 RR1:2*\n_31 Trades 38.7% WR PF1.26 Net +5R - BEST - RR1:1.5 was -3R_\n"
+        msg=f"📊 *XAUUSD TITAN V7.4 ENGULFING+PINBAR M5 NO-ICHI + ST(10,3) + HMA21 + ADX>20 + EMA200 RR1:2*\n_Engulfing mas madali tignan vs Pinbar - Pinbar+Engulfing combo_\n"
         if not results:
             msg+=f"⚠️ No data - API limit or fetch fail. Try again in 1 min.\n"
             msg+=f"rec_m5={bool(rec_m5)} rec_m5_large={bool(rec_m5_large)} len_m5={len(rec_m5) if rec_m5 else 0}\n"
@@ -1226,7 +1279,7 @@ def run_backtest(chat_id):
                 t,w,l,wr,net,exp,pf, n = results[key]
                 label = "M5 5k bars" if "5k" in key else "M5 10k bars"
                 msg+=f"🔹 *{label}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
-        msg+=f"📊 Dashboard: /dashboard\n🔒 _V7.0 BEST RR1:2 ST(10,3) HMA21 ADX>20 EMA200 31T 38.7%WR +5R_\n_RR1:2 SL1.8 TP3.6 - BEST NO-ICHI - RR1:1.5 was -3R worse_\n_EMA+HMA+ST+ADX+PD60%+FVG+H1 ST_\n_M1/M15 DISABLED_"
+        msg+=f"📊 Dashboard: /dashboard\n🔒 _V7.4 ENGULFING+PINBAR RR1:2 ST(10,3) HMA21 ADX>20 EMA200_\n_Engulfing mas madali tignan - Bullish/Bearish Engulfing + Pinbar_\n_EMA+HMA+ST+ADX+PD60%+FVG+H1 ST_\n_M1/M15 DISABLED_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -1562,7 +1615,7 @@ async function load(){
  }catch(e){
   document.getElementById('decision').textContent='Error '+e;
  }
-}
+ }
 load();
 setInterval(load, 30000); // Changed from 5s to 30s to save credits & bandwidth - real price cached 2 mins anyway
 </script>
