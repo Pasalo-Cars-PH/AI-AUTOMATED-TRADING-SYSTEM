@@ -667,59 +667,82 @@ def build_h1_from_m5(records):
     h = df.resample('1h').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
     return h.reset_index().to_dict('records')
 
-def run_sim_tf(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36):
-    """records: oldest -> newest. Returns total,wins,losses,wr,net,exp,pf (R, after cost)."""
+def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36, atr_sl=None, atr_tp=None):
+    """records: oldest -> newest. Returns list ng trades (dict) na may R after cost.
+    atr_sl/atr_tp = multiplier ng ATR(10) para sa SL/TP; None = fixed SL_D/TP_D."""
     n = len(records)
     h1 = h1_records or build_h1_from_m5(records)
     h1_times = [pd.Timestamp(x['datetime']) for x in h1]
+    h1_cache = {}
+    trades = []
     i = 60
-    rs = []
     while i < n - max_hold - 1:
         window = records[i-60:i][::-1]
         t0 = pd.Timestamp(window[0]['datetime'])
+        if t0.hour < 7 or t0.hour > 19:
+            i += 1
+            continue
         k = bisect.bisect_left(h1_times, t0.floor('1h'))   # completed H1 bars lang
         h1_trend = None
         if k >= 60:
-            seg = h1[max(0, k-200):k]
-            h1_trend = compute_h1_trend([x['high'] for x in seg], [x['low'] for x in seg], [x['close'] for x in seg])
+            if k not in h1_cache:
+                seg = h1[max(0, k-200):k]
+                h1_cache[k] = compute_h1_trend([x['high'] for x in seg], [x['low'] for x in seg], [x['close'] for x in seg])
+            h1_trend = h1_cache[k]
 
         sig = analyze_titan_mtf(window, tf=tf, h1_trend=h1_trend)
         if not sig:
             i += 1
             continue
 
+        sl_d, tp_d = SL_D, TP_D
+        if atr_sl:
+            o = window[::-1]
+            atr = _atr_series([c['high'] for c in o], [c['low'] for c in o], [c['close'] for c in o], 10)[-1]
+            if not atr:
+                i += 1
+                continue
+            sl_d, tp_d = atr_sl * atr, atr_tp * atr
+
         buy = sig['type'] == "BUY"
         entry = records[i]['open']                      # entry sa NEXT candle open
-        sl = entry - SL_D if buy else entry + SL_D
-        tp = entry + TP_D if buy else entry - TP_D
+        sl = entry - sl_d if buy else entry + sl_d
+        tp = entry + tp_d if buy else entry - tp_d
         fut = records[i:i+max_hold]
         pnl = None
         exit_j = len(fut) - 1
         for j, fc in enumerate(fut):
             if buy:
-                if fc['low'] <= sl: pnl = -SL_D; exit_j = j; break     # SL muna (conservative)
-                if fc['high'] >= tp: pnl = TP_D; exit_j = j; break
+                if fc['low'] <= sl: pnl = -sl_d; exit_j = j; break     # SL muna (conservative)
+                if fc['high'] >= tp: pnl = tp_d; exit_j = j; break
             else:
-                if fc['high'] >= sl: pnl = -SL_D; exit_j = j; break
-                if fc['low'] <= tp: pnl = TP_D; exit_j = j; break
-        if pnl is None:
+                if fc['high'] >= sl: pnl = -sl_d; exit_j = j; break
+                if fc['low'] <= tp: pnl = tp_d; exit_j = j; break
+        if pnl is None:                                  # timeout: mark-to-market
             last = fut[-1]['close']
             pnl = (last - entry) if buy else (entry - last)
-        rs.append((pnl - cost) / SL_D)
+        trades.append({"idx": i, "type": sig['type'], "hour": t0.hour, "sl_d": sl_d, "r": (pnl - cost) / sl_d})
         i += exit_j + 1                                  # skip bars habang open ang trade
+    return trades
 
-    total = len(rs)
-    if total == 0:
-        return 0, 0, 0, 0, 0.0, 0.0, 0
-    wins = sum(1 for x in rs if x > 0)
-    losses = total - wins
-    gw = sum(x for x in rs if x > 0)
-    gl = -sum(x for x in rs if x < 0)
-    net = round(sum(rs), 2)
-    wr = round(wins / total * 100, 1)
-    exp = round(net / total, 3)
-    pf = round(gw / gl, 2) if gl > 0 else round(gw, 2)
-    return total, wins, losses, wr, net, exp, pf
+def summarize(trades):
+    n = len(trades)
+    if n == 0:
+        return {"total": 0, "wins": 0, "losses": 0, "wr": 0, "net": 0.0, "exp": 0.0, "pf": 0, "be": None, "avg_sl": 0}
+    rs = [t['r'] for t in trades]
+    w = [x for x in rs if x > 0]
+    l = [-x for x in rs if x <= 0]
+    gw, gl = sum(w), sum(l)
+    be = round((gl / len(l)) / ((gw / len(w)) + (gl / len(l))) * 100, 1) if w and l else None
+    return {"total": n, "wins": len(w), "losses": len(l), "wr": round(len(w) / n * 100, 1),
+            "net": round(sum(rs), 2), "exp": round(sum(rs) / n, 3),
+            "pf": round(gw / gl, 2) if gl > 0 else round(gw, 2), "be": be,
+            "avg_sl": round(sum(t['sl_d'] for t in trades) / n, 2)}
+
+def run_sim_tf(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36):
+    """Compat wrapper: total,wins,losses,wr,net,exp,pf (R, after cost)."""
+    s = summarize(sim_trades(records, tf=tf, h1_records=h1_records, cost=cost, max_hold=max_hold))
+    return s['total'], s['wins'], s['losses'], s['wr'], s['net'], s['exp'], s['pf']
 
 def fetch_hist_paged(interval="5min", pages=5, size=5000):
     """Hatak ng mas maraming history gamit end_date paging. 1 credit/page."""
@@ -758,27 +781,107 @@ def fetch_hist_paged(interval="5min", pages=5, size=5000):
     df = df[df['high'] > df['low']]
     return df.to_dict('records')
 
+_hist_cache = {"rec": None, "time": 0}
+
+def get_hist_cached(max_age_s=6*3600, force=False):
+    """Iwas sunog ng TwelveData credits: reuse ang history ng 6 oras."""
+    now = time.time()
+    if not force and _hist_cache["rec"] and now - _hist_cache["time"] < max_age_s:
+        return _hist_cache["rec"]
+    rec = fetch_hist_paged("5min", pages=5, size=5000)
+    if rec and len(rec) >= 1000:
+        _hist_cache["rec"] = rec
+        _hist_cache["time"] = now
+    return rec
+
+def _fmt(name, s):
+    if s['total'] == 0:
+        return f"{name}: 0 trades"
+    be = f"{s['be']}%" if s['be'] else "-"
+    return f"{name}: {s['total']}T | WR {s['wr']}% (BE {be}) | PF {s['pf']} | Exp {s['exp']}R | Net {s['net']}R"
+
 def run_backtest(chat_id):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
     send_telegram_msg(f"⏳ TITAN {VERSION} backtest (paged data + 70/30 split)... ~1 min", chat_id)
     try:
-        rec = fetch_hist_paged("5min", pages=5, size=5000)
+        rec = get_hist_cached()
         if not rec or len(rec) < 1000:
             send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
             return
         cut = int(len(rec) * 0.7)
-        parts = [("ALL", rec), ("IN-SAMPLE 70%", rec[:cut]), ("OUT-OF-SAMPLE 30%", rec[cut:])]
+        tr = sim_trades(rec)     # isang sim sa ALL, hati by time (tama ang H1 warm-up sa OOS)
         msg = f"📊 TITAN {VERSION} | {len(rec)} bars | cost ${SPREAD_COST}/trade | MIN_LAYERS {MIN_LAYERS}\n\n"
-        for name, r in parts:
-            t, w, l, wr, net, exp, pf = run_sim_tf(r)
-            msg += f"🔹 {name} ({len(r)} bars)\nTrades {t} | W {w} L {l} | WR {wr}% | PF {pf} | Exp {exp}R | Net {net}R\n\n"
-        msg += "Panuorin ang OUT-OF-SAMPLE. Kung negative doon, walang edge pa."
+        msg += _fmt("ALL", summarize(tr)) + "\n"
+        msg += _fmt("IN-SAMPLE 70%", summarize([t for t in tr if t['idx'] < cut])) + "\n"
+        msg += _fmt("OUT-OF-SAMPLE 30%", summarize([t for t in tr if t['idx'] >= cut])) + "\n\n"
+        msg += "BE = breakeven WR pagkatapos ng cost. Panuorin ang OOS. Para sa mas malalim: /diag"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
         send_telegram_msg(f"Err {e}", chat_id)
+
+def run_diag(chat_id):
+    """Diagnostics: cost, ATR SL/TP, BUY/SELL, oras, at kung may naidagdag ba ang layers."""
+    global MIN_LAYERS
+    if MASTER_LIVE_ENABLE:
+        send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
+        return
+    send_telegram_msg(f"🔬 TITAN {VERSION} DIAG... ~1-2 min", chat_id)
+    saved_layers = MIN_LAYERS
+    try:
+        rec = get_hist_cached()
+        if not rec or len(rec) < 1000:
+            send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
+            return
+        cut = int(len(rec) * 0.7)
+        oos = lambda trs: summarize([t for t in trs if t['idx'] >= cut])
+
+        net_tr = sim_trades(rec)
+        gross_tr = sim_trades(rec, cost=0.0)
+        g, n = summarize(gross_tr), summarize(net_tr)
+
+        m1 = f"🔬 DIAG {VERSION} | {len(rec)} bars | MIN_LAYERS {MIN_LAYERS}\n\n"
+        m1 += "A) COST (fixed SL 1.8 / TP 3.6)\n"
+        m1 += _fmt("GROSS all", g) + "\n" + _fmt("GROSS oos", oos(gross_tr)) + "\n"
+        m1 += _fmt("NET   all", n) + "\n" + _fmt("NET   oos", oos(net_tr)) + "\n"
+        if g['total'] and g['exp'] > 0 and n['exp'] <= 0:
+            m1 += "→ May tubo bago ang cost pero kinakain ng spread.\n"
+        elif g['total'] and g['exp'] <= 0:
+            m1 += "→ Negative kahit walang cost: walang edge sa signal.\n"
+        elif g['total'] and n['exp'] > 0:
+            m1 += "→ Positive kahit may cost (check kung stable sa OOS).\n"
+
+        m1 += "\nB) ATR-BASED SL/TP (RR 1:2, net)\n"
+        for sl_m, tp_m in [(1.5, 3.0), (2.0, 4.0)]:
+            tr = sim_trades(rec, atr_sl=sl_m, atr_tp=tp_m)
+            s_all = summarize(tr)
+            m1 += _fmt(f"{sl_m}xATR all", s_all) + f" | avgSL ${s_all['avg_sl']}\n"
+            m1 += _fmt(f"{sl_m}xATR oos", oos(tr)) + "\n"
+        send_telegram_msg(m1, chat_id)
+
+        m2 = "C) BUY vs SELL (net, fixed)\n"
+        for typ in ("BUY", "SELL"):
+            m2 += _fmt(typ, summarize([t for t in net_tr if t['type'] == typ])) + "\n"
+        m2 += "\nD) ORAS (UTC, net, fixed)\n"
+        for label, lo_h, hi_h in [("07-10 London", 7, 10), ("11-14 Overlap", 11, 14), ("15-19 NY", 15, 19)]:
+            m2 += _fmt(label, summarize([t for t in net_tr if lo_h <= t['hour'] <= hi_h])) + "\n"
+
+        m2 += "\nE) LAYERS: may naidagdag ba? (net, fixed, all)\n"
+        for ml in (0, 2, 3, 4, 5):
+            MIN_LAYERS = ml
+            tr = net_tr if ml == saved_layers else sim_trades(rec)
+            tag = " (baseline: gates lang)" if ml == 0 else ""
+            m2 += _fmt(f"min {ml}", summarize(tr)) + tag + "\n"
+        MIN_LAYERS = saved_layers
+        m2 += "\nKung hindi gumaganda ang WR/Exp habang tumataas ang min layers, walang naidagdag ang layers."
+        send_telegram_msg(m2, chat_id)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        send_telegram_msg(f"Diag err {e}", chat_id)
+    finally:
+        MIN_LAYERS = saved_layers
 
 # ---------- SCAN ----------
 def manual_scan(chat_id, auto=False):
@@ -1264,6 +1367,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\nH1 `{h1}`\nTrades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt_base == "/scan": background_tasks.add_task(manual_scan, cid)
             elif txt_base == "/backtest": background_tasks.add_task(run_backtest, cid)
+            elif txt_base == "/diag": background_tasks.add_task(run_diag, cid)
             elif txt_base == "/dashboard":
                 host = str(request.base_url).rstrip('/')
                 send_telegram_msg(f"📊 *DASHBOARD*\n{host}/dashboard\nAPI {host}/api/stats\nPretrade {host}/pretrade\nClose with /win [id] or /loss [id]", cid)
@@ -1305,7 +1409,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 except Exception as e:
                     send_telegram_msg(f"Reset error {e}", cid)
             elif txt_base in ["/help", "/start"]:
-                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\n• /status • /scan • /backtest\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade • /reset (clears ALL trades)", cid)
+                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\n• /status • /scan • /backtest • /diag\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade • /reset (clears ALL trades)", cid)
     except Exception as e:
         print(e)
         import traceback; traceback.print_exc()
