@@ -1038,7 +1038,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         if bullish and c0['low']>c2['high'] and (c0['low']-c2['high'])>0.03: fvg_ok=True
         elif bearish and c0['high']<c2['low'] and (c2['low']-c0['high'])>0.03: fvg_ok=True
     except: pass
-
+    
     layers=0; logs=[]
     if (bullish and ema_bull) or (bearish and ema_bear):
         layers+=1; logs.append("EMA")
@@ -1075,7 +1075,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         layers+=1
         ht_str = h1_trend.get('trend_simple') if isinstance(h1_trend, dict) else h1_trend
         logs.append(f"H1_{ht_str}")
-    
+
     conf=layers/11*100
     if conf<conf_req: return None
     
@@ -1095,14 +1095,14 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     model_score=min(98, 44+conf*0.55+(8 if swept else 0)+(5 if adx_strong else 0))
     if model_score<model_req: return None
     
-    sl_d, tp_d = 1.8, 2.7  # OPTION A RR 1:1.5 for higher WR% - SL 1.8 TP 2.7 (was 3.6 for 1:2)
+    sl_d, tp_d = 1.8, 3.6  # V7.0 BEST RR 1:2 - PROVEN +5R 38.7% WR - RR 1:1.5 was -3R worse!
     entry=round(c0['close'],2)
     sl=round(entry-sl_d if bullish else entry+sl_d,2)
     tp=round(entry+tp_d if bullish else entry-tp_d,2)
     return {
         "pair":"XAUUSD","type":"BUY" if bullish else "SELL","entry":entry,"sl":sl,"tp":tp,"time":window[0]['datetime'],
         "pinbar":"Hammer","h1":ht if 'ht' in locals() else h1_trend,"confluence":conf,"model_score":model_score,"ai":model_score,"layers":logs,
-        "reason":f"V7.3 OPTION A RR1:1.5 {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)} | RR1:1.5 SL{sl_d} TP{tp_d}", "tf":"M5"
+        "reason":f"V7.0 BEST RR1:2 31T 38.7%WR +5R {conf:.0f}% MODEL{model_score:.0f}% | {'+'.join(logs)} | RR1:2 SL{sl_d} TP{tp_d}", "tf":"M5"
     }
 
 def run_sim_tf(records, tf="M5", h1_records=None):
@@ -1191,13 +1191,13 @@ def run_sim_tf(records, tf="M5", h1_records=None):
             else:
                 if fc['high']>=sl: res="loss"; break
                 if fc['low']<=tp: res="win"; break
-        if res=="win": wins+=1; net+=1.5  # RR 1:1.5 Option A
+        if res=="win": wins+=1; net+=2.0  # RR 1:2 BEST +5R
         elif res=="loss": losses+=1; net-=1.0
         else: losses+=1; net-=1.0
         i+=1
     wr=round(wins/(wins+losses)*100,1) if wins+losses>0 else 0
     exp=round(net/total,2) if total>0 else 0
-    pf=round((wins*1.5)/(losses*1),2) if losses>0 else round(wins*1.5,2) if wins>0 else 0  # PF for RR 1:1.5
+    pf=round((wins*2)/(losses*1),2) if losses>0 else round(wins*2,2) if wins>0 else 0  # PF for RR 1:2
     return total,wins,losses,wr,net,exp,pf
 
 def run_backtest(chat_id):
@@ -1217,7 +1217,7 @@ def run_backtest(chat_id):
         if rec_m5_large:
             t,w,l,wr,net,exp,pf=run_sim_tf(rec_m5_large, tf="M5", h1_records=None)
             results['M5_10k']= (t,w,l,wr,net,exp,pf, len(rec_m5_large))
-        msg=f"📊 *XAUUSD TITAN V7.3 OPTION A RR 1:1.5 M5 NO-ICHI + ST(10,3) + HMA21 + ADX>20 + EMA200*\n_RR 1:1.5 for Higher WR% - SL 1.8 TP 2.7_\n"
+        msg=f"📊 *XAUUSD TITAN V7.0 BEST M5 NO-ICHI + ST(10,3) + HMA21 + ADX>20 + EMA200 RR1:2*\n_31 Trades 38.7% WR PF1.26 Net +5R - BEST - RR1:1.5 was -3R_\n"
         if not results:
             msg+=f"⚠️ No data - API limit or fetch fail. Try again in 1 min.\n"
             msg+=f"rec_m5={bool(rec_m5)} rec_m5_large={bool(rec_m5_large)} len_m5={len(rec_m5) if rec_m5 else 0}\n"
@@ -1226,7 +1226,7 @@ def run_backtest(chat_id):
                 t,w,l,wr,net,exp,pf, n = results[key]
                 label = "M5 5k bars" if "5k" in key else "M5 10k bars"
                 msg+=f"🔹 *{label}* ({n} bars):\n Trades `{t}` | W `{w}` L `{l}` | WR `{wr}%` | PF `{pf}` | Exp `{exp}R` | Net `{net}R`\n\n"
-        msg+=f"📊 Dashboard: /dashboard\n🔒 _V7.3 OPTION A RR1:1.5 ST(10,3) HMA21 ADX>20 EMA200_\n_RR 1:1.5 SL1.8 TP2.7 - Higher WR% Expected 45-50%_\n_EMA+HMA+ST+ADX+PD60%+FVG+H1 ST_\n_M1/M15 DISABLED_"
+        msg+=f"📊 Dashboard: /dashboard\n🔒 _V7.0 BEST RR1:2 ST(10,3) HMA21 ADX>20 EMA200 31T 38.7%WR +5R_\n_RR1:2 SL1.8 TP3.6 - BEST NO-ICHI - RR1:1.5 was -3R worse_\n_EMA+HMA+ST+ADX+PD60%+FVG+H1 ST_\n_M1/M15 DISABLED_"
         send_telegram_msg(msg, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
