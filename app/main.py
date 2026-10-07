@@ -20,7 +20,10 @@ scheduler = BackgroundScheduler()
 SL_D, TP_D = 1.8, 3.6      # RR 1:2
 SPREAD_COST = 0.30         # USD per trade (spread+slippage) para sa backtest
 MIN_LAYERS = 3             # sa 7 layers. 3 = mas maraming trade, 4 = mas strict
-VERSION = "V7.6"
+USE_ATR_SL = True          # SL/TP = ATR(10) multiples (live + backtest). False = fixed SL_D/TP_D
+ATR_SL_MULT = 1.5
+ATR_TP_MULT = 3.0          # RR 1:2
+VERSION = "V7.7"
 
 # Trade storage for real-time dashboard
 TRADES_FILE = "/tmp/titan_trades_v6.json"
@@ -648,14 +651,19 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     conf = n / 7 * 100
     model_score = min(98, 44 + conf * 0.55 + (8 if swept else 0) + (5 if adx_ok else 0))
 
+    sl_d, tp_d = SL_D, TP_D
+    if USE_ATR_SL:
+        atr_v = _atr_series(highs, lows, closes, 10)[-1]
+        if atr_v:
+            sl_d, tp_d = ATR_SL_MULT * atr_v, ATR_TP_MULT * atr_v
     entry = round(c0['close'], 2)
-    sl = round(entry - SL_D if bullish else entry + SL_D, 2)
-    tp = round(entry + TP_D if bullish else entry - TP_D, 2)
+    sl = round(entry - sl_d if bullish else entry + sl_d, 2)
+    tp = round(entry + tp_d if bullish else entry - tp_d, 2)
     return {
         "pair": "XAUUSD", "type": "BUY" if bullish else "SELL", "entry": entry, "sl": sl, "tp": tp,
         "time": window[0]['datetime'], "pinbar": candle_type, "h1": ht,
         "confluence": conf, "model_score": model_score, "ai": model_score, "layers": logs,
-        "reason": f"{VERSION} {candle_type} {n}/7 layers | {'+'.join(logs)} | RR1:2 SL{SL_D} TP{TP_D}",
+        "reason": f"{VERSION} {candle_type} {n}/7 layers | {'+'.join(logs)} | RR1:2 SL{sl_d:.2f} TP{tp_d:.2f}",
         "tf": "M5",
     }
 
@@ -670,6 +678,8 @@ def build_h1_from_m5(records):
 def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36, atr_sl=None, atr_tp=None):
     """records: oldest -> newest. Returns list ng trades (dict) na may R after cost.
     atr_sl/atr_tp = multiplier ng ATR(10) para sa SL/TP; None = fixed SL_D/TP_D."""
+    if atr_sl is None and USE_ATR_SL:
+        atr_sl, atr_tp = ATR_SL_MULT, ATR_TP_MULT      # config mode. Pass atr_sl=0 para fixed.
     n = len(records)
     h1 = h1_records or build_h1_from_m5(records)
     h1_times = [pd.Timestamp(x['datetime']) for x in h1]
@@ -812,7 +822,8 @@ def run_backtest(chat_id):
             return
         cut = int(len(rec) * 0.7)
         tr = sim_trades(rec)     # isang sim sa ALL, hati by time (tama ang H1 warm-up sa OOS)
-        msg = f"📊 TITAN {VERSION} | {len(rec)} bars | cost ${SPREAD_COST}/trade | MIN_LAYERS {MIN_LAYERS}\n\n"
+        sl_txt = f"SL {ATR_SL_MULT}xATR / TP {ATR_TP_MULT}xATR" if USE_ATR_SL else f"SL {SL_D} / TP {TP_D} fixed"
+        msg = f"📊 TITAN {VERSION} | {len(rec)} bars | cost ${SPREAD_COST}/trade | MIN_LAYERS {MIN_LAYERS} | {sl_txt}\n\n"
         msg += _fmt("ALL", summarize(tr)) + "\n"
         msg += _fmt("IN-SAMPLE 70%", summarize([t for t in tr if t['idx'] < cut])) + "\n"
         msg += _fmt("OUT-OF-SAMPLE 30%", summarize([t for t in tr if t['idx'] >= cut])) + "\n\n"
@@ -828,7 +839,7 @@ def run_diag(chat_id):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
-    send_telegram_msg(f"🔬 TITAN {VERSION} DIAG... ~1-2 min", chat_id)
+    send_telegram_msg(f"🔬 TITAN {VERSION} DIAG... ~2 min", chat_id)
     saved_layers = MIN_LAYERS
     try:
         rec = get_hist_cached()
@@ -838,44 +849,44 @@ def run_diag(chat_id):
         cut = int(len(rec) * 0.7)
         oos = lambda trs: summarize([t for t in trs if t['idx'] >= cut])
 
-        net_tr = sim_trades(rec)
-        gross_tr = sim_trades(rec, cost=0.0)
-        g, n = summarize(gross_tr), summarize(net_tr)
+        fix_net = sim_trades(rec, atr_sl=0)
+        fix_gross = sim_trades(rec, atr_sl=0, cost=0.0)
+        atr_net = sim_trades(rec, atr_sl=1.5, atr_tp=3.0)
+        atr_gross = sim_trades(rec, atr_sl=1.5, atr_tp=3.0, cost=0.0)
 
         m1 = f"🔬 DIAG {VERSION} | {len(rec)} bars | MIN_LAYERS {MIN_LAYERS}\n\n"
-        m1 += "A) COST (fixed SL 1.8 / TP 3.6)\n"
-        m1 += _fmt("GROSS all", g) + "\n" + _fmt("GROSS oos", oos(gross_tr)) + "\n"
-        m1 += _fmt("NET   all", n) + "\n" + _fmt("NET   oos", oos(net_tr)) + "\n"
-        if g['total'] and g['exp'] > 0 and n['exp'] <= 0:
-            m1 += "→ May tubo bago ang cost pero kinakain ng spread.\n"
-        elif g['total'] and g['exp'] <= 0:
-            m1 += "→ Negative kahit walang cost: walang edge sa signal.\n"
-        elif g['total'] and n['exp'] > 0:
-            m1 += "→ Positive kahit may cost (check kung stable sa OOS).\n"
-
-        m1 += "\nB) ATR-BASED SL/TP (RR 1:2, net)\n"
-        for sl_m, tp_m in [(1.5, 3.0), (2.0, 4.0)]:
-            tr = sim_trades(rec, atr_sl=sl_m, atr_tp=tp_m)
-            s_all = summarize(tr)
-            m1 += _fmt(f"{sl_m}xATR all", s_all) + f" | avgSL ${s_all['avg_sl']}\n"
-            m1 += _fmt(f"{sl_m}xATR oos", oos(tr)) + "\n"
+        m1 += "A) FIXED SL 1.8 / TP 3.6\n"
+        m1 += _fmt("GROSS all", summarize(fix_gross)) + "\n" + _fmt("NET   all", summarize(fix_net)) + "\n"
+        m1 += _fmt("NET   oos", oos(fix_net)) + "\n"
+        m1 += "\nB) ATR 1.5x SL / 3.0x TP (RR 1:2)\n"
+        sa = summarize(atr_net)
+        m1 += _fmt("GROSS all", summarize(atr_gross)) + "\n"
+        m1 += _fmt("NET   all", sa) + f" | avgSL ${sa['avg_sl']}\n"
+        m1 += _fmt("NET   oos", oos(atr_net)) + "\n"
+        # rolling stability: hati sa 4 pantay na bahagi ng panahon
+        q = len(rec) // 4
+        m1 += "\nF) STABILITY (ATR net, 4 hati ng panahon)\n"
+        for qi in range(4):
+            part = [t for t in atr_net if qi * q <= t['idx'] < (qi + 1) * q]
+            m1 += _fmt(f"Q{qi+1}", summarize(part)) + "\n"
         send_telegram_msg(m1, chat_id)
 
-        m2 = "C) BUY vs SELL (net, fixed)\n"
+        m2 = "C) BUY vs SELL (ATR net)\n"
         for typ in ("BUY", "SELL"):
-            m2 += _fmt(typ, summarize([t for t in net_tr if t['type'] == typ])) + "\n"
-        m2 += "\nD) ORAS (UTC, net, fixed)\n"
+            m2 += _fmt(typ, summarize([t for t in atr_net if t['type'] == typ])) + "\n"
+        m2 += "\nD) ORAS UTC (ATR net)\n"
         for label, lo_h, hi_h in [("07-10 London", 7, 10), ("11-14 Overlap", 11, 14), ("15-19 NY", 15, 19)]:
-            m2 += _fmt(label, summarize([t for t in net_tr if lo_h <= t['hour'] <= hi_h])) + "\n"
+            m2 += _fmt(label, summarize([t for t in atr_net if lo_h <= t['hour'] <= hi_h])) + "\n"
 
-        m2 += "\nE) LAYERS: may naidagdag ba? (net, fixed, all)\n"
-        for ml in (0, 2, 3, 4, 5):
+        m2 += "\nE) LAYERS sa ATR mode (net)\n"
+        for ml in (0, 2, 3, 4):
             MIN_LAYERS = ml
-            tr = net_tr if ml == saved_layers else sim_trades(rec)
-            tag = " (baseline: gates lang)" if ml == 0 else ""
-            m2 += _fmt(f"min {ml}", summarize(tr)) + tag + "\n"
+            tr = sim_trades(rec, atr_sl=1.5, atr_tp=3.0)
+            tag = " (gates lang)" if ml == 0 else ""
+            m2 += _fmt(f"min {ml} all", summarize(tr)) + tag + "\n"
+            m2 += _fmt(f"min {ml} oos", oos(tr)) + "\n"
         MIN_LAYERS = saved_layers
-        m2 += "\nKung hindi gumaganda ang WR/Exp habang tumataas ang min layers, walang naidagdag ang layers."
+        m2 += "\nKung walang pagbuti habang tumataas ang min layers, tanggalin ang layers (simple = mas kaunting overfit)."
         send_telegram_msg(m2, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
