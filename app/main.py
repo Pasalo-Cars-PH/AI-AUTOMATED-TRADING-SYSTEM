@@ -696,24 +696,24 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
             "e20_gt_e50": e20>e50 if e20 and e50 else None
         }
         gates = []
-        disp_pass = body >= prev_body*0.80 if prev_body>0 else False
+        disp_pass = body >= prev_body*0.70 if prev_body>0 else False
         gates.append({
-            "id": 1, "name": "DISP Gate", "desc": f"body {body:.3f} >= prev {prev_body:.3f}*0.80",
-            "required": "0.80x", "actual": round(body/prev_body,2) if prev_body>0 else 0,
-            "pass": disp_pass, "fail_reason": f"body {body:.3f} < prev*0.80 {prev_body*0.80:.3f}" if not disp_pass else ""
+            "id": 1, "name": "DISP Gate", "desc": f"body {body:.3f} >= prev {prev_body:.3f}*0.70 (AGGRESSIVE)",
+            "required": "0.70x (was 0.80x)", "actual": round(body/prev_body,2) if prev_body>0 else 0,
+            "pass": disp_pass, "fail_reason": f"body {body:.3f} < prev*0.70 {prev_body*0.70:.3f}" if not disp_pass else ""
         })
         if not disp_pass:
             result["gates"]=gates
             result["reason"]=f"Failed at Gate 1 DISP: {gates[-1]['fail_reason']}"
             return result
         pinbar_pass = is_bull or is_bear
-        sc_pass = sc>=0.56
+        sc_pass = sc>=0.50  # Lowered from 0.56 to 0.50 for more trades
         gate2_pass = pinbar_pass and sc_pass
         gates.append({
-            "id": 2, "name": "PINBAR + SC Gate", "desc": f"Pinbar {pinbar_pass} + SC {sc*100:.1f}% >=56%",
-            "required": "Pinbar + SC>=56%", "actual": f"{'PIN' if pinbar_pass else 'NO-PIN'} SC{sc*100:.1f}%",
+            "id": 2, "name": "PINBAR + SC Gate", "desc": f"Pinbar {pinbar_pass} + SC {sc*100:.1f}% >=50% (AGGRESSIVE was 56%)",
+            "required": "Pinbar + SC>=50%", "actual": f"{'PIN' if pinbar_pass else 'NO-PIN'} SC{sc*100:.1f}%",
             "pass": gate2_pass,
-            "fail_reason": f"{'No pinbar' if not pinbar_pass else ''} {'SC '+str(round(sc*100,1))+'% <56%' if not sc_pass else ''}".strip()
+            "fail_reason": f"{'No pinbar' if not pinbar_pass else ''} {'SC '+str(round(sc*100,1))+'% <50%' if not sc_pass else ''}".strip()
         })
         if not gate2_pass:
             result["gates"]=gates
@@ -737,8 +737,8 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
         layers = []
         layers.append({"id":1, "name":"EMA Layer", "desc":"EMA20>EMA50 BULL or EMA20<EMA50 BEAR + close beyond", "pass": ema_pass, "weight":1})
         layers.append({"id":2, "name":"Hammer Layer", "desc":"Pinbar wick 1.5x body<=55%", "pass": pinbar_pass, "weight":1})
-        layers.append({"id":3, "name":"SC Layer", "desc":f"SC {sc*100:.1f}% >=56%", "pass": sc_pass, "weight":1})
-        layers.append({"id":4, "name":"Disp Layer", "desc":f"Disp {body/prev_body:.2f}x >=0.80", "pass": disp_pass, "weight":1})
+        layers.append({"id":3, "name":"SC Layer", "desc":f"SC {sc*100:.1f}% >=50% (AGGRESSIVE was 56%)", "pass": sc_pass, "weight":1})
+        layers.append({"id":4, "name":"Disp Layer", "desc":f"Disp {body/prev_body:.2f}x >=0.70 (AGGRESSIVE was 0.80)", "pass": disp_pass, "weight":1})
         try:
             high_n=max([c['high'] for c in window[:60]]); low_n=min([c['low'] for c in window[:60]])
             rng_n=high_n-low_n
@@ -894,7 +894,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if not e20 or not e50: return None
     c0=window[0]; c1=window[1]; c2=window[2] if len(window)>2 else c1
     body=abs(c0['close']-c0['open']); prev=abs(c1['close']-c1['open'])
-    disp_req, sc_req, conf_req, model_req = 0.80, 0.56, 60, 60
+    disp_req, sc_req, conf_req, model_req = 0.70, 0.50, 50, 50  # AGGRESSIVE: lower req for more trades - conf 60->50, SC 56->50, DISP 0.80->0.70
     bullish=is_bullish_pinbar(c0)
     bearish=is_bearish_pinbar(c0)
     rsi_high, rsi_low = 70, 30
@@ -932,8 +932,8 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
         layers+=1; logs.append(f"H1_{h1_trend}")
     conf=layers/7*100
     if conf<conf_req: return None
-    if bullish and h1_trend=="BEAR" and conf<68: return None
-    if bearish and h1_trend=="BULL" and conf<68: return None
+    if bullish and h1_trend=="BEAR" and conf<60: return None  # Lowered from 68 to 60 for more trades
+    if bearish and h1_trend=="BULL" and conf<60: return None
     if bullish and rsi>rsi_high: return None
     if bearish and rsi<rsi_low: return None
     last_10_lows=[c['low'] for c in window[1:11]]
