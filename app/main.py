@@ -1,6 +1,7 @@
 import os, datetime, json, math, bisect, time, threading, random
 from contextlib import asynccontextmanager
 import requests, pandas as pd
+from app.paper_engine import evaluate_position_on_candle, realized_r
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -89,17 +90,51 @@ def log_new_trade(sig):
     print(f"Logged new trade #{trade_id} {trade['type']} {trade['entry']}")
     return trade_id
 
-def update_trade_result(trade_id, result):
+def update_trade_result(trade_id, result, exit_price=None, close_reason="MANUAL_OVERRIDE"):
+    """Close a paper trade. Production lifecycle should pass the actual exit price."""
     trades = load_trades()
     for t in trades:
-        if t['id'] == trade_id:
+        if t['id'] == trade_id and t.get('status') == "OPEN":
             t['status'] = "CLOSED"
             t['result'] = "WIN" if result == "WIN" else "LOSS"
-            t['r'] = 2.0 if result == "WIN" else -1.0
+            if exit_price is None:
+                t['r'] = None
+            else:
+                t['exit_price'] = float(exit_price)
+                t['r'] = realized_r(t, exit_price)
+            t['close_reason'] = close_reason
             t['closed_at'] = pht_now().isoformat()
             save_trades(trades)
             return True
     return False
+
+def manage_open_paper_trades():
+    """Evaluate open paper trades against the latest completed M5 candle. No broker order is sent."""
+    if MASTER_LIVE_ENABLE or PAPER_SCAN_PAUSED:
+        return {"status": "blocked", "closed": 0, "reason": "paper_scan_paused_or_live_lock"}
+    recs = fetch_m5_live(900)
+    if not recs:
+        return {"status": "no_data", "closed": 0, "reason": "NO_DATA"}
+    candle = recs[-1]
+    trades = load_trades()
+    closed = []
+    changed = False
+    for trade in trades:
+        decision = evaluate_position_on_candle(trade, candle)
+        if not decision:
+            continue
+        trade["status"] = "CLOSED"
+        trade["result"] = decision["result"]
+        trade["exit_price"] = float(decision["exit_price"])
+        trade["r"] = realized_r(trade, decision["exit_price"])
+        trade["close_reason"] = decision["reason"]
+        trade["closed_at"] = pht_now().isoformat()
+        closed.append({"id": trade["id"], "result": trade["result"], "r": trade["r"],
+                       "reason": trade["close_reason"], "exit_price": trade["exit_price"]})
+        changed = True
+    if changed:
+        save_trades(trades)
+    return {"status": "ok", "closed": len(closed), "candle_time": str(candle["datetime"]), "trades": closed}
 
 def calculate_stats(trades):
     closed = [t for t in trades if t.get('result') in ['WIN', 'LOSS']]
@@ -1427,6 +1462,17 @@ def manual_scan(chat_id, auto=False):
             h1s = h1['trend_simple'] if isinstance(h1, dict) else h1
             send_telegram_msg(f"ℹ️ No setup M5 {VERSION} PAPER ONLY\nH1 `{h1s}`\nTry ulit sa 5 mins.\nDashboard: /dashboard", chat_id)
 
+def paper_management_job():
+    try:
+        result = manage_open_paper_trades()
+        for item in result.get("trades", []):
+            send_telegram_msg(
+                f"📕 PAPER EXIT #{item['id']} {item['result']} | {item['reason']} | "
+                f"Exit {format_price(item['exit_price'])} | R {item['r']:.2f}"
+            )
+    except Exception as e:
+        print(f"Paper management error: {e}")
+
 def auto_scan_job():
     try:
         if MASTER_LIVE_ENABLE or PAPER_SCAN_PAUSED: return
@@ -1450,6 +1496,7 @@ async def lifespan(app: FastAPI):
             scheduler.add_job(auto_scan_job, 'cron', minute='*/5', second=40, id='titan_autoscan', replace_existing=True)
         else:
             scheduler.add_job(auto_scan_job, 'interval', minutes=15, id='titan_autoscan', replace_existing=True)
+        scheduler.add_job(paper_management_job, 'cron', minute='*/5', second=50, id='paper_management', replace_existing=True)
         scheduler.start()
         print(f"✅ TITAN {VERSION} auto-scan 07-19 UTC started!")
     yield
@@ -1532,6 +1579,10 @@ def _clean_live():
                 clean.append({"open": o, "high": h, "low": lo, "close": c, "datetime": d["datetime"]})
         except: pass
     return clean
+
+@app.get("/paper/manage")
+def paper_manage():
+    return JSONResponse(manage_open_paper_trades())
 
 @app.get("/api/pretrade")
 def api_pretrade():
@@ -1948,6 +1999,15 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 trades = load_trades()
                 msg = "PAPER JOURNAL - LAST 10\n" + ("No paper trades recorded." if not trades else "\n".join("#%s %s %s %s %sR" % (t["id"], t.get("pht_time",""), t.get("type","?"), t.get("result") or "OPEN", t.get("r") if t.get("r") is not None else "-") for t in trades[-10:]))
                 send_telegram_msg(msg, cid)
+            elif txt_base in ("/manage", "/papercycle"):
+                result = manage_open_paper_trades()
+                if result.get("status") == "no_data":
+                    send_telegram_msg("PAPER MANAGER: NO_DATA — no position state changed.", cid)
+                elif result.get("closed"):
+                    lines = "\n".join("#%s %s %s | %.2fR" % (x["id"], x["result"], x["reason"], x["r"]) for x in result["trades"])
+                    send_telegram_msg("PAPER MANAGER\n" + lines, cid)
+                else:
+                    send_telegram_msg("PAPER MANAGER: no SL/TP hit on latest completed M5 candle.", cid)
             elif txt_base in ("/pause", "/pause-paper"):
                 PAPER_SCAN_PAUSED = True
                 send_telegram_msg("PAPER SCANS PAUSED. Use /resume-paper. Live execution remains DISABLED.", cid)
