@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 
 MASTER_LIVE_ENABLE = False
+PAPER_SCAN_PAUSED = False
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -1380,6 +1381,9 @@ def smc_pretrade():
 
 # ---------- SCAN ----------
 def manual_scan(chat_id, auto=False):
+    if PAPER_SCAN_PAUSED:
+        if not auto: send_telegram_msg("PAPER SCAN PAUSED. Use /resume-paper.", chat_id)
+        return
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - SAFETY LOCK PAPER ONLY", chat_id)
         return
@@ -1425,7 +1429,7 @@ def manual_scan(chat_id, auto=False):
 
 def auto_scan_job():
     try:
-        if MASTER_LIVE_ENABLE: return
+        if MASTER_LIVE_ENABLE or PAPER_SCAN_PAUSED: return
         now_utc = datetime.datetime.utcnow()
         if not TELEGRAM_CHAT_ID: return
         if STRATEGY == "SMC":
@@ -1900,6 +1904,7 @@ _seen_updates = []
 @app.api_route("/telegram-webhook", methods=["GET", "POST"])
 @app.api_route("/telegram/webhook", methods=["GET", "POST"])
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    global PAPER_SCAN_PAUSED
     try:
         update = await request.json()
         uid = update.get("update_id")
@@ -1922,7 +1927,33 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 h1 = "n/a (SMC)" if STRATEGY == "SMC" else fetch_h1_trend()
                 stats = calculate_stats(load_trades())
                 send_telegram_msg(f"🔒 *TITAN {VERSION} {STRATEGY} M5 PAPER*\nH1 `{h1}`\nTrades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
-            elif txt_base == "/scan": background_tasks.add_task(manual_scan, cid)
+            elif txt_base in ("/scan", "/bestsetup"):
+                if PAPER_SCAN_PAUSED:
+                    send_telegram_msg("Paper scanning is paused. Use /resume-paper.", cid)
+                else:
+                    background_tasks.add_task(manual_scan, cid)
+            elif txt_base == "/paperstatus":
+                s = calculate_stats(load_trades())
+                send_telegram_msg("PAPER STATUS\nMode PAPER | Scan %s | Live DISABLED\nOpen %s | Closed %s | WR %s%%\nNet %sR | PF %s | Exp %sR" % ("PAUSED" if PAPER_SCAN_PAUSED else "RUNNING", s["open_trades"], s["closed_trades"], s["wr"], s["net"], s["pf"], s["exp"]), cid)
+            elif txt_base == "/positions":
+                opens = [t for t in load_trades() if t.get("status") == "OPEN"]
+                msg = "PAPER POSITIONS\n" + ("No open paper positions." if not opens else "\n".join("#%s %s %s | SL %s | TP %s" % (t["id"], t.get("type","?"), t.get("entry","?"), t.get("sl","?"), t.get("tp","?")) for t in opens[-10:]))
+                send_telegram_msg(msg, cid)
+            elif txt_base == "/performance":
+                s = calculate_stats(load_trades())
+                send_telegram_msg("PERFORMANCE\nTrades %s | Closed %s | W/L %s/%s | WR %s%% | PF %s | Exp %sR | Net %sR | Open %s" % (s["total_trades"], s["closed_trades"], s["wins"], s["losses"], s["wr"], s["pf"], s["exp"], s["net"], s["open_trades"]), cid)
+            elif txt_base == "/risk":
+                send_telegram_msg("RISK / SAFETY\nLive execution DISABLED\nMaster live enable FALSE\nKill switch ACTIVE\nRR 1:2 | ATR SL 1.5x\nMinimum confluence %s/7\nSynthetic fallback DISABLED\nExecution commands BLOCKED" % MIN_LAYERS, cid)
+            elif txt_base == "/journal":
+                trades = load_trades()
+                msg = "PAPER JOURNAL - LAST 10\n" + ("No paper trades recorded." if not trades else "\n".join("#%s %s %s %s %sR" % (t["id"], t.get("pht_time",""), t.get("type","?"), t.get("result") or "OPEN", t.get("r") if t.get("r") is not None else "-") for t in trades[-10:]))
+                send_telegram_msg(msg, cid)
+            elif txt_base in ("/pause", "/pause-paper"):
+                PAPER_SCAN_PAUSED = True
+                send_telegram_msg("PAPER SCANS PAUSED. Use /resume-paper. Live execution remains DISABLED.", cid)
+            elif txt_base in ("/resume-paper", "/resume"):
+                PAPER_SCAN_PAUSED = False
+                send_telegram_msg("PAPER SCANS RESUMED. Live execution remains DISABLED.", cid)
             elif txt_base in ("/backtest", "/diag"):
                 pages, symbol = 10, "XAU/USD"
                 for a_ in args:
