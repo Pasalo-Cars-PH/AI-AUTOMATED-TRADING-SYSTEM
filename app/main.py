@@ -1405,7 +1405,7 @@ def smc_scan(chat_id, auto=False):
                    f"• Risk `${sig['risk']:.2f}` ({sig['risk']/sig['atr']:.1f}xATR)\n"
                    f"• FVG zone `{sig['fvg_lo']:.2f}-{sig['fvg_hi']:.2f}`\n"
                    f"• Time `{pht}` ({utc})\n"
-                   f"• PAPER ONLY - Close with /win {trade_id} or /loss {trade_id}")
+                   f"• PAPER ONLY - Managed by completed M5 SL/TP")
         send_telegram_msg(caption, chat_id)
     elif not auto:
         lines = "\n".join(f"{'✅' if c['pass'] else '❌'} {c['name']}: {c['actual']}" for c in checks)
