@@ -7,6 +7,16 @@ from typing import Dict, Any
 logger = logging.getLogger("smc_engine_v5_3")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_ALLOWED_CHAT_IDS = {
+    x.strip() for x in os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",") if x.strip()
+}
+FORBIDDEN_TRADING_COMMANDS = {"/unlock", "/buy", "/sell", "/order", "/trade", "/execute"}
+
+def is_authorized(chat_id: str) -> bool:
+    """Fail-closed when an explicit Telegram allowlist is configured."""
+    if not TELEGRAM_ALLOWED_CHAT_IDS:
+        return True
+    return str(chat_id) in TELEGRAM_ALLOWED_CHAT_IDS
 
 def send_telegram_reply(chat_id: str, text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not chat_id:
@@ -51,7 +61,7 @@ def run_async_scan(chat_id: str, system_state: Dict[str, Any]):
         send_telegram_reply(chat_id, f"❌ Scan Execution Failed: `{scan_err}`")
 
 
-def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], daily_stats: Dict[str, Any], last_trade: Any) -> Dict[str, Any]:
+def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], daily_stats: Dict[str, Any], last_trade: Any = None) -> Dict[str, Any]:
     try:
         message = data.get("message") or data.get("edited_message")
         if not message:
@@ -65,6 +75,14 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
             
         command = text.split()[0].lower()
         
+        if not is_authorized(chat_id):
+            send_telegram_reply(chat_id, "🚫 Unauthorized Telegram chat.")
+            return {"status": "blocked", "reason": "unauthorized"}
+
+        if command in FORBIDDEN_TRADING_COMMANDS:
+            send_telegram_reply(chat_id, "🔒 Trading execution commands are disabled. Paper-only safety lock remains active.")
+            return {"status": "blocked", "reason": "forbidden_command"}
+
         # /start or /help
         if command in ["/start", "/help"]:
             reply = (
@@ -90,7 +108,7 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"• Mode: `{system_state['mode']}`\n"
                 f"• Session Enabled: `{system_state['paper_session_enabled']}`\n"
-                f"• Kill Switch: `{system_state['kill_switch']}`\n"
+                f"• Kill Switch: `{system_state.get('kill_switch', True)}`\n"
                 f"• Provider: `{system_state['data_provider']}`\n\n"
                 "Ready to collect paper trading samples!"
             )
@@ -116,12 +134,12 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
             reply = (
                 "📊 *ENGINE OPERATIONAL STATUS*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                f"• System Mode: `{system_state['mode']}`\n"
-                f"• Paper Session: `{system_state['paper_session_enabled']}`\n"
+                f"• System Mode: `{system_state.get('mode', 'PAPER')}`\n"
+                f"• Paper Session: `{system_state.get('paper_session_enabled', False)}`\n"
                 f"• Kill Switch: `{system_state['kill_switch']}`\n"
-                f"• Data Provider: `{system_state['data_provider']}`\n"
-                f"• Scans Today: `{daily_stats['total_scans']}`\n"
-                f"• Last Scan: `{daily_stats['last_scan_time']}`"
+                f"• Data Provider: `{system_state.get('data_provider', 'TwelveData')}`\n"
+                f"• Scans Today: `{daily_stats.get('total_scans', 0)}`\n"
+                f"• Last Scan: `{daily_stats.get('last_scan_time', 'N/A')}`"
             )
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
@@ -137,7 +155,7 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
             return {"status": "success", "command": command}
 
         # /last_trade
-        elif command == "/last_trade":
+        elif command in ["/last_trade", "/lasttrade"]:
             if not last_trade:
                 reply = "ℹ️ No paper trades executed yet in this active session."
             else:

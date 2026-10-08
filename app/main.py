@@ -19,7 +19,7 @@ scheduler = BackgroundScheduler()
 # ===== V7.6 SETTINGS =====
 SL_D, TP_D = 1.8, 3.6      # RR 1:2
 SPREAD_COST = 0.30         # USD per trade (spread+slippage) para sa backtest
-MIN_LAYERS = 0             # 0 = gates lang. Sa /diag, walang naidagdag ang layers (min 0 ~ min 2 ~ min 3, min 4 mas masama)
+MIN_LAYERS = max(3, min(7, int(os.getenv("MIN_LAYERS", "5"))))  # deterministic confluence gate; default 5/7
 USE_ATR_SL = True          # SL/TP = ATR(10) multiples (live + backtest). False = fixed SL_D/TP_D
 ATR_SL_MULT = 1.5
 ATR_TP_MULT = 3.0          # RR 1:2
@@ -408,20 +408,21 @@ def get_free_gold_price():
     return _price_cache["price"]
 
 def fetch_data_with_fallback(symbol="XAU/USD", interval="5min", outputsize=100):
-    """TwelveData lang + 2-min cache. Walang synthetic: no data = no trade."""
+    """TwelveData only + symbol/interval scoped 2-min cache. No synthetic data."""
     now = datetime.datetime.utcnow()
-    c = _twelve_data_cache.get(interval)
-    if c and c.get("data") and c.get("time") and (now - c["time"]).total_seconds() < 120 and len(c["data"]) >= outputsize:
-        return c["data"], "LIVE_CACHED_" + interval
+    cache_key = (symbol.upper(), interval, int(outputsize))
+    cached = _twelve_data_cache.get(cache_key)
+    if cached and cached.get("data") and cached.get("time") and (now - cached["time"]).total_seconds() < 120:
+        return cached["data"], "LIVE_CACHED_" + interval
     data = fetch_data(symbol, interval, outputsize)
     if data and len(data) >= min(60, outputsize):
-        _twelve_data_cache[interval] = {"data": data, "time": now}
+        _twelve_data_cache[cache_key] = {"data": data, "time": now, "symbol": symbol, "interval": interval}
         return data, "LIVE_TWELVEDATA_" + interval
-    print(f"No live data for {interval} - NO TRADE (synthetic removed)")
+    print(f"No live data for {symbol} {interval} - NO TRADE (synthetic removed)")
     return None, "NO_DATA"
 
-def fetch_live_tf(interval):
-    vals, source = fetch_data_with_fallback("XAU/USD", interval, 100)
+def fetch_live_tf(interval, symbol="XAU/USD"):
+    vals, source = fetch_data_with_fallback(symbol, interval, 100)
     fetch_live_tf.last_source = source
     if not vals: return None
     try:
@@ -662,7 +663,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None, min_layers=None):
     return {
         "pair": "XAUUSD", "type": "BUY" if bullish else "SELL", "entry": entry, "sl": sl, "tp": tp,
         "time": window[0]['datetime'], "pinbar": candle_type, "h1": ht,
-        "confluence": conf, "model_score": model_score, "ai": model_score, "layers": logs,
+        "confluence": conf, "model_score": model_score, "layers": logs,
         "reason": f"{VERSION} {candle_type} {n}/7 layers | {'+'.join(logs)} | RR1:2 SL{sl_d:.2f} TP{tp_d:.2f}",
         "tf": "M5",
     }
@@ -1461,13 +1462,51 @@ app.add_middleware(
 )
 
 @app.get("/")
-def root(): return {"status": f"XAUUSD TITAN {VERSION} M5 PAPER", "time": pht_now().isoformat(), "live_enabled": MASTER_LIVE_ENABLE, "dashboard": "/dashboard", "api": "/api/stats"}
+def root():
+    return {
+        "status": f"XAUUSD TITAN {VERSION} M5 PAPER",
+        "mode": "PAPER",
+        "master_enable": False,
+        "kill_switch": True,
+        "live_enabled": False,
+        "time": pht_now().isoformat(),
+        "dashboard": "/dashboard",
+        "api": "/api/stats",
+    }
 
 @app.get("/health")
-def health(): return {"status": "ok", "version": VERSION, "live_enabled": MASTER_LIVE_ENABLE}
+def health():
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "mode": "PAPER",
+        "master_enable": False,
+        "kill_switch": True,
+        "live_enabled": False,
+    }
 
 @app.get("/status")
-def status(): return {"status": "ok", "version": VERSION, "live_enabled": MASTER_LIVE_ENABLE}
+def status():
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "mode": "PAPER",
+        "master_enable": False,
+        "kill_switch": True,
+        "live_enabled": False,
+    }
+
+@app.get("/signal")
+def strict_signal_lock():
+    """Legacy safety endpoint: never returns an executable trade signal."""
+    return JSONResponse({
+        "symbol": "NONE",
+        "action": "NONE",
+        "reason": "STRICT_EXECUTION_LOCK_ACTIVE",
+        "mode": "PAPER",
+        "master_enable": False,
+        "kill_switch": True,
+    })
 
 @app.get("/api/trades")
 def api_trades():
