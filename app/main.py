@@ -2,6 +2,7 @@ import os, datetime, json, math, bisect, time, threading, random
 from contextlib import asynccontextmanager
 import requests, pandas as pd
 from app.paper_validation import create_candidate, gate_summary
+from app.risk_engine import RiskConfig, evaluate_risk, realized_pnl_usd, realized_r
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -25,7 +26,8 @@ MIN_LAYERS = max(3, min(7, int(os.getenv("MIN_LAYERS", "5"))))  # deterministic 
 USE_ATR_SL = True          # SL/TP = ATR(10) multiples (live + backtest). False = fixed SL_D/TP_D
 ATR_SL_MULT = 1.5
 ATR_TP_MULT = 3.0          # RR 1:2
-VERSION = "V8.0"
+VERSION = "V9.0"
+RISK_CONFIG = RiskConfig.from_env()
 
 # Trade storage for real-time dashboard
 TRADES_FILE = "/tmp/titan_trades_v6.json"
@@ -84,9 +86,16 @@ def log_new_trade(sig):
         "execution_mode": sig.get('execution_mode', 'PAPER_ONLY'),
         "data_source": sig.get('data_source', 'UNKNOWN'),
         "gate_summary": sig.get('gate_summary', {}),
+        "symbol": sig.get('pair', sig.get('symbol', 'UNKNOWN')),
+        "risk_pct": sig.get('risk_pct'),
+        "risk_usd": sig.get('risk_usd'),
+        "position_size": sig.get('position_size'),
+        "risk_snapshot": sig.get('risk_snapshot', {}),
         "status": "OPEN",
         "result": None,
         "r": None,
+        "realized_pnl_usd": None,
+        "exit_price": None,
         "closed_at": None
     }
     trades.append(trade)
@@ -94,48 +103,65 @@ def log_new_trade(sig):
     print(f"Logged new trade #{trade_id} {trade['type']} {trade['entry']}")
     return trade_id
 
-def update_trade_result(trade_id, result):
+def update_trade_result(trade_id, result, exit_price=None):
+    """Close a paper trade only from an observed exit price; never fabricate R."""
     trades = load_trades()
     for t in trades:
         if t['id'] == trade_id:
             t['status'] = "CLOSED"
             t['result'] = "WIN" if result == "WIN" else "LOSS"
-            t['r'] = 2.0 if result == "WIN" else -1.0
+            if exit_price is not None:
+                try:
+                    t['exit_price'] = float(exit_price)
+                    t['realized_pnl_usd'] = round(realized_pnl_usd(t, t['exit_price']), 6)
+                    t['r'] = round(realized_r(t, t['exit_price']), 6)
+                except (TypeError, ValueError):
+                    t['exit_price'] = None
+                    t['realized_pnl_usd'] = None
+                    t['r'] = None
+            else:
+                t['exit_price'] = None
+                t['realized_pnl_usd'] = None
+                t['r'] = None
             t['closed_at'] = pht_now().isoformat()
             save_trades(trades)
             return True
     return False
 
 def calculate_stats(trades):
-    closed = [t for t in trades if t.get('result') in ['WIN', 'LOSS']]
-    wins = len([t for t in closed if t['result'] == 'WIN'])
-    losses = len([t for t in closed if t['result'] == 'LOSS'])
+    closed = [t for t in trades if t.get('result') in ['WIN', 'LOSS'] and t.get('r') is not None]
+    wins = len([t for t in closed if float(t.get('r', 0)) > 0])
+    losses = len([t for t in closed if float(t.get('r', 0)) < 0])
     total = wins + losses
-    net = sum([t.get('r', 0) for t in closed if t.get('r') is not None])
+    net = sum(float(t.get('r', 0) or 0) for t in closed)
+    gross_profit = sum(float(t.get('r', 0) or 0) for t in closed if float(t.get('r', 0)) > 0)
+    gross_loss = abs(sum(float(t.get('r', 0) or 0) for t in closed if float(t.get('r', 0)) < 0))
     wr = round(wins / total * 100, 1) if total > 0 else 0
-    pf = round((wins * 2) / (losses * 1), 2) if losses > 0 else round(wins * 2, 2) if wins > 0 else 0
-    exp = round(net / total, 2) if total > 0 else 0
+    pf = round(gross_profit / gross_loss, 2) if gross_loss > 0 else round(gross_profit, 2) if gross_profit > 0 else 0
+    exp = round(net / total, 4) if total > 0 else 0
     evolution = []
+    rnet = 0.0
     rw = rl = 0
-    rnet = 0
     for i, t in enumerate(closed):
-        if t['result'] == 'WIN':
-            rw += 1; rnet += 2.0
-        else:
-            rl += 1; rnet -= 1.0
+        rv = float(t.get('r', 0) or 0)
+        if rv > 0: rw += 1
+        elif rv < 0: rl += 1
+        rnet += rv
         rt = rw + rl
         evolution.append({
             "trade": i + 1,
             "wr": round(rw / rt * 100, 1) if rt > 0 else 0,
-            "pf": round((rw * 2) / (rl * 1), 2) if rl > 0 else 0,
-            "exp": round(rnet / rt, 2) if rt > 0 else 0,
-            "net": rnet,
+            "pf": round(sum(float(x.get('r', 0) or 0) for x in closed[:i+1] if float(x.get('r', 0)) > 0) /
+                       abs(sum(float(x.get('r', 0) or 0) for x in closed[:i+1] if float(x.get('r', 0)) < 0)), 2)
+                       if any(float(x.get('r', 0)) < 0 for x in closed[:i+1]) else 0,
+            "exp": round(rnet / rt, 4) if rt > 0 else 0,
+            "net": round(rnet, 4),
             "result": t['result'],
             "time": t.get('pht_time', '')
         })
     return {
-        "total_trades": len(trades), "closed_trades": total, "open_trades": len(trades) - total,
-        "wins": wins, "losses": losses, "wr": wr, "pf": pf, "exp": exp, "net": net,
+        "total_trades": len(trades), "closed_trades": total, "open_trades": len([t for t in trades if t.get("status") == "OPEN"]),
+        "wins": wins, "losses": losses, "wr": wr, "pf": pf, "exp": exp, "net": round(net, 4),
         "evolution": evolution, "trades": trades
     }
 
@@ -1396,6 +1422,32 @@ def smc_scan(chat_id, auto=False):
         sig["audit_state"] = candidate["state"]
         sig["execution_mode"] = candidate["execution_mode"]
         sig["data_source"] = candidate["data_source"]
+
+        equity_raw = os.getenv("PAPER_EQUITY_USD", "")
+        if not equity_raw:
+            if not auto:
+                send_telegram_msg("RISK REJECTED: PAPER_EQUITY_USD is not configured. No paper entry.", chat_id)
+            return
+        risk = evaluate_risk(
+            load_trades(),
+            equity_usd=equity_raw,
+            entry=sig["entry"],
+            sl=sig["sl"],
+            tp=sig["tp"],
+            side=sig["type"],
+            symbol=sig.get("pair", "XAUUSD"),
+            config=RISK_CONFIG,
+        )
+        if not risk["allow"]:
+            if not auto:
+                send_telegram_msg(f"RISK GATE REJECTED: {risk['reason']} | open={risk.get('open_risk_pct', 0):.2f}% daily_loss={risk.get('daily_loss_pct', 0):.2f}% consecutive={risk.get('consecutive_losses', 0)}", chat_id)
+            return
+
+        sig["risk_pct"] = risk["risk_pct"]
+        sig["risk_usd"] = risk["risk_usd"]
+        sig["position_size"] = risk["position_size"]
+        sig["risk_snapshot"] = risk
+        _smc_used_live.add(key)
         trade_id = log_new_trade(sig)
         pht, utc = format_time_pht(sig['time'])
         caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 SMC {VERSION} PAPER ID #{trade_id}\n"
@@ -1997,7 +2049,27 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 s = calculate_stats(load_trades())
                 send_telegram_msg("PERFORMANCE\nTrades %s | Closed %s | W/L %s/%s | WR %s%% | PF %s | Exp %sR | Net %sR | Open %s" % (s["total_trades"], s["closed_trades"], s["wins"], s["losses"], s["wr"], s["pf"], s["exp"], s["net"], s["open_trades"]), cid)
             elif txt_base == "/risk":
-                send_telegram_msg("RISK / SAFETY\nLive execution DISABLED\nMaster live enable FALSE\nKill switch ACTIVE\nRR 1:2 | ATR SL 1.5x\nMinimum confluence %s/7\nSynthetic fallback DISABLED\nExecution commands BLOCKED" % MIN_LAYERS, cid)
+                equity = os.getenv("PAPER_EQUITY_USD", "NOT_SET")
+                trades = load_trades()
+                opens = [t for t in trades if t.get("status") == "OPEN"]
+                open_risk = sum(float(t.get("risk_usd", 0) or 0) for t in opens)
+                try:
+                    open_pct = open_risk / float(equity) * 100 if equity != "NOT_SET" else 0
+                except (TypeError, ValueError):
+                    open_pct = 0
+                send_telegram_msg(
+                    "RISK / PORTFOLIO\n"
+                    "Live execution DISABLED\n"
+                    "Paper equity %s\n"
+                    "Risk/trade %.2f%% | Open risk %.2f%%\n"
+                    "Max total %.2f%% | Max correlated %.2f%%\n"
+                    "Daily loss limit %.2f%% | Consecutive-loss lock %s\n"
+                    "Max open %s | Min RR %.2f\n"
+                    "Sizing = actual entry-to-SL distance"
+                    % (equity, RISK_CONFIG.risk_per_trade_pct, open_pct,
+                       RISK_CONFIG.max_total_open_risk_pct, RISK_CONFIG.max_correlated_risk_pct,
+                       RISK_CONFIG.daily_loss_limit_pct, RISK_CONFIG.max_consecutive_losses,
+                       RISK_CONFIG.max_open_positions, RISK_CONFIG.min_rr), cid)
             elif txt_base == "/journal":
                 trades = load_trades()
                 msg = "PAPER JOURNAL - LAST 10\n" + ("No paper trades recorded." if not trades else "\n".join("#%s %s %s %s %sR" % (t["id"], t.get("pht_time",""), t.get("type","?"), t.get("result") or "OPEN", t.get("r") if t.get("r") is not None else "-") for t in trades[-10:]))
