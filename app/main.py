@@ -1219,13 +1219,12 @@ def run_diag_smc(chat_id, pages=10, symbol="XAU/USD"):
         ratios = sorted(t['sl_d'] / t['atr'] for t in mk if t.get('atr'))
         ratio = ratios[len(ratios) // 2] if ratios else 1.5
         m2 = f"D) BASELINE: killzone entries na walang sweep/FVG (SL {ratio:.1f}xATR, RR {SMC_RR:g}, net)\n"
-        rand_tr = None
+        base = {}
         for d in ("RANDOM", "BUY", "SELL"):
-            b_tr = sim_smc_baseline(rec, d, sl_atr=ratio, cost=cost)
-            if d == "RANDOM": rand_tr = b_tr
-            m2 += _fmt(f"{d:6s}", summarize(b_tr)) + "\n"
-        _pool_store[symbol] = {"mk": mk, "oos": [t for t in mk if t['idx'] >= cut], "rand": rand_tr or [],
-                               "pages": pages, "days": days}
+            base[d] = sim_smc_baseline(rec, d, sl_atr=ratio, cost=cost)
+            m2 += _fmt(f"{d:6s}", summarize(base[d])) + "\n"
+        _pool_store[symbol] = {"mk": mk, "oos": [t for t in mk if t['idx'] >= cut], "rand": base["RANDOM"],
+                               "base": base, "pages": pages, "days": days}
         m2 += _fmt("SMC   ", s_mk) + "\n"
         m2 += _fmt("SMC SELL", summarize([t for t in mk if t['type'] == "SELL"])) + "  ← ikumpara sa SELL baseline\n"
         m2 += _fmt("SMC BUY ", summarize([t for t in mk if t['type'] == "BUY"])) + "  ← ikumpara sa BUY baseline\n"
@@ -1247,6 +1246,7 @@ def run_diag_smc(chat_id, pages=10, symbol="XAU/USD"):
         _job_lock.release()
 
 _pool_store = {}
+HYPOTHESIS_USED = ("XAU/USD", "EUR/USD")   # post-hoc na tiningnan na; hindi puwedeng gamitin bilang ebidensya
 
 def run_pool_smc(chat_id):
     """Pinagsamang resulta ng lahat ng symbol na na-/diag na (trade lists lang ang naka-store)."""
@@ -1264,6 +1264,24 @@ def run_pool_smc(chat_id):
         z0 = sa['exp'] / sa['se']
         zb = (sa['exp'] - sr['exp']) / ((sa['se'] ** 2 + sr['se'] ** 2) ** 0.5) if sr['total'] else 0
         msg += f"\nz vs zero: {z0:.1f} | z vs baseline: {zb:.1f} (kailangan ≥2 sa pareho, at positive sa karamihan ng symbol)"
+    # PRE-REGISTERED HYPOTHESIS: napansin sa XAU/USD at EUR/USD (post-hoc) -> i-test LANG sa mga symbol na hindi pa nagamit
+    fresh = [sym for sym in _pool_store if sym not in HYPOTHESIS_USED]
+    msg += "\n🧪 HYPOTHESIS TEST (fresh symbols lang: " + (", ".join(fresh) if fresh else "wala pa") + ")\n"
+    if fresh:
+        sm = [t for sym in fresh for t in _pool_store[sym]['mk']]
+        def _cmp(name, trs, base_trs):
+            a, b = summarize(trs), summarize(base_trs)
+            z = (a['exp'] - b['exp']) / ((a['se'] ** 2 + b['se'] ** 2) ** 0.5) if a['total'] and b['total'] and (a['se'] or b['se']) else 0
+            return _fmt(name, a) + f"\n   baseline: Exp {b['exp']}R ±{b['se']} ({b['total']}T) | z vs baseline {z:.1f}\n"
+        sells = [t for t in sm if t['type'] == "SELL"]
+        bsell = [t for sym in fresh for t in _pool_store[sym]['base']['SELL']]
+        lon = [t for t in sm if 7 <= t['hour'] < 10]
+        blon = [t for sym in fresh for t in _pool_store[sym]['base']['RANDOM'] if 7 <= t['hour'] < 10]
+        msg += _cmp("H1 SELL-only (PDH sweep)", sells, bsell)
+        msg += _cmp("H2 London-only", lon, blon)
+        msg += "Pasa kung z vs baseline ≥ 2 AT positive sa bawat fresh symbol. Dalawang hypothesis ang tine-test, kaya 2.5 ang mas tapat na bar."
+    else:
+        msg += "Mag-/diag 30 GBP/USD at /diag 30 USD/JPY, tapos /pool ulit."
     send_telegram_msg(msg, chat_id)
 
 # ---------- SMC LIVE ----------
