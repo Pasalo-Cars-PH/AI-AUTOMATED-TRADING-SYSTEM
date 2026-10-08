@@ -738,13 +738,15 @@ def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36,
 def summarize(trades):
     n = len(trades)
     if n == 0:
-        return {"total": 0, "wins": 0, "losses": 0, "wr": 0, "net": 0.0, "exp": 0.0, "pf": 0, "be": None, "avg_sl": 0}
+        return {"se": 0.0, "total": 0, "wins": 0, "losses": 0, "wr": 0, "net": 0.0, "exp": 0.0, "pf": 0, "be": None, "avg_sl": 0}
     rs = [t['r'] for t in trades]
     w = [x for x in rs if x > 0]
     l = [-x for x in rs if x <= 0]
     gw, gl = sum(w), sum(l)
     be = round((gl / len(l)) / ((gw / len(w)) + (gl / len(l))) * 100, 1) if w and l else None
-    return {"total": n, "wins": len(w), "losses": len(l), "wr": round(len(w) / n * 100, 1),
+    mean = sum(rs) / n
+    se = (sum((x - mean) ** 2 for x in rs) / (n - 1) / n) ** 0.5 if n > 1 else 0.0
+    return {"se": round(se, 2), "total": n, "wins": len(w), "losses": len(l), "wr": round(len(w) / n * 100, 1),
             "net": round(sum(rs), 2), "exp": round(sum(rs) / n, 3),
             "pf": round(gw / gl, 2) if gl > 0 else round(gw, 2), "be": be,
             "avg_sl": round(sum(t['sl_d'] for t in trades) / n, 2)}
@@ -811,11 +813,11 @@ def _fmt(name, s):
     if s['total'] == 0:
         return f"{name}: 0 trades"
     be = f"{s['be']}%" if s['be'] else "-"
-    return f"{name}: {s['total']}T | WR {s['wr']}% (BE {be}) | PF {s['pf']} | Exp {s['exp']}R | Net {s['net']}R"
+    return f"{name}: {s['total']}T | WR {s['wr']}% (BE {be}) | PF {s['pf']} | Exp {s['exp']}R ±{s['se']} | Net {s['net']}R"
 
-def run_backtest(chat_id):
+def run_backtest(chat_id, pages=10):
     if STRATEGY == "SMC":
-        return run_backtest_smc(chat_id)
+        return run_backtest_smc(chat_id, pages)
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
@@ -843,10 +845,10 @@ def run_backtest(chat_id):
     finally:
         _job_lock.release()
 
-def run_diag(chat_id):
+def run_diag(chat_id, pages=10):
     """Diagnostics: cost, ATR SL/TP, BUY/SELL, oras, at kung may naidagdag ba ang layers."""
     if STRATEGY == "SMC":
-        return run_diag_smc(chat_id)
+        return run_diag_smc(chat_id, pages)
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
@@ -1133,16 +1135,16 @@ def smc_funnel(records):
     return names, reached
 
 # ---------- SMC BACKTEST / DIAG ----------
-def run_backtest_smc(chat_id):
+def run_backtest_smc(chat_id, pages=10):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
     if not _job_lock.acquire(blocking=False):
         send_telegram_msg("⏳ May tumatakbo pang /backtest o /diag. Hintayin muna matapos.", chat_id)
         return
-    send_telegram_msg(f"⏳ TITAN {VERSION} SMC backtest... ~2 min (maraming data)", chat_id)
+    send_telegram_msg(f"⏳ TITAN {VERSION} SMC backtest... {pages} pages (~{pages*10//60+1} min kung walang cache)", chat_id)
     try:
-        rec = get_hist_cached(pages=10)
+        rec = get_hist_cached(pages=pages)
         if not rec or len(rec) < 3000:
             send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
             return
@@ -1162,16 +1164,16 @@ def run_backtest_smc(chat_id):
     finally:
         _job_lock.release()
 
-def run_diag_smc(chat_id):
+def run_diag_smc(chat_id, pages=10):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
     if not _job_lock.acquire(blocking=False):
         send_telegram_msg("⏳ May tumatakbo pang /backtest o /diag. Hintayin muna matapos.", chat_id)
         return
-    send_telegram_msg(f"🔬 TITAN {VERSION} SMC DIAG... ~2-3 min", chat_id)
+    send_telegram_msg(f"🔬 TITAN {VERSION} SMC DIAG... {pages} pages (~{pages*10//60+2} min kung walang cache)", chat_id)
     try:
-        rec = get_hist_cached(pages=10)
+        rec = get_hist_cached(pages=pages)
         if not rec or len(rec) < 3000:
             send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
             return
@@ -1208,6 +1210,8 @@ def run_diag_smc(chat_id):
         for d in ("RANDOM", "BUY", "SELL"):
             m2 += _fmt(f"{d:6s}", summarize(sim_smc_baseline(rec, d, sl_atr=ratio))) + "\n"
         m2 += _fmt("SMC   ", s_mk) + "\n"
+        m2 += _fmt("SMC SELL", summarize([t for t in mk if t['type'] == "SELL"])) + "  ← ikumpara sa SELL baseline\n"
+        m2 += _fmt("SMC BUY ", summarize([t for t in mk if t['type'] == "BUY"])) + "  ← ikumpara sa BUY baseline\n"
         m2 += "→ Kung ang SMC ay hindi mas mataas sa baseline, walang naidagdag ang sweep/FVG logic.\n"
 
         m2 += "\nE) SIDE / SESSION (SMC net)\n"
@@ -1822,8 +1826,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 stats = calculate_stats(load_trades())
                 send_telegram_msg(f"🔒 *TITAN {VERSION} {STRATEGY} M5 PAPER*\nH1 `{h1}`\nTrades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt_base == "/scan": background_tasks.add_task(manual_scan, cid)
-            elif txt_base == "/backtest": background_tasks.add_task(run_backtest, cid)
-            elif txt_base == "/diag": background_tasks.add_task(run_diag, cid)
+            elif txt_base in ("/backtest", "/diag"):
+                try: pages = max(3, min(60, int(args[0]))) if args else 10
+                except: pages = 10
+                background_tasks.add_task(run_backtest if txt_base == "/backtest" else run_diag, cid, pages)
             elif txt_base == "/dashboard":
                 host = str(request.base_url).rstrip('/')
                 send_telegram_msg(f"📊 *DASHBOARD*\n{host}/dashboard\nAPI {host}/api/stats\nPretrade {host}/pretrade\nClose with /win [id] or /loss [id]", cid)
@@ -1865,8 +1871,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 except Exception as e:
                     send_telegram_msg(f"Reset error {e}", cid)
             elif txt_base in ["/help", "/start"]:
-                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\n• /status • /scan • /backtest • /diag\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade • /reset (clears ALL trades)", cid)
+                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\n• /status • /scan • /backtest [pages] • /diag [pages]\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade • /reset (clears ALL trades)", cid)
     except Exception as e:
         print(e)
         import traceback; traceback.print_exc()
     return {"status": "ok"}
+
