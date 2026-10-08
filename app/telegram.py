@@ -108,7 +108,7 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"• Mode: `{system_state['mode']}`\n"
                 f"• Session Enabled: `{system_state['paper_session_enabled']}`\n"
-                f"• Kill Switch: `{system_state['kill_switch']}`\n"
+                f"• Kill Switch: `{system_state.get('kill_switch', True)}`\n"
                 f"• Provider: `{system_state['data_provider']}`\n\n"
                 "Ready to collect paper trading samples!"
             )
@@ -134,12 +134,12 @@ def handle_telegram_command(data: Dict[str, Any], system_state: Dict[str, Any], 
             reply = (
                 "📊 *ENGINE OPERATIONAL STATUS*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                f"• System Mode: `{system_state['mode']}`\n"
-                f"• Paper Session: `{system_state['paper_session_enabled']}`\n"
+                f"• System Mode: `{system_state.get('mode', 'PAPER')}`\n"
+                f"• Paper Session: `{system_state.get('paper_session_enabled', False)}`\n"
                 f"• Kill Switch: `{system_state['kill_switch']}`\n"
-                f"• Data Provider: `{system_state['data_provider']}`\n"
-                f"• Scans Today: `{daily_stats['total_scans']}`\n"
-                f"• Last Scan: `{daily_stats['last_scan_time']}`"
+                f"• Data Provider: `{system_state.get('data_provider', 'TwelveData')}`\n"
+                f"• Scans Today: `{daily_stats.get('total_scans', 0)}`\n"
+                f"• Last Scan: `{daily_stats.get('last_scan_time', 'N/A')}`"
             )
             send_telegram_reply(chat_id, reply)
             return {"status": "success", "command": command}
