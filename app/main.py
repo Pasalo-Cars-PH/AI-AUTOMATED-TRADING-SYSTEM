@@ -749,20 +749,20 @@ def summarize(trades):
     return {"se": round(se, 2), "total": n, "wins": len(w), "losses": len(l), "wr": round(len(w) / n * 100, 1),
             "net": round(sum(rs), 2), "exp": round(sum(rs) / n, 3),
             "pf": round(gw / gl, 2) if gl > 0 else round(gw, 2), "be": be,
-            "avg_sl": round(sum(t['sl_d'] for t in trades) / n, 2)}
+            "avg_sl": (lambda v: round(v, 2) if v >= 1 else round(v, 5))(sum(t['sl_d'] for t in trades) / n)}
 
 def run_sim_tf(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36):
     """Compat wrapper: total,wins,losses,wr,net,exp,pf (R, after cost)."""
     s = summarize(sim_trades(records, tf=tf, h1_records=h1_records, cost=cost, max_hold=max_hold))
     return s['total'], s['wins'], s['losses'], s['wr'], s['net'], s['exp'], s['pf']
 
-def fetch_hist_paged(interval="5min", pages=5, size=5000):
+def fetch_hist_paged(interval="5min", pages=5, size=5000, symbol="XAU/USD"):
     """Hatak ng mas maraming history gamit end_date paging. 1 credit/page."""
     url = "https://api.twelvedata.com/time_series"
     allv = {}
     end = None
     for _ in range(pages):
-        params = {"symbol": "XAU/USD", "interval": interval, "outputsize": size,
+        params = {"symbol": symbol, "interval": interval, "outputsize": size,
                   "timezone": "UTC", "apikey": TWELVE_DATA_API_KEY}
         if end:
             params["end_date"] = end
@@ -796,17 +796,19 @@ def fetch_hist_paged(interval="5min", pages=5, size=5000):
 _hist_cache = {"rec": None, "time": 0}
 _job_lock = threading.Lock()      # isa lang na backtest/diag sa isang oras
 
-def get_hist_cached(max_age_s=6*3600, force=False, pages=5):
-    """Iwas sunog ng TwelveData credits: reuse ang history ng 6 oras."""
+def get_hist_cached(max_age_s=6*3600, force=False, pages=5, symbol="XAU/USD"):
+    """Single-slot cache (iwas OOM sa Render). Iisang symbol lang ang nasa memory."""
     now = time.time()
     if (not force and _hist_cache["rec"] and now - _hist_cache["time"] < max_age_s
-            and _hist_cache.get("pages", 0) >= pages):
+            and _hist_cache.get("pages", 0) >= pages and _hist_cache.get("symbol", "XAU/USD") == symbol):
         return _hist_cache["rec"]
-    rec = fetch_hist_paged("5min", pages=pages, size=5000)
+    _hist_cache["rec"] = None            # palayain ang lumang data bago kumuha ng bago
+    rec = fetch_hist_paged("5min", pages=pages, size=5000, symbol=symbol)
     if rec and len(rec) >= 1000:
         _hist_cache["rec"] = rec
         _hist_cache["time"] = now
         _hist_cache["pages"] = pages
+        _hist_cache["symbol"] = symbol
     return rec
 
 def _fmt(name, s):
@@ -815,9 +817,9 @@ def _fmt(name, s):
     be = f"{s['be']}%" if s['be'] else "-"
     return f"{name}: {s['total']}T | WR {s['wr']}% (BE {be}) | PF {s['pf']} | Exp {s['exp']}R ±{s['se']} | Net {s['net']}R"
 
-def run_backtest(chat_id, pages=10):
+def run_backtest(chat_id, pages=10, symbol="XAU/USD"):
     if STRATEGY == "SMC":
-        return run_backtest_smc(chat_id, pages)
+        return run_backtest_smc(chat_id, pages, symbol)
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
@@ -845,10 +847,10 @@ def run_backtest(chat_id, pages=10):
     finally:
         _job_lock.release()
 
-def run_diag(chat_id, pages=10):
+def run_diag(chat_id, pages=10, symbol="XAU/USD"):
     """Diagnostics: cost, ATR SL/TP, BUY/SELL, oras, at kung may naidagdag ba ang layers."""
     if STRATEGY == "SMC":
-        return run_diag_smc(chat_id, pages)
+        return run_diag_smc(chat_id, pages, symbol)
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
@@ -922,6 +924,14 @@ SMC_MIN_RISK, SMC_MAX_RISK = 0.5, 5.0   # risk (entry->SL) sa ATR units
 SMC_MAX_HOLD = 48                 # bars (4h)
 SMC_LIMIT_WAIT = 6                # bars para sa limit-entry variant (backtest lang)
 SPLIT_FRAC = 2 / 3                # 2/3 in-sample, 1/3 out-of-sample
+
+SYMBOL_COST = {"XAU/USD": 0.30, "EUR/USD": 0.00008, "GBP/USD": 0.00010, "USD/JPY": 0.008}   # spread+slippage sa presyo
+
+def norm_symbol(x):
+    x = x.upper().replace("_", "/")
+    if "/" not in x and len(x) == 6:
+        x = x[:3] + "/" + x[3:]
+    return x if x in SYMBOL_COST else None
 
 def in_killzone(h):
     return any(a <= h < b for a, b in SMC_KZ)
@@ -1003,7 +1013,7 @@ def smc_signal(win, pdh, pdl, explain=False):
         fvg_lo, fvg_hi = c2['high'], c0['low']
     level = "PDH" if side == "SELL" else "PDL"
     sig = {
-        "pair": "XAUUSD", "type": side, "entry": round(entry, 2), "sl": round(sl, 2), "tp": round(tp, 2),
+        "pair": "XAUUSD", "type": side, "entry": round(entry, 5), "sl": round(sl, 5), "tp": round(tp, 5),
         "time": str(c0['datetime']), "level": level, "atr": atr, "risk": risk,
         "fvg_lo": fvg_lo, "fvg_hi": fvg_hi, "pinbar": f"SMC_{level}_sweep+FVG",
         "confluence": 0, "model_score": 0, "layers": [f"{level}_SWEEP", "DISP", "FVG", "KZ"],
@@ -1135,23 +1145,24 @@ def smc_funnel(records):
     return names, reached
 
 # ---------- SMC BACKTEST / DIAG ----------
-def run_backtest_smc(chat_id, pages=10):
+def run_backtest_smc(chat_id, pages=10, symbol="XAU/USD"):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
     if not _job_lock.acquire(blocking=False):
         send_telegram_msg("⏳ May tumatakbo pang /backtest o /diag. Hintayin muna matapos.", chat_id)
         return
-    send_telegram_msg(f"⏳ TITAN {VERSION} SMC backtest... {pages} pages (~{pages*10//60+1} min kung walang cache)", chat_id)
+    send_telegram_msg(f"⏳ TITAN {VERSION} SMC backtest {symbol}... {pages} pages (~{pages*10//60+1} min kung walang cache)", chat_id)
     try:
-        rec = get_hist_cached(pages=pages)
+        cost = SYMBOL_COST[symbol]
+        rec = get_hist_cached(pages=pages, symbol=symbol)
         if not rec or len(rec) < 3000:
             send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
             return
         cut = int(len(rec) * SPLIT_FRAC)
         days = len({pd.Timestamp(r['datetime']).date() for r in rec})
-        tr = sim_smc(rec, "market")
-        msg = (f"📊 TITAN {VERSION} SMC | {len(rec)} bars (~{days} araw) | cost ${SPREAD_COST}/trade\n"
+        tr = sim_smc(rec, "market", cost=cost)
+        msg = (f"📊 TITAN {VERSION} SMC {symbol} | {len(rec)} bars (~{days} araw) | cost {cost:g}/trade\n"
                f"PDH/PDL sweep + FVG | KZ 07-10 & 12-16 UTC | SL sa sweep extreme | RR 1:{SMC_RR:g} | market entry\n\n")
         msg += _fmt("ALL", summarize(tr)) + "\n"
         msg += _fmt("IN-SAMPLE 2/3", summarize([t for t in tr if t['idx'] < cut])) + "\n"
@@ -1164,28 +1175,29 @@ def run_backtest_smc(chat_id, pages=10):
     finally:
         _job_lock.release()
 
-def run_diag_smc(chat_id, pages=10):
+def run_diag_smc(chat_id, pages=10, symbol="XAU/USD"):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
     if not _job_lock.acquire(blocking=False):
         send_telegram_msg("⏳ May tumatakbo pang /backtest o /diag. Hintayin muna matapos.", chat_id)
         return
-    send_telegram_msg(f"🔬 TITAN {VERSION} SMC DIAG... {pages} pages (~{pages*10//60+2} min kung walang cache)", chat_id)
+    send_telegram_msg(f"🔬 TITAN {VERSION} SMC DIAG {symbol}... {pages} pages (~{pages*10//60+2} min kung walang cache)", chat_id)
     try:
-        rec = get_hist_cached(pages=pages)
+        cost = SYMBOL_COST[symbol]
+        rec = get_hist_cached(pages=pages, symbol=symbol)
         if not rec or len(rec) < 3000:
             send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
             return
         cut = int(len(rec) * SPLIT_FRAC)
         days = len({pd.Timestamp(r['datetime']).date() for r in rec})
         oos = lambda trs: summarize([t for t in trs if t['idx'] >= cut])
-        mk = sim_smc(rec, "market")
+        mk = sim_smc(rec, "market", cost=cost)
         mk_g = sim_smc(rec, "market", cost=0.0)
-        lm = sim_smc(rec, "limit")
+        lm = sim_smc(rec, "limit", cost=cost)
         s_mk = summarize(mk)
 
-        m1 = f"🔬 SMC DIAG {VERSION} | {len(rec)} bars (~{days} araw) | {len(mk)} trades ({len(mk)/max(days,1):.2f}/araw)\n\n"
+        m1 = f"🔬 SMC DIAG {VERSION} {symbol} | cost {cost:g} | {len(rec)} bars (~{days} araw) | {len(mk)} trades ({len(mk)/max(days,1):.2f}/araw)\n\n"
         m1 += f"A) MARKET entry, RR 1:{SMC_RR:g} (ito ang live)\n"
         m1 += _fmt("GROSS all", summarize(mk_g)) + "\n"
         m1 += _fmt("NET   all", s_mk) + f" | avg risk ${s_mk['avg_sl']}\n"
@@ -1194,7 +1206,7 @@ def run_diag_smc(chat_id, pages=10):
         m1 += _fmt("NET   all", summarize(lm)) + "\n" + _fmt("NET   oos", oos(lm)) + "\n"
         m1 += "\nC) RR variants (info lang, huwag piliin ang pinakamaganda)\n"
         for rr_v in (1.5, 3.0):
-            t_rr = sim_smc(rec, "market", rr=rr_v)
+            t_rr = sim_smc(rec, "market", rr=rr_v, cost=cost)
             m1 += _fmt(f"RR {rr_v:g} all", summarize(t_rr)) + "\n" + _fmt(f"RR {rr_v:g} oos", oos(t_rr)) + "\n"
         names, reached = smc_funnel(rec)
         m1 += "\nG) FUNNEL (killzone bars na pumasa, hindi PnL)\n"
@@ -1207,8 +1219,13 @@ def run_diag_smc(chat_id, pages=10):
         ratios = sorted(t['sl_d'] / t['atr'] for t in mk if t.get('atr'))
         ratio = ratios[len(ratios) // 2] if ratios else 1.5
         m2 = f"D) BASELINE: killzone entries na walang sweep/FVG (SL {ratio:.1f}xATR, RR {SMC_RR:g}, net)\n"
+        rand_tr = None
         for d in ("RANDOM", "BUY", "SELL"):
-            m2 += _fmt(f"{d:6s}", summarize(sim_smc_baseline(rec, d, sl_atr=ratio))) + "\n"
+            b_tr = sim_smc_baseline(rec, d, sl_atr=ratio, cost=cost)
+            if d == "RANDOM": rand_tr = b_tr
+            m2 += _fmt(f"{d:6s}", summarize(b_tr)) + "\n"
+        _pool_store[symbol] = {"mk": mk, "oos": [t for t in mk if t['idx'] >= cut], "rand": rand_tr or [],
+                               "pages": pages, "days": days}
         m2 += _fmt("SMC   ", s_mk) + "\n"
         m2 += _fmt("SMC SELL", summarize([t for t in mk if t['type'] == "SELL"])) + "  ← ikumpara sa SELL baseline\n"
         m2 += _fmt("SMC BUY ", summarize([t for t in mk if t['type'] == "BUY"])) + "  ← ikumpara sa BUY baseline\n"
@@ -1228,6 +1245,26 @@ def run_diag_smc(chat_id, pages=10):
         send_telegram_msg(f"Diag err {e}", chat_id)
     finally:
         _job_lock.release()
+
+_pool_store = {}
+
+def run_pool_smc(chat_id):
+    """Pinagsamang resulta ng lahat ng symbol na na-/diag na (trade lists lang ang naka-store)."""
+    if not _pool_store:
+        send_telegram_msg("Wala pang /diag results. Mag-/diag 30 [symbol] muna (hal. /diag 30 EUR/USD).", chat_id)
+        return
+    lines, all_tr, oos_tr, rnd_tr = [], [], [], []
+    for sym, d in _pool_store.items():
+        lines.append(_fmt(f"{sym} ({d['pages']}p)", summarize(d['mk'])))
+        all_tr += d['mk']; oos_tr += d['oos']; rnd_tr += d['rand']
+    sa, so, sr = summarize(all_tr), summarize(oos_tr), summarize(rnd_tr)
+    msg = "🧺 POOLED SMC (market, net, lahat ng symbol)\n" + "\n".join(lines) + "\n\n"
+    msg += _fmt("POOL all", sa) + "\n" + _fmt("POOL oos", so) + "\n" + _fmt("POOL random baseline", sr) + "\n"
+    if sa['se'] > 0:
+        z0 = sa['exp'] / sa['se']
+        zb = (sa['exp'] - sr['exp']) / ((sa['se'] ** 2 + sr['se'] ** 2) ** 0.5) if sr['total'] else 0
+        msg += f"\nz vs zero: {z0:.1f} | z vs baseline: {zb:.1f} (kailangan ≥2 sa pareho, at positive sa karamihan ng symbol)"
+    send_telegram_msg(msg, chat_id)
 
 # ---------- SMC LIVE ----------
 _smc_live_cache = {"recs": None, "time": None}
@@ -1827,9 +1864,20 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 send_telegram_msg(f"🔒 *TITAN {VERSION} {STRATEGY} M5 PAPER*\nH1 `{h1}`\nTrades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt_base == "/scan": background_tasks.add_task(manual_scan, cid)
             elif txt_base in ("/backtest", "/diag"):
-                try: pages = max(3, min(60, int(args[0]))) if args else 10
-                except: pages = 10
-                background_tasks.add_task(run_backtest if txt_base == "/backtest" else run_diag, cid, pages)
+                pages, symbol = 10, "XAU/USD"
+                for a_ in args:
+                    if a_.isdigit():
+                        pages = max(3, min(30, int(a_)))
+                    elif norm_symbol(a_):
+                        symbol = norm_symbol(a_)
+                    else:
+                        send_telegram_msg(f"Hindi kilalang '{a_}'. Symbols: {', '.join(SYMBOL_COST)}. Halimbawa: {txt_base} 30 EUR/USD", cid)
+                        return {"status": "ok"}
+                if STRATEGY == "SMC":
+                    background_tasks.add_task(run_backtest if txt_base == "/backtest" else run_diag, cid, pages, symbol)
+                else:
+                    background_tasks.add_task(run_backtest if txt_base == "/backtest" else run_diag, cid, pages)
+            elif txt_base == "/pool": background_tasks.add_task(run_pool_smc, cid)
             elif txt_base == "/dashboard":
                 host = str(request.base_url).rstrip('/')
                 send_telegram_msg(f"📊 *DASHBOARD*\n{host}/dashboard\nAPI {host}/api/stats\nPretrade {host}/pretrade\nClose with /win [id] or /loss [id]", cid)
@@ -1871,9 +1919,8 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 except Exception as e:
                     send_telegram_msg(f"Reset error {e}", cid)
             elif txt_base in ["/help", "/start"]:
-                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\n• /status • /scan • /backtest [pages] • /diag [pages]\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade • /reset (clears ALL trades)", cid)
+                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\n• /status • /scan • /backtest [pages] [symbol] • /diag [pages] [symbol] • /pool\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade • /reset (clears ALL trades)", cid)
     except Exception as e:
         print(e)
         import traceback; traceback.print_exc()
     return {"status": "ok"}
-
