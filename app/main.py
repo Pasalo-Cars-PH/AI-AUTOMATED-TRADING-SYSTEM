@@ -1,4 +1,4 @@
-import os, datetime, json, math, bisect, time
+import os, datetime, json, math, bisect, time, threading
 from contextlib import asynccontextmanager
 import requests, pandas as pd
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -19,11 +19,11 @@ scheduler = BackgroundScheduler()
 # ===== V7.6 SETTINGS =====
 SL_D, TP_D = 1.8, 3.6      # RR 1:2
 SPREAD_COST = 0.30         # USD per trade (spread+slippage) para sa backtest
-MIN_LAYERS = 3             # sa 7 layers. 3 = mas maraming trade, 4 = mas strict
+MIN_LAYERS = 0             # 0 = gates lang. Sa /diag, walang naidagdag ang layers (min 0 ~ min 2 ~ min 3, min 4 mas masama)
 USE_ATR_SL = True          # SL/TP = ATR(10) multiples (live + backtest). False = fixed SL_D/TP_D
 ATR_SL_MULT = 1.5
 ATR_TP_MULT = 3.0          # RR 1:2
-VERSION = "V7.7"
+VERSION = "V7.8"
 
 # Trade storage for real-time dashboard
 TRADES_FILE = "/tmp/titan_trades_v6.json"
@@ -551,7 +551,7 @@ def analyze_titan_detailed(window, tf="M5", h1_trend=None):
         import traceback; traceback.print_exc(); result["reason"] = f"Error: {e}"; return result
 
 # ---------- SIGNAL LOGIC V7.6 ----------
-def analyze_titan_mtf(window, tf="M5", h1_trend=None):
+def analyze_titan_mtf(window, tf="M5", h1_trend=None, min_layers=None):
     """V7.6 - window[0] = newest candle. 3 gates + 7 real scoring layers."""
     if len(window) < 60:
         return None
@@ -645,7 +645,7 @@ def analyze_titan_mtf(window, tf="M5", h1_trend=None):
     if (bullish and ht == "BULL") or (bearish and ht == "BEAR"):
         n += 1; logs.append(f"H1_{ht}")
 
-    if n < MIN_LAYERS:
+    if n < (MIN_LAYERS if min_layers is None else min_layers):
         return None
 
     conf = n / 7 * 100
@@ -675,7 +675,7 @@ def build_h1_from_m5(records):
     h = df.resample('1h').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
     return h.reset_index().to_dict('records')
 
-def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36, atr_sl=None, atr_tp=None):
+def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36, atr_sl=None, atr_tp=None, min_layers=None):
     """records: oldest -> newest. Returns list ng trades (dict) na may R after cost.
     atr_sl/atr_tp = multiplier ng ATR(10) para sa SL/TP; None = fixed SL_D/TP_D."""
     if atr_sl is None and USE_ATR_SL:
@@ -700,7 +700,7 @@ def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36,
                 h1_cache[k] = compute_h1_trend([x['high'] for x in seg], [x['low'] for x in seg], [x['close'] for x in seg])
             h1_trend = h1_cache[k]
 
-        sig = analyze_titan_mtf(window, tf=tf, h1_trend=h1_trend)
+        sig = analyze_titan_mtf(window, tf=tf, h1_trend=h1_trend, min_layers=min_layers)
         if not sig:
             i += 1
             continue
@@ -792,6 +792,7 @@ def fetch_hist_paged(interval="5min", pages=5, size=5000):
     return df.to_dict('records')
 
 _hist_cache = {"rec": None, "time": 0}
+_job_lock = threading.Lock()      # isa lang na backtest/diag sa isang oras
 
 def get_hist_cached(max_age_s=6*3600, force=False):
     """Iwas sunog ng TwelveData credits: reuse ang history ng 6 oras."""
@@ -814,6 +815,9 @@ def run_backtest(chat_id):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
+    if not _job_lock.acquire(blocking=False):
+        send_telegram_msg("⏳ May tumatakbo pang /backtest o /diag. Hintayin muna matapos.", chat_id)
+        return
     send_telegram_msg(f"⏳ TITAN {VERSION} backtest (paged data + 70/30 split)... ~1 min", chat_id)
     try:
         rec = get_hist_cached()
@@ -832,15 +836,18 @@ def run_backtest(chat_id):
     except Exception as e:
         import traceback; traceback.print_exc()
         send_telegram_msg(f"Err {e}", chat_id)
+    finally:
+        _job_lock.release()
 
 def run_diag(chat_id):
     """Diagnostics: cost, ATR SL/TP, BUY/SELL, oras, at kung may naidagdag ba ang layers."""
-    global MIN_LAYERS
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
+    if not _job_lock.acquire(blocking=False):
+        send_telegram_msg("⏳ May tumatakbo pang /backtest o /diag. Hintayin muna matapos.", chat_id)
+        return
     send_telegram_msg(f"🔬 TITAN {VERSION} DIAG... ~2 min", chat_id)
-    saved_layers = MIN_LAYERS
     try:
         rec = get_hist_cached()
         if not rec or len(rec) < 1000:
@@ -880,19 +887,17 @@ def run_diag(chat_id):
 
         m2 += "\nE) LAYERS sa ATR mode (net)\n"
         for ml in (0, 2, 3, 4):
-            MIN_LAYERS = ml
-            tr = sim_trades(rec, atr_sl=1.5, atr_tp=3.0)
+            tr = sim_trades(rec, atr_sl=1.5, atr_tp=3.0, min_layers=ml)
             tag = " (gates lang)" if ml == 0 else ""
             m2 += _fmt(f"min {ml} all", summarize(tr)) + tag + "\n"
             m2 += _fmt(f"min {ml} oos", oos(tr)) + "\n"
-        MIN_LAYERS = saved_layers
         m2 += "\nKung walang pagbuti habang tumataas ang min layers, tanggalin ang layers (simple = mas kaunting overfit)."
         send_telegram_msg(m2, chat_id)
     except Exception as e:
         import traceback; traceback.print_exc()
         send_telegram_msg(f"Diag err {e}", chat_id)
     finally:
-        MIN_LAYERS = saved_layers
+        _job_lock.release()
 
 # ---------- SCAN ----------
 def manual_scan(chat_id, auto=False):
@@ -1358,11 +1363,20 @@ setInterval(fetchStats, 10000);
     return HTMLResponse(content=html_content)
 
 
+_seen_updates = []
+
 @app.api_route("/telegram-webhook", methods=["GET", "POST"])
 @app.api_route("/telegram/webhook", methods=["GET", "POST"])
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         update = await request.json()
+        uid = update.get("update_id")
+        if uid is not None:
+            if uid in _seen_updates:
+                return {"status": "dup"}
+            _seen_updates.append(uid)
+            if len(_seen_updates) > 200:
+                del _seen_updates[:100]
         if "message" in update and "text" in update["message"]:
             cid = str(update["message"]["chat"]["id"])
             txt = update["message"]["text"].strip()
