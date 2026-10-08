@@ -1,6 +1,7 @@
 import os, datetime, json, math, bisect, time, threading, random
 from contextlib import asynccontextmanager
 import requests, pandas as pd
+from app.paper_validation import create_candidate, gate_summary
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -1289,6 +1290,38 @@ def run_pool_smc(chat_id):
         msg += "Mag-/diag 30 GBP/USD at /diag 30 USD/JPY, tapos /pool ulit."
     send_telegram_msg(msg, chat_id)
 
+def fetch_m15_trend():
+    vals = fetch_data("XAU/USD", "15min", 100)
+    if not vals or len(vals) < 50:
+        return "UNKNOWN", "NO_DATA"
+    try:
+        rows = []
+        for v in reversed(vals):
+            rows.append({"datetime": pd.Timestamp(v["datetime"]), "close": float(v["close"])})
+        now = datetime.datetime.utcnow()
+        if now < rows[-1]["datetime"].to_pydatetime() + datetime.timedelta(minutes=15):
+            rows = rows[:-1]
+        if len(rows) < 50:
+            return "UNKNOWN", "NO_DATA"
+        closes = [r["close"] for r in rows]
+        e20 = calculate_ema(closes, 20)
+        e50 = calculate_ema(closes, 50)
+        if e20 is None or e50 is None:
+            return "UNKNOWN", "NO_DATA"
+        trend = "BULL" if closes[-1] > e20 > e50 else "BEAR" if closes[-1] < e20 < e50 else "NEUTRAL"
+        return trend, "LIVE_TWELVEDATA_15min"
+    except Exception:
+        return "UNKNOWN", "NO_DATA"
+
+def validate_smc_mtf(sig, h1_trend, m15_trend):
+    expected = {"BUY": "BULL", "SELL": "BEAR"}.get(sig.get("type"))
+    gates = [
+        {"name": "H1 alignment", "pass": h1_trend == expected, "actual": str(h1_trend)},
+        {"name": "M15 alignment", "pass": m15_trend == expected, "actual": str(m15_trend)},
+        {"name": "Paper execution lock", "pass": not MASTER_LIVE_ENABLE, "actual": "PAPER_ONLY"},
+    ]
+    return gates, gate_summary(gates)
+
 # ---------- SMC LIVE ----------
 _smc_live_cache = {"recs": None, "time": None}
 _smc_used_live = set()
@@ -1337,11 +1370,28 @@ def smc_scan(chat_id, auto=False):
         if not auto: send_telegram_msg("Data fail - no data, no trade", chat_id)
         return
     if sig:
+        h1 = fetch_h1_supertrend_adx()
+        h1_trend = h1.get("trend_simple") if isinstance(h1, dict) else "UNKNOWN"
+        m15_trend, m15_source = fetch_m15_trend()
+        mtf_gates, mtf_summary = validate_smc_mtf(sig, h1_trend, m15_trend)
+        checks.extend(mtf_gates)
+        if not mtf_summary["all_pass"]:
+            if not auto:
+                failed = ", ".join(mtf_summary["failed_names"])
+                send_telegram_msg(f"MTF GATE REJECTED: {failed} | H1={h1_trend} M15={m15_trend} | source={m15_source}", chat_id)
+            return
+        sig["version"] = VERSION
+        sig["rr"] = SMC_RR
+        candidate = create_candidate(sig, checks, data_source=m15_source)
         key = (pd.Timestamp(sig['time']).date(), sig['level'])
         if key in _smc_used_live:
             if not auto: send_telegram_msg(f"ℹ️ Na-log na ang {sig['level']} sweep setup ngayong araw.", chat_id)
             return
         _smc_used_live.add(key)
+        sig["gate_summary"] = mtf_summary
+        sig["audit_state"] = candidate["state"]
+        sig["execution_mode"] = candidate["execution_mode"]
+        sig["data_source"] = candidate["data_source"]
         trade_id = log_new_trade(sig)
         pht, utc = format_time_pht(sig['time'])
         caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 SMC {VERSION} PAPER ID #{trade_id}\n"
