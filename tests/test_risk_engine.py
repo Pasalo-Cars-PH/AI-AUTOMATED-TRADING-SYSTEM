@@ -30,7 +30,7 @@ def test_total_open_risk_gate():
 
 
 def test_correlated_risk_gate():
-    trades = [{"status": "OPEN", "risk_usd": 100, "symbol": "XAU/USD"}]
+    trades = [{"status": "OPEN", "risk_usd": 110, "symbol": "XAU/USD"}]
     r = evaluate_risk(
         trades, equity_usd=10000, entry=100, sl=98, tp=104, side="BUY",
         symbol="XAU/USD", config=RiskConfig()
