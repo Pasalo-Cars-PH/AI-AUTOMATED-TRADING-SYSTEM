@@ -1,0 +1,33 @@
+from fastapi.testclient import TestClient
+import app.main as main
+
+client = TestClient(main.app)
+
+def telegram_update(command, chat_id="test-chat"):
+    return {"update_id": 9000, "message": {"chat": {"id": chat_id}, "text": command}}
+
+def test_paper_command_center_status_commands(monkeypatch):
+    sent = []
+    monkeypatch.setattr(main, "send_telegram_msg", lambda msg, chat_id=None: sent.append((msg, chat_id)))
+    for command in ["/paperstatus", "/positions", "/performance", "/risk", "/journal"]:
+        response = client.post("/telegram/webhook", json=telegram_update(command, chat_id=""))
+        assert response.status_code == 200
+    assert len(sent) == 5
+
+def test_pause_and_resume_are_paper_only(monkeypatch):
+    sent = []
+    monkeypatch.setattr(main, "send_telegram_msg", lambda msg, chat_id=None: sent.append(msg))
+    main.PAPER_SCAN_PAUSED = False
+
+    assert client.post("/telegram/webhook", json=telegram_update("/pause", chat_id="")).status_code == 200
+    assert main.PAPER_SCAN_PAUSED is True
+
+    assert client.post("/telegram/webhook", json=telegram_update("/resume-paper", chat_id="")).status_code == 200
+    assert main.PAPER_SCAN_PAUSED is False
+
+    assert all("DISABLED" in msg for msg in sent)
+
+def test_execution_commands_remain_blocked():
+    source = open("app/telegram.py", encoding="utf-8").read()
+    for command in ["/unlock", "/buy", "/sell", "/order", "/trade", "/execute"]:
+        assert command in source
