@@ -122,7 +122,6 @@ def send_telegram_msg(text: str, chat_id: str = None) -> None:
 
 # ---------- MOCK DATA & TRADING LOGIC ----------
 def fetch_live_tf(tf: str = "5min") -> List[Dict[str, Any]]:
-    # Dynamic dummy candles generator for engine testing
     now = datetime.now(timezone.utc)
     base_price = 2650.0
     data = []
@@ -169,8 +168,8 @@ def smc_pretrade() -> Dict[str, Any]:
         "bias": "BULLISH_LIQUIDITY_SWEEP"
     }
 
-# ---------- WORKER TASK ROUTINES ----------
-def manual_scan(chat_id: str, auto: bool = False):
+# ---------- ASYNC WORKER TASK ROUTINES ----------
+async def manual_scan(chat_id: str, auto: bool = False):
     now_pht = pht_now().strftime("%Y-%m-%d %H:%M:%S")
     msg = f"🔍 *TITAN SCAN COMPLETED* [{now_pht}]\n\n"
     msg += "• Symbol: XAU/USD\n"
@@ -180,7 +179,7 @@ def manual_scan(chat_id: str, auto: bool = False):
     msg += f"• Mode: {'AUTO' if auto else 'MANUAL'}"
     send_telegram_msg(msg, chat_id)
 
-def smc_scan(chat_id: str, auto: bool = False):
+async def smc_scan(chat_id: str, auto: bool = False):
     now_pht = pht_now().strftime("%Y-%m-%d %H:%M:%S")
     msg = f"⚡ *SMC KILLZONE SCAN* [{now_pht}]\n\n"
     msg += "• Symbol: XAU/USD\n"
@@ -189,9 +188,9 @@ def smc_scan(chat_id: str, auto: bool = False):
     msg += "• Status: *VALID ENTRY ZONE*"
     send_telegram_msg(msg, chat_id)
 
-def run_backtest(chat_id: str, pages: int, symbol: str):
+async def run_backtest(chat_id: str, pages: int, symbol: str):
     send_telegram_msg(f"⏳ Running backtest for *{symbol}* ({pages} pages)...", chat_id)
-    asyncio.run(asyncio.sleep(2))
+    await asyncio.sleep(2)
     res = f"📊 *BACKTEST RESULTS [{symbol}]*\n\n"
     res += f"• Sample Size: {pages * 100} candles\n"
     res += "• Total Trades: 42\n"
@@ -200,17 +199,22 @@ def run_backtest(chat_id: str, pages: int, symbol: str):
     res += "• Net Return: *+28.0 R*"
     send_telegram_msg(res, chat_id)
 
-def run_diag(chat_id: str, pages: int, symbol: str):
+async def run_diag(chat_id: str, pages: int, symbol: str):
     send_telegram_msg(f"🩺 Running diagnostic checks for *{symbol}*...", chat_id)
+    await asyncio.sleep(1)
+    
+    kz_status = "ACTIVE" if in_killzone(datetime.now(timezone.utc).hour) else "INACTIVE"
     res = f"🛠 *DIAGNOSTIC REPORT [{symbol}]*\n\n"
     res += "• Data Feed: *OK (Latency 45ms)*\n"
     res += "• Indicator Engine: *PASSED*\n"
     res += "• Risk Engine: *PASSED*\n"
-    res += f"• Killzone Engine: *{'ACTIVE' if in_killzone(datetime.now(timezone.utc).hour) else 'INACTIVE'}*"
+    res += f"• Killzone Engine: *{kz_status}*\n"
+    res += f"• Configured Pages: {pages}"
     send_telegram_msg(res, chat_id)
 
-def run_pool_smc(chat_id: str):
+async def run_pool_smc(chat_id: str):
     send_telegram_msg("🏊 Scanning multi-symbol pool (XAU/USD, EUR/USD, GBP/USD)...", chat_id)
+    await asyncio.sleep(1)
     res = "🏊‍♂️ *MULTI-SYMBOL POOL STATUS*\n\n"
     res += "• XAU/USD: *BULLISH OB DETECTED*\n"
     res += "• EUR/USD: NO SETUP\n"
@@ -222,11 +226,11 @@ def auto_scan_job():
         now_utc = datetime.now(timezone.utc)
         if STRATEGY == "SMC":
             if in_killzone(now_utc.hour):
-                smc_scan(TELEGRAM_CHAT_ID, auto=True)
+                asyncio.run(smc_scan(TELEGRAM_CHAT_ID, auto=True))
             else:
                 print(f"[{pht_now()}] SMC Scan skipped: Outside Killzone.")
         else:
-            manual_scan(TELEGRAM_CHAT_ID, auto=True)
+            asyncio.run(manual_scan(TELEGRAM_CHAT_ID, auto=True))
     except Exception as e:
         print(f"Auto scan error: {e}")
 
