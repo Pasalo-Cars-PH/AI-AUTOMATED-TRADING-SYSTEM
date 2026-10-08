@@ -2107,21 +2107,24 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             elif txt_base in ("/win", "/loss"):
                 res = "WIN" if txt_base == "/win" else "LOSS"
                 icon = "✅" if res == "WIN" else "❌"
-                rv = "+2R" if res == "WIN" else "-1R"
-                tid = None
-                if args:
-                    try: tid = int(args[0])
-                    except: send_telegram_msg(f"Usage {txt_base} [id]", cid); return {"status": "ok"}
+                if len(args) < 2:
+                    send_telegram_msg(f"Usage: {txt_base} [id] [actual_exit_price] — no fabricated R/PnL.", cid)
                 else:
-                    open_trades = [t for t in load_trades() if t.get('status') == 'OPEN']
-                    if open_trades: tid = open_trades[-1]['id']
-                if tid is None:
-                    send_telegram_msg("No open trades", cid)
-                elif update_trade_result(tid, res):
-                    stats = calculate_stats(load_trades())
-                    send_telegram_msg(f"{icon} Trade #{tid} {res} {rv} | WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R Net {stats['net']}R | /dashboard", cid)
-                else:
-                    send_telegram_msg(f"Trade #{tid} not found", cid)
+                    try:
+                        tid = int(args[0])
+                        exit_price = float(args[1])
+                    except (TypeError, ValueError):
+                        send_telegram_msg(f"Usage: {txt_base} [id] [actual_exit_price]", cid)
+                        return {"status": "ok"}
+                    if update_trade_result(tid, res, exit_price):
+                        stats = calculate_stats(load_trades())
+                        trade = next((t for t in load_trades() if t.get("id") == tid), None)
+                        rv = trade.get("r") if trade else None
+                        send_telegram_msg(
+                            f"{icon} Trade #{tid} {res} exit={exit_price} R={rv if rv is not None else 'N/A'} | "
+                            f"WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R Net {stats['net']}R | /dashboard", cid)
+                    else:
+                        send_telegram_msg(f"Trade #{tid} not found", cid)
             elif txt_base == "/testtrade":
                 test_sig = {"type": "BUY", "entry": 4142.47, "sl": 4140.67, "tp": 4146.07, "time": pht_now().isoformat(),
                             "tf": "M5", "confluence": 60, "model_score": 70, "layers": ["TEST"], "reason": "TEST TRADE - dashboard testing"}
