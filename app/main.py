@@ -2010,7 +2010,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 except Exception as e:
                     send_telegram_msg(f"Reset error {e}", cid)
             elif txt_base in ["/help", "/start"]:
-                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\n• /status • /scan • /backtest [pages] [symbol] • /diag [pages] [symbol] • /pool\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /testtrade • /reset (clears ALL trades)", cid)
+                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER COMMAND CENTER*\n• /status • /paperstatus • /scan • /bestsetup\n• /positions • /performance • /risk • /journal\n• /pause • /resume-paper\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /backtest [pages] [symbol] • /diag [pages] [symbol] • /pool\n• /testtrade • /reset\n🔒 Live execution commands remain disabled.", cid)
     except Exception as e:
         print(e)
         import traceback; traceback.print_exc()
