@@ -1,4 +1,4 @@
-import os, datetime, json, math, bisect, time, threading
+import os, datetime, json, math, bisect, time, threading, random
 from contextlib import asynccontextmanager
 import requests, pandas as pd
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -23,7 +23,7 @@ MIN_LAYERS = 0             # 0 = gates lang. Sa /diag, walang naidagdag ang laye
 USE_ATR_SL = True          # SL/TP = ATR(10) multiples (live + backtest). False = fixed SL_D/TP_D
 ATR_SL_MULT = 1.5
 ATR_TP_MULT = 3.0          # RR 1:2
-VERSION = "V7.8"
+VERSION = "V8.0"
 
 # Trade storage for real-time dashboard
 TRADES_FILE = "/tmp/titan_trades_v6.json"
@@ -794,15 +794,17 @@ def fetch_hist_paged(interval="5min", pages=5, size=5000):
 _hist_cache = {"rec": None, "time": 0}
 _job_lock = threading.Lock()      # isa lang na backtest/diag sa isang oras
 
-def get_hist_cached(max_age_s=6*3600, force=False):
+def get_hist_cached(max_age_s=6*3600, force=False, pages=5):
     """Iwas sunog ng TwelveData credits: reuse ang history ng 6 oras."""
     now = time.time()
-    if not force and _hist_cache["rec"] and now - _hist_cache["time"] < max_age_s:
+    if (not force and _hist_cache["rec"] and now - _hist_cache["time"] < max_age_s
+            and _hist_cache.get("pages", 0) >= pages):
         return _hist_cache["rec"]
-    rec = fetch_hist_paged("5min", pages=5, size=5000)
+    rec = fetch_hist_paged("5min", pages=pages, size=5000)
     if rec and len(rec) >= 1000:
         _hist_cache["rec"] = rec
         _hist_cache["time"] = now
+        _hist_cache["pages"] = pages
     return rec
 
 def _fmt(name, s):
@@ -812,6 +814,8 @@ def _fmt(name, s):
     return f"{name}: {s['total']}T | WR {s['wr']}% (BE {be}) | PF {s['pf']} | Exp {s['exp']}R | Net {s['net']}R"
 
 def run_backtest(chat_id):
+    if STRATEGY == "SMC":
+        return run_backtest_smc(chat_id)
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
@@ -841,6 +845,8 @@ def run_backtest(chat_id):
 
 def run_diag(chat_id):
     """Diagnostics: cost, ATR SL/TP, BUY/SELL, oras, at kung may naidagdag ba ang layers."""
+    if STRATEGY == "SMC":
+        return run_diag_smc(chat_id)
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
         return
@@ -899,11 +905,423 @@ def run_diag(chat_id):
     finally:
         _job_lock.release()
 
+# ============================================================
+# SMC STRATEGY (V8.0): PDH/PDL liquidity sweep + displacement/FVG, killzones lang.
+# LAHAT NG PARAMETER AY NAKA-FIX BAGO TUMINGIN SA RESULTS. Huwag i-tune sa parehong data.
+# ============================================================
+STRATEGY = os.getenv("TITAN_STRATEGY", "SMC").upper()   # "SMC" o "ENGULF" (luma)
+SMC_KZ = [(7, 10), (12, 16)]      # UTC hours, candle-open hour [start, end). London + NY
+SMC_SWEEP_LOOKBACK = 12           # bars (1h) para sa sweep bago ang displacement
+SMC_DISP = 0.8                    # displacement candle body >= 0.8 x ATR
+SMC_GAP = 0.1                     # FVG gap >= 0.1 x ATR
+SMC_SL_BUF = 0.1                  # SL = sweep extreme +/- 0.1 x ATR
+SMC_RR = 2.0
+SMC_MIN_RISK, SMC_MAX_RISK = 0.5, 5.0   # risk (entry->SL) sa ATR units
+SMC_MAX_HOLD = 48                 # bars (4h)
+SMC_LIMIT_WAIT = 6                # bars para sa limit-entry variant (backtest lang)
+SPLIT_FRAC = 2 / 3                # 2/3 in-sample, 1/3 out-of-sample
+
+def in_killzone(h):
+    return any(a <= h < b for a, b in SMC_KZ)
+
+def smc_day_levels(records):
+    d = {}
+    for r in records:
+        day = pd.Timestamp(r['datetime']).date()
+        e = d.get(day)
+        if e is None:
+            d[day] = [r['high'], r['low'], 1]
+        else:
+            e[0] = max(e[0], r['high']); e[1] = min(e[1], r['low']); e[2] += 1
+    return d
+
+def smc_prev_map(levels, min_bars=100):
+    """day -> (PDH, PDL) ng huling buong araw bago nito (UTC calendar day)."""
+    out = {}
+    last = None
+    for day in sorted(levels):
+        out[day] = last
+        if levels[day][2] >= min_bars:
+            last = (levels[day][0], levels[day][1])
+    return out
+
+def smc_signal(win, pdh, pdl, explain=False):
+    """win: oldest->newest (dict: open/high/low/close/datetime). Huling candle = signal candle (sarado na).
+    Returns (sig|None, checks). Entry sa signal ay c0 close (market)."""
+    checks = []
+    def chk(name, ok, actual=""):
+        if explain:
+            checks.append({"name": name, "pass": bool(ok), "actual": str(actual)})
+        return bool(ok)
+    if len(win) < 30:
+        chk("Data", False, f"{len(win)} bars")
+        return None, checks
+    c0, c1, c2 = win[-1], win[-2], win[-3]
+    t0 = pd.Timestamp(c0['datetime'])
+    if not chk("Killzone", in_killzone(t0.hour), f"{t0.hour}:{t0.minute:02d} UTC"):
+        return None, checks
+    if pdh is None or pdl is None:
+        chk("PDH/PDL", False, "walang prev day")
+        return None, checks
+    chk("PDH/PDL", True, f"{pdh:.2f} / {pdl:.2f}")
+    o = win[-40:]
+    atr = _atr_series([c['high'] for c in o], [c['low'] for c in o], [c['close'] for c in o], 10)[-1]
+    if not atr:
+        chk("ATR", False, "none")
+        return None, checks
+    rng = win[-(SMC_SWEEP_LOOKBACK + 2):-1]            # bars hanggang c1
+    hi_ext = max(b['high'] for b in rng)
+    lo_ext = min(b['low'] for b in rng)
+    swept_hi = hi_ext > pdh and c0['close'] < pdh      # wick sa taas ng PDH, balik sa loob
+    swept_lo = lo_ext < pdl and c0['close'] > pdl
+    if swept_hi and swept_lo:
+        chk("Sweep", False, "parehong PDH at PDL (skip)")
+        return None, checks
+    if not chk("Sweep PDH/PDL", swept_hi or swept_lo, f"hi {hi_ext:.2f} lo {lo_ext:.2f}"):
+        return None, checks
+    side = "SELL" if swept_hi else "BUY"
+    body1 = abs(c1['close'] - c1['open'])
+    if side == "SELL":
+        gap = c2['low'] - c0['high']; dir_ok = c1['close'] < c1['open']
+    else:
+        gap = c0['low'] - c2['high']; dir_ok = c1['close'] > c1['open']
+    fvg_ok = dir_ok and body1 >= SMC_DISP * atr and gap >= SMC_GAP * atr
+    if not chk("Displacement+FVG", fvg_ok, f"{side} body {body1/atr:.2f}xATR gap {gap/atr:.2f}xATR"):
+        return None, checks
+    entry = c0['close']
+    ext = hi_ext if side == "SELL" else lo_ext
+    sl = ext + SMC_SL_BUF * atr if side == "SELL" else ext - SMC_SL_BUF * atr
+    risk = abs(sl - entry)
+    if not chk("Risk size", SMC_MIN_RISK * atr <= risk <= SMC_MAX_RISK * atr, f"risk ${risk:.2f} = {risk/atr:.2f}xATR"):
+        return None, checks
+    tp = entry - SMC_RR * risk if side == "SELL" else entry + SMC_RR * risk
+    if side == "SELL":
+        fvg_lo, fvg_hi = c0['high'], c2['low']
+    else:
+        fvg_lo, fvg_hi = c2['high'], c0['low']
+    level = "PDH" if side == "SELL" else "PDL"
+    sig = {
+        "pair": "XAUUSD", "type": side, "entry": round(entry, 2), "sl": round(sl, 2), "tp": round(tp, 2),
+        "time": str(c0['datetime']), "level": level, "atr": atr, "risk": risk,
+        "fvg_lo": fvg_lo, "fvg_hi": fvg_hi, "pinbar": f"SMC_{level}_sweep+FVG",
+        "confluence": 0, "model_score": 0, "layers": [f"{level}_SWEEP", "DISP", "FVG", "KZ"],
+        "reason": f"{VERSION} SMC {side} after {level} sweep + FVG | risk ${risk:.2f} ({risk/atr:.1f}xATR) RR1:{SMC_RR:g}",
+        "tf": "M5",
+    }
+    return sig, checks
+
+def _eval_trade(records, j0, buy, entry, sl, tp, max_hold, tp_on_first=True):
+    """Returns (pnl sa presyo, exit_index). SL muna kapag sabay na tinamaan."""
+    end = min(len(records), j0 + max_hold)
+    for j in range(j0, end):
+        fc = records[j]
+        if buy:
+            if fc['low'] <= sl: return -abs(entry - sl), j
+            if (tp_on_first or j > j0) and fc['high'] >= tp: return abs(tp - entry), j
+        else:
+            if fc['high'] >= sl: return -abs(sl - entry), j
+            if (tp_on_first or j > j0) and fc['low'] <= tp: return abs(entry - tp), j
+    last = records[end - 1]['close']
+    return ((last - entry) if buy else (entry - last)), end - 1
+
+def sim_smc(records, mode="market", rr=None, cost=SPREAD_COST):
+    """records: oldest->newest. mode: 'market' (entry sa next open, ito ang live) o 'limit' (50% FVG, backtest lang)."""
+    rr = SMC_RR if rr is None else rr
+    n = len(records)
+    ts = [pd.Timestamp(r['datetime']) for r in records]
+    prevmap = smc_prev_map(smc_day_levels(records))
+    used = set()
+    trades = []
+    i = 40
+    while i < n - SMC_MAX_HOLD - SMC_LIMIT_WAIT - 2:
+        t0 = ts[i-1]
+        if not in_killzone(t0.hour):
+            i += 1
+            continue
+        pl = prevmap.get(t0.date())
+        if not pl:
+            i += 1
+            continue
+        sig, _ = smc_signal(records[i-40:i], pl[0], pl[1])
+        if not sig:
+            i += 1
+            continue
+        key = (t0.date(), sig['level'])
+        if key in used:                       # isang attempt bawat level bawat araw
+            i += 1
+            continue
+        used.add(key)
+        buy = sig['type'] == "BUY"
+        sl = sig['sl']
+        if mode == "market":
+            entry = records[i]['open']
+            j0 = i
+            risk = abs(entry - sl)
+            if risk <= 0 or (buy and entry <= sl) or ((not buy) and entry >= sl):
+                i += 1
+                continue
+        else:
+            entry = (sig['fvg_lo'] + sig['fvg_hi']) / 2
+            risk = abs(entry - sl)
+            if not (SMC_MIN_RISK * sig['atr'] <= risk <= SMC_MAX_RISK * sig['atr']):
+                i += 1
+                continue
+            j0 = None
+            for j in range(i, i + SMC_LIMIT_WAIT):
+                fc = records[j]
+                if (buy and fc['low'] <= entry) or ((not buy) and fc['high'] >= entry):
+                    j0 = j
+                    break
+            if j0 is None:
+                i += 1
+                continue
+        tp = entry + rr * risk if buy else entry - rr * risk
+        pnl, ej = _eval_trade(records, j0, buy, entry, sl, tp, SMC_MAX_HOLD, tp_on_first=(mode == "market"))
+        trades.append({"idx": i, "type": sig['type'], "hour": t0.hour, "sl_d": risk, "atr": sig['atr'],
+                       "level": sig['level'], "r": (pnl - cost) / risk})
+        i = ej + 1
+    return trades
+
+def sim_smc_baseline(records, direction="RANDOM", sl_atr=1.5, rr=None, cost=SPREAD_COST, seed=7):
+    """Null model: pasok sa killzone na walang sweep/FVG logic. Para makita kung may naidagdag ang SMC."""
+    rr = SMC_RR if rr is None else rr
+    rnd = random.Random(seed)
+    n = len(records)
+    ts = [pd.Timestamp(r['datetime']) for r in records]
+    trades = []
+    i = 40
+    while i < n - SMC_MAX_HOLD - 2:
+        if not in_killzone(ts[i-1].hour):
+            i += 1
+            continue
+        o = records[i-40:i]
+        atr = _atr_series([c['high'] for c in o], [c['low'] for c in o], [c['close'] for c in o], 10)[-1]
+        if not atr:
+            i += 1
+            continue
+        buy = (rnd.random() < 0.5) if direction == "RANDOM" else (direction == "BUY")
+        entry = records[i]['open']
+        risk = sl_atr * atr
+        sl = entry - risk if buy else entry + risk
+        tp = entry + rr * risk if buy else entry - rr * risk
+        pnl, ej = _eval_trade(records, i, buy, entry, sl, tp, SMC_MAX_HOLD)
+        trades.append({"idx": i, "type": "BUY" if buy else "SELL", "hour": ts[i-1].hour, "sl_d": risk, "atr": atr,
+                       "level": "-", "r": (pnl - cost) / risk})
+        i = ej + 1
+    return trades
+
+def smc_funnel(records):
+    """Ilang killzone bars ang pumapasa sa bawat hakbang. Walang kinalaman sa PnL, kaya
+    ligtas gamitin para tingnan kung masyadong mahigpit ang isang filter."""
+    ts = [pd.Timestamp(r['datetime']) for r in records]
+    prevmap = smc_prev_map(smc_day_levels(records))
+    names = ["Killzone", "PDH/PDL", "Sweep PDH/PDL", "Displacement+FVG", "Risk size"]
+    reached = [0] * (len(names) + 1)       # reached[k] = bars na pumasa sa unang k checks
+    for i in range(40, len(records) + 1):
+        t0 = ts[i-1]
+        if not in_killzone(t0.hour):
+            continue
+        pl = prevmap.get(t0.date())
+        sig, checks = smc_signal(records[i-40:i], pl[0] if pl else None, pl[1] if pl else None, explain=True)
+        k = 0
+        for c in checks:
+            if c['pass']: k += 1
+            else: break
+        if sig: k = len(names)
+        for q in range(k + 1):
+            reached[q] += 1
+    return names, reached
+
+# ---------- SMC BACKTEST / DIAG ----------
+def run_backtest_smc(chat_id):
+    if MASTER_LIVE_ENABLE:
+        send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
+        return
+    if not _job_lock.acquire(blocking=False):
+        send_telegram_msg("⏳ May tumatakbo pang /backtest o /diag. Hintayin muna matapos.", chat_id)
+        return
+    send_telegram_msg(f"⏳ TITAN {VERSION} SMC backtest... ~2 min (maraming data)", chat_id)
+    try:
+        rec = get_hist_cached(pages=10)
+        if not rec or len(rec) < 3000:
+            send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
+            return
+        cut = int(len(rec) * SPLIT_FRAC)
+        days = len({pd.Timestamp(r['datetime']).date() for r in rec})
+        tr = sim_smc(rec, "market")
+        msg = (f"📊 TITAN {VERSION} SMC | {len(rec)} bars (~{days} araw) | cost ${SPREAD_COST}/trade\n"
+               f"PDH/PDL sweep + FVG | KZ 07-10 & 12-16 UTC | SL sa sweep extreme | RR 1:{SMC_RR:g} | market entry\n\n")
+        msg += _fmt("ALL", summarize(tr)) + "\n"
+        msg += _fmt("IN-SAMPLE 2/3", summarize([t for t in tr if t['idx'] < cut])) + "\n"
+        msg += _fmt("OUT-OF-SAMPLE 1/3", summarize([t for t in tr if t['idx'] >= cut])) + "\n\n"
+        msg += "BE = breakeven WR pagkatapos ng cost. Para sa baseline at stability: /diag"
+        send_telegram_msg(msg, chat_id)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        send_telegram_msg(f"Err {e}", chat_id)
+    finally:
+        _job_lock.release()
+
+def run_diag_smc(chat_id):
+    if MASTER_LIVE_ENABLE:
+        send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
+        return
+    if not _job_lock.acquire(blocking=False):
+        send_telegram_msg("⏳ May tumatakbo pang /backtest o /diag. Hintayin muna matapos.", chat_id)
+        return
+    send_telegram_msg(f"🔬 TITAN {VERSION} SMC DIAG... ~2-3 min", chat_id)
+    try:
+        rec = get_hist_cached(pages=10)
+        if not rec or len(rec) < 3000:
+            send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
+            return
+        cut = int(len(rec) * SPLIT_FRAC)
+        days = len({pd.Timestamp(r['datetime']).date() for r in rec})
+        oos = lambda trs: summarize([t for t in trs if t['idx'] >= cut])
+        mk = sim_smc(rec, "market")
+        mk_g = sim_smc(rec, "market", cost=0.0)
+        lm = sim_smc(rec, "limit")
+        s_mk = summarize(mk)
+
+        m1 = f"🔬 SMC DIAG {VERSION} | {len(rec)} bars (~{days} araw) | {len(mk)} trades ({len(mk)/max(days,1):.2f}/araw)\n\n"
+        m1 += f"A) MARKET entry, RR 1:{SMC_RR:g} (ito ang live)\n"
+        m1 += _fmt("GROSS all", summarize(mk_g)) + "\n"
+        m1 += _fmt("NET   all", s_mk) + f" | avg risk ${s_mk['avg_sl']}\n"
+        m1 += _fmt("NET   oos", oos(mk)) + "\n"
+        m1 += "\nB) LIMIT 50% FVG (backtest lang, hindi live)\n"
+        m1 += _fmt("NET   all", summarize(lm)) + "\n" + _fmt("NET   oos", oos(lm)) + "\n"
+        m1 += "\nC) RR variants (info lang, huwag piliin ang pinakamaganda)\n"
+        for rr_v in (1.5, 3.0):
+            t_rr = sim_smc(rec, "market", rr=rr_v)
+            m1 += _fmt(f"RR {rr_v:g} all", summarize(t_rr)) + "\n" + _fmt(f"RR {rr_v:g} oos", oos(t_rr)) + "\n"
+        names, reached = smc_funnel(rec)
+        m1 += "\nG) FUNNEL (killzone bars na pumasa, hindi PnL)\n"
+        m1 += f"Killzone bars: {reached[0]}\n"
+        for k, nm in enumerate(names):
+            m1 += f"→ {nm}: {reached[k+1]}\n"
+        m1 += "Kung <60 trades ang lumabas, kulang ang sample para sa anumang konklusyon."
+        send_telegram_msg(m1, chat_id)
+
+        ratios = sorted(t['sl_d'] / t['atr'] for t in mk if t.get('atr'))
+        ratio = ratios[len(ratios) // 2] if ratios else 1.5
+        m2 = f"D) BASELINE: killzone entries na walang sweep/FVG (SL {ratio:.1f}xATR, RR {SMC_RR:g}, net)\n"
+        for d in ("RANDOM", "BUY", "SELL"):
+            m2 += _fmt(f"{d:6s}", summarize(sim_smc_baseline(rec, d, sl_atr=ratio))) + "\n"
+        m2 += _fmt("SMC   ", s_mk) + "\n"
+        m2 += "→ Kung ang SMC ay hindi mas mataas sa baseline, walang naidagdag ang sweep/FVG logic.\n"
+
+        m2 += "\nE) SIDE / SESSION (SMC net)\n"
+        for lbl, flt in [("SELL (PDH sweep)", lambda t: t['type'] == "SELL"), ("BUY (PDL sweep)", lambda t: t['type'] == "BUY"),
+                         ("London 07-10", lambda t: 7 <= t['hour'] < 10), ("NY 12-16", lambda t: 12 <= t['hour'] < 16)]:
+            m2 += _fmt(lbl, summarize([t for t in mk if flt(t)])) + "\n"
+        q = len(rec) // 4
+        m2 += "\nF) STABILITY (SMC net, 4 hati ng panahon)\n"
+        for qi in range(4):
+            m2 += _fmt(f"Q{qi+1}", summarize([t for t in mk if qi * q <= t['idx'] < (qi + 1) * q])) + "\n"
+        send_telegram_msg(m2, chat_id)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        send_telegram_msg(f"Diag err {e}", chat_id)
+    finally:
+        _job_lock.release()
+
+# ---------- SMC LIVE ----------
+_smc_live_cache = {"recs": None, "time": None}
+_smc_used_live = set()
+
+def fetch_m5_live(n=900):
+    now = datetime.datetime.utcnow()
+    c = _smc_live_cache
+    if c["recs"] and c["time"] and (now - c["time"]).total_seconds() < 60:
+        return c["recs"]
+    vals = fetch_data("XAU/USD", "5min", n)
+    if not vals or len(vals) < 200:
+        return None
+    recs = []
+    for v in reversed(vals):                   # newest-first -> oldest-first
+        try:
+            o, h, l, cl = float(v["open"]), float(v["high"]), float(v["low"]), float(v["close"])
+            if h > l and o > 0 and cl > 0:
+                recs.append({"datetime": pd.Timestamp(v["datetime"]), "open": o, "high": h, "low": l, "close": cl})
+        except: pass
+    if len(recs) < 200:
+        return None
+    try:
+        if now < recs[-1]['datetime'].to_pydatetime() + datetime.timedelta(minutes=5):
+            recs = recs[:-1]                   # drop forming candle
+    except: pass
+    c["recs"] = recs
+    c["time"] = now
+    return recs
+
+def smc_live_signal(explain=False):
+    recs = fetch_m5_live(900)
+    if not recs:
+        return None, [], None
+    t0 = pd.Timestamp(recs[-1]['datetime'])
+    age_min = (datetime.datetime.utcnow() - (t0.to_pydatetime() + datetime.timedelta(minutes=5))).total_seconds() / 60
+    if age_min > 15:
+        return None, [{"name": "Data fresh", "pass": False, "actual": f"{age_min:.0f} min old"}], recs
+    pl = smc_prev_map(smc_day_levels(recs)).get(t0.date())
+    pdh, pdl = pl if pl else (None, None)
+    sig, checks = smc_signal(recs[-40:], pdh, pdl, explain=explain)
+    return sig, checks, recs
+
+def smc_scan(chat_id, auto=False):
+    sig, checks, recs = smc_live_signal(explain=not auto)
+    if recs is None:
+        if not auto: send_telegram_msg("Data fail - no data, no trade", chat_id)
+        return
+    if sig:
+        key = (pd.Timestamp(sig['time']).date(), sig['level'])
+        if key in _smc_used_live:
+            if not auto: send_telegram_msg(f"ℹ️ Na-log na ang {sig['level']} sweep setup ngayong araw.", chat_id)
+            return
+        _smc_used_live.add(key)
+        trade_id = log_new_trade(sig)
+        pht, utc = format_time_pht(sig['time'])
+        caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 SMC {VERSION} PAPER ID #{trade_id}\n"
+                   f"• {sig['type']} after {sig['level']} sweep + FVG\n"
+                   f"• Entry `{format_price(sig['entry'])}`\n"
+                   f"• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:{SMC_RR:g}\n"
+                   f"• Risk `${sig['risk']:.2f}` ({sig['risk']/sig['atr']:.1f}xATR)\n"
+                   f"• FVG zone `{sig['fvg_lo']:.2f}-{sig['fvg_hi']:.2f}`\n"
+                   f"• Time `{pht}` ({utc})\n"
+                   f"• PAPER ONLY - Close with /win {trade_id} or /loss {trade_id}")
+        send_telegram_msg(caption, chat_id)
+    elif not auto:
+        lines = "\n".join(f"{'✅' if c['pass'] else '❌'} {c['name']}: {c['actual']}" for c in checks)
+        send_telegram_msg(f"ℹ️ No SMC setup ({VERSION})\n{lines}", chat_id)
+
+def smc_pretrade():
+    sig, checks, recs = smc_live_signal(explain=True)
+    out = {"timestamp": pht_now().isoformat(), "tf": "M5", "h1_trend": "n/a (SMC)", "version": VERSION,
+           "data_source": "LIVE_TWELVEDATA_5min", "h1_full": {}, "ichi": None, "layers": [], "boosters": [],
+           "indicators": {}, "passed_layers": 0, "confluence": 0, "model_score": 0}
+    if not recs:
+        out["error"] = "No data"
+        return out
+    c = recs[-1]
+    out["live_price"] = c['close']
+    out["candle"] = {"open": c['open'], "high": c['high'], "low": c['low'], "close": c['close'],
+                     "body": abs(c['close'] - c['open']), "range": c['high'] - c['low'], "sc": 0,
+                     "datetime": str(c['datetime'])}
+    out["gates"] = [{"id": i + 1, "name": ck['name'], "desc": "", "required": "", "actual": ck['actual'],
+                     "pass": ck['pass'], "fail_reason": "" if ck['pass'] else "failed"} for i, ck in enumerate(checks)]
+    out["signal"] = sig
+    out["decision"] = sig['type'] if sig else "SKIP"
+    failed = [ck['name'] for ck in checks if not ck['pass']]
+    out["reason"] = sig['reason'] if sig else ("Failed: " + ", ".join(failed) if failed else "No setup")
+    return out
+
+
 # ---------- SCAN ----------
 def manual_scan(chat_id, auto=False):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - SAFETY LOCK PAPER ONLY", chat_id)
         return
+    if STRATEGY == "SMC":
+        return smc_scan(chat_id, auto)
     h1 = fetch_h1_supertrend_adx()
     data = fetch_live_tf("5min")
     if not data:
@@ -947,6 +1365,10 @@ def auto_scan_job():
         if MASTER_LIVE_ENABLE: return
         now_utc = datetime.datetime.utcnow()
         if not TELEGRAM_CHAT_ID: return
+        if STRATEGY == "SMC":
+            if not in_killzone((now_utc - datetime.timedelta(minutes=5)).hour): return
+            smc_scan(TELEGRAM_CHAT_ID, auto=True)
+            return
         if not (7 <= now_utc.hour <= 19): return
         print(f"[AUTO-SCAN {VERSION}] {now_utc} scanning M5...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
@@ -956,7 +1378,11 @@ def auto_scan_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not scheduler.running:
-        scheduler.add_job(auto_scan_job, 'interval', minutes=15, id='titan_autoscan', replace_existing=True)
+        if STRATEGY == "SMC":
+            # every 5 min, ilang segundo pagkatapos magsara ang M5 candle (killzone lang ang aktibo sa loob ng job)
+            scheduler.add_job(auto_scan_job, 'cron', minute='*/5', second=40, id='titan_autoscan', replace_existing=True)
+        else:
+            scheduler.add_job(auto_scan_job, 'interval', minutes=15, id='titan_autoscan', replace_existing=True)
         scheduler.start()
         print(f"✅ TITAN {VERSION} auto-scan 07-19 UTC started!")
     yield
@@ -1005,6 +1431,8 @@ def _clean_live():
 @app.get("/api/pretrade")
 def api_pretrade():
     try:
+        if STRATEGY == "SMC":
+            return JSONResponse(smc_pretrade())
         h1_full = get_h1_full_status()
         h1 = h1_full.get("combined", "UNKNOWN")
         clean = _clean_live()
@@ -1029,6 +1457,9 @@ def api_pretrade():
 @app.get("/api/signal")
 def api_signal():
     try:
+        if STRATEGY == "SMC":
+            sig, checks, recs = smc_live_signal(explain=True)
+            return JSONResponse({"signal": sig, "checks": checks, "timestamp": pht_now().isoformat()})
         h1 = fetch_h1_supertrend_adx()
         clean = _clean_live()
         if not clean:
@@ -1387,9 +1818,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 send_telegram_msg("🚫 SAFETY LOCK ACTIVE - PAPER ONLY", cid)
                 return {"status": "blocked"}
             if txt_base == "/status":
-                h1 = fetch_h1_trend()
+                h1 = "n/a (SMC)" if STRATEGY == "SMC" else fetch_h1_trend()
                 stats = calculate_stats(load_trades())
-                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER*\nH1 `{h1}`\nTrades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
+                send_telegram_msg(f"🔒 *TITAN {VERSION} {STRATEGY} M5 PAPER*\nH1 `{h1}`\nTrades `{stats['total_trades']}` Closed `{stats['closed_trades']}` W `{stats['wins']}` L `{stats['losses']}` WR `{stats['wr']}%` PF `{stats['pf']}` Exp `{stats['exp']}R` Net `{stats['net']}R`\nDashboard /dashboard API /api/stats\nTime {pht_now().strftime('%Y-%m-%d %I:%M %p PHT')}", cid)
             elif txt_base == "/scan": background_tasks.add_task(manual_scan, cid)
             elif txt_base == "/backtest": background_tasks.add_task(run_backtest, cid)
             elif txt_base == "/diag": background_tasks.add_task(run_diag, cid)
