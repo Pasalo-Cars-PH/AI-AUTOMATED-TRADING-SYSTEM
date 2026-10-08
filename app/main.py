@@ -110,8 +110,8 @@ def update_trade_result(trade_id, result, exit_price=None, close_reason="MANUAL_
 
 def manage_open_paper_trades():
     """Evaluate open paper trades against the latest completed M5 candle. No broker order is sent."""
-    if MASTER_LIVE_ENABLE or PAPER_SCAN_PAUSED:
-        return {"status": "blocked", "closed": 0, "reason": "paper_scan_paused_or_live_lock"}
+    if MASTER_LIVE_ENABLE:
+        return {"status": "blocked", "closed": 0, "reason": "live_lock"}
     recs = fetch_m5_live(900)
     if not recs:
         return {"status": "no_data", "closed": 0, "reason": "NO_DATA"}
