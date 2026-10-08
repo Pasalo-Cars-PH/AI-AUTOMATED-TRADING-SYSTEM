@@ -1223,7 +1223,10 @@ def run_diag_smc(chat_id, pages=10, symbol="XAU/USD"):
         for d in ("RANDOM", "BUY", "SELL"):
             base[d] = sim_smc_baseline(rec, d, sl_atr=ratio, cost=cost)
             m2 += _fmt(f"{d:6s}", summarize(base[d])) + "\n"
-        _pool_store[symbol] = {"mk": mk, "oos": [t for t in mk if t['idx'] >= cut], "rand": base["RANDOM"],
+        if symbol in _pool_store and _pool_store[symbol]["pages"] > pages:
+            m2 += f"\n(Hindi na-overwrite ang pool entry ng {symbol}: mas malaki ang naka-store na {_pool_store[symbol]['pages']} pages.)\n"
+        else:
+          _pool_store[symbol] = {"mk": mk, "oos": [t for t in mk if t['idx'] >= cut], "rand": base["RANDOM"],
                                "base": base, "pages": pages, "days": days}
         m2 += _fmt("SMC   ", s_mk) + "\n"
         m2 += _fmt("SMC SELL", summarize([t for t in mk if t['type'] == "SELL"])) + "  ← ikumpara sa SELL baseline\n"
