@@ -1462,13 +1462,51 @@ app.add_middleware(
 )
 
 @app.get("/")
-def root(): return {"status": f"XAUUSD TITAN {VERSION} M5 PAPER", "time": pht_now().isoformat(), "live_enabled": MASTER_LIVE_ENABLE, "dashboard": "/dashboard", "api": "/api/stats"}
+def root():
+    return {
+        "status": f"XAUUSD TITAN {VERSION} M5 PAPER",
+        "mode": "PAPER",
+        "master_enable": False,
+        "kill_switch": True,
+        "live_enabled": False,
+        "time": pht_now().isoformat(),
+        "dashboard": "/dashboard",
+        "api": "/api/stats",
+    }
 
 @app.get("/health")
-def health(): return {"status": "ok", "version": VERSION, "live_enabled": MASTER_LIVE_ENABLE}
+def health():
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "mode": "PAPER",
+        "master_enable": False,
+        "kill_switch": True,
+        "live_enabled": False,
+    }
 
 @app.get("/status")
-def status(): return {"status": "ok", "version": VERSION, "live_enabled": MASTER_LIVE_ENABLE}
+def status():
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "mode": "PAPER",
+        "master_enable": False,
+        "kill_switch": True,
+        "live_enabled": False,
+    }
+
+@app.get("/signal")
+def strict_signal_lock():
+    """Legacy safety endpoint: never returns an executable trade signal."""
+    return JSONResponse({
+        "symbol": "NONE",
+        "action": "NONE",
+        "reason": "STRICT_EXECUTION_LOCK_ACTIVE",
+        "mode": "PAPER",
+        "master_enable": False,
+        "kill_switch": True,
+    })
 
 @app.get("/api/trades")
 def api_trades():
