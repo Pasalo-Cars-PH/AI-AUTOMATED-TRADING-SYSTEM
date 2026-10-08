@@ -4,7 +4,7 @@ import app.main as main
 client = TestClient(main.app)
 
 def telegram_update(command, chat_id="test-chat"):
-    return {"update_id": 9000, "message": {"chat": {"id": chat_id}, "text": command}}
+    return {"update_id": 9000 + sum(ord(ch) for ch in command), "message": {"chat": {"id": chat_id}, "text": command}}
 
 def test_paper_command_center_status_commands(monkeypatch):
     sent = []
