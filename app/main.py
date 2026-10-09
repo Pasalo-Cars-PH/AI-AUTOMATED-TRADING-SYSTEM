@@ -1461,8 +1461,8 @@ def risk_gate_and_log(sig, dedupe_key=None):
             symbol=sig.get("pair", sig.get("symbol", "XAU/USD")),
             config=RISK_CONFIG,
         )
-    except (TypeError, ValueError) as exc:
-        return None, {"allow": False, "reason": f"risk_input_invalid:{exc}"}
+    except (TypeError, ValueError, RuntimeError, OSError) as exc:
+        return None, {"allow": False, "reason": f"risk_input_or_ledger_invalid:{exc}"}
     if not risk.get("allow"):
         return None, risk
     sig.update({
