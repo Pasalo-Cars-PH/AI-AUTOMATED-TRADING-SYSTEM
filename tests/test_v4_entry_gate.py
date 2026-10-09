@@ -24,22 +24,30 @@ def test_all_paper_trade_logging_routes_through_shared_risk_gate():
     assert callers == ["risk_gate_and_log"]
 
 
-def test_smc_setup_is_not_reserved_before_risk_gate_passes():
+def test_smc_setup_dedupe_reservation_occurs_inside_risk_gated_logger():
     tree = _main_ast()
     smc = _function_nodes(tree, "smc_scan")[0]
-    gate_lines = [
-        n.lineno for n in ast.walk(smc)
+    helper = _function_nodes(tree, "risk_gate_and_log")[0]
+    calls = [
+        n for n in ast.walk(smc)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "risk_gate_and_log"
     ]
+    assert len(calls) == 1
+    assert any(k.arg == "dedupe_key" for k in calls[0].keywords)
+    failed_gate_lines = [
+        n.lineno for n in ast.walk(helper)
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not)
+        and isinstance(n.operand, ast.Call) and isinstance(n.operand.func, ast.Attribute)
+        and n.operand.func.attr == "get"
+    ]
     reserve_lines = [
-        n.lineno for n in ast.walk(smc)
+        n.lineno for n in ast.walk(helper)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
         and n.func.attr == "add" and isinstance(n.func.value, ast.Name)
         and n.func.value.id == "_smc_used_live"
     ]
-    assert len(gate_lines) == 1
-    assert len(reserve_lines) == 1
-    assert reserve_lines[0] > gate_lines[0]
+    assert failed_gate_lines and reserve_lines
+    assert reserve_lines[0] > min(failed_gate_lines)
 
 
 def test_synthetic_testtrade_cannot_create_ungated_ledger_entries():
