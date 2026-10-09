@@ -78,6 +78,23 @@ def test_paper_ledger_prefers_durable_storage_and_never_swallows_write_failure()
     assert "os.path.ismount(mount_root)" in source
 
 
+
+def test_risk_check_and_ledger_mutations_share_serialization_lock():
+    tree = _main_ast()
+    for name in ["risk_gate_and_log", "update_trade_result"]:
+        fn = _function_nodes(tree, name)[0]
+        assert any(
+            isinstance(node, ast.With)
+            and any(
+                isinstance(item.context_expr, ast.Name)
+                and item.context_expr.id == "_paper_ledger_lock"
+                for item in node.items
+            )
+            for node in ast.walk(fn)
+        )
+    source = MAIN_PATH.read_text(encoding="utf-8")
+    assert "_paper_ledger_lock = threading.RLock()" in source
+
 def test_risk_gate_rejects_ledger_mount_or_io_failures():
     tree = _main_ast()
     helper = _function_nodes(tree, "risk_gate_and_log")[0]
