@@ -1,7 +1,7 @@
 """Real PostgreSQL integration tests for the paper-ledger adapter.
 
-These run against an ephemeral PostgreSQL service in CI, not SQLite. They do
-not connect to the production Supabase project or require production secrets.
+These run against an ephemeral PostgreSQL service in CI, not the production
+Supabase project, and do not require production secrets.
 """
 import os
 
@@ -35,6 +35,8 @@ def postgres_ledger(monkeypatch):
 
     monkeypatch.setenv("PAPER_LEDGER_BACKEND", "postgres")
     monkeypatch.setenv("PAPER_LEDGER_DATABASE_URL", url)
+    # This fixture is only for disposable local CI PostgreSQL, which has no TLS.
+    monkeypatch.setenv("PAPER_LEDGER_SSLMODE", "disable")
     monkeypatch.setattr(paper_ledger, "_session_factory", None)
     old_engine = paper_ledger._engine
     monkeypatch.setattr(paper_ledger, "_engine", None)
@@ -60,7 +62,7 @@ def test_real_postgres_round_trip_and_commit(postgres_ledger):
 
 
 def test_real_postgres_transaction_rolls_back(postgres_ledger):
-    with pytest.raises(RuntimeError, match="transaction_failed"):
+    with pytest.raises(ValueError, match="intentional rollback test"):
         with paper_ledger.transaction():
             paper_ledger.save_trades([{"id": 18, "status": "OPEN"}])
             raise ValueError("intentional rollback test")
@@ -73,6 +75,6 @@ def test_real_postgres_missing_singleton_fails_closed(postgres_ledger):
     with postgres_ledger.begin() as conn:
         conn.execute(text("DELETE FROM titan_private.paper_ledger_state WHERE id = 1"))
 
-    with pytest.raises(RuntimeError, match="state_row_missing"):
+    with pytest.raises(RuntimeError, match="paper_ledger_state_row_missing"):
         with paper_ledger.transaction():
             pass
