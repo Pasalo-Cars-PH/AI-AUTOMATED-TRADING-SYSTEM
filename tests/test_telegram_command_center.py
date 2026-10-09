@@ -6,7 +6,12 @@ client = TestClient(main.app)
 def telegram_update(command, chat_id="test-chat"):
     return {"update_id": 9000 + sum(ord(ch) for ch in command), "message": {"chat": {"id": chat_id}, "text": command}}
 
-def test_paper_command_center_status_commands(monkeypatch):
+def test_paper_command_center_status_commands(monkeypatch, tmp_path):
+    # Give read-only report commands an isolated ledger path; CI does not have
+    # Render persistent storage mounted at /mnt/data.
+    ledger = tmp_path / "paper-ledger.json"
+    monkeypatch.setattr(main, "TRADES_FILE_PERSIST", str(ledger))
+    monkeypatch.setattr(main, "TRADES_FILE", str(ledger))
     sent = []
     monkeypatch.setattr(main, "send_telegram_msg", lambda msg, chat_id=None: sent.append((msg, chat_id)))
     for command in ["/paperstatus", "/positions", "/performance", "/risk", "/journal"]:
