@@ -42,13 +42,20 @@ def _get_session_factory():
         raw_url = "postgresql+psycopg://" + raw_url[len("postgresql://"):]
     if not raw_url.startswith("postgresql+psycopg://"):
         raise RuntimeError("paper_ledger_database_url_must_be_postgresql")
+
+    # Secure by default for hosted databases (including Supabase). Allow CI/local
+    # PostgreSQL to opt out explicitly without weakening production defaults.
+    sslmode = os.getenv("PAPER_LEDGER_SSLMODE", "require").strip().lower()
+    if sslmode not in {"require", "verify-ca", "verify-full", "prefer", "allow", "disable"}:
+        raise RuntimeError("paper_ledger_sslmode_invalid")
+
     _engine = create_engine(
         raw_url,
         pool_pre_ping=True,
         pool_size=2,
         max_overflow=2,
         pool_timeout=10,
-        connect_args={"connect_timeout": 5, "sslmode": "require"},
+        connect_args={"connect_timeout": 5, "sslmode": sslmode},
     )
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
     return _session_factory
