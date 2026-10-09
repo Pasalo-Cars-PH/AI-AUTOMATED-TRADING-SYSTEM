@@ -299,7 +299,7 @@ def evaluate_risk(
         ("rr", rr >= config.min_rr),
         ("max_open_positions", len(opens) < config.max_open_positions),
         ("max_total_open_risk", total_open_pct + actual_risk_pct <= config.max_total_open_risk_pct),
-        ("max_correlated_risk", correlated_pct <= config.max_correlated_risk_pct),
+        ("max_correlated_risk", correlated_pct < config.max_correlated_risk_pct),
         ("daily_loss_limit", daily_loss_pct < config.daily_loss_limit_pct),
         ("consecutive_loss_lock", loss_streak < config.max_consecutive_losses),
     ]
