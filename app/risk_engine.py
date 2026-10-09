@@ -133,41 +133,79 @@ def realized_r(trade: Dict, exit_price: float) -> float:
     return pnl / risk_usd
 
 
+def _parse_timestamp(value):
+    """Parse a timestamp and normalize it to UTC. Naive stored timestamps are treated as UTC."""
+    if not value:
+        raise ValueError("missing_trade_timestamp")
+    dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _closed_today(trades: List[Dict], now: Optional[datetime] = None):
-    now = now or datetime.now(timezone.utc)
-    today = now.date()
+    now_utc = _parse_timestamp((now or datetime.now(timezone.utc)).isoformat())
+    today_utc = now_utc.date()
     rows = []
     for t in trades:
-        if t.get("status") != "CLOSED" or t.get("r") is None:
+        if t.get("status") != "CLOSED":
             continue
         stamp = t.get("closed_at") or t.get("time")
         try:
-            dt = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-            if dt.date() == today:
+            if _parse_timestamp(stamp).date() == today_utc:
                 rows.append(t)
         except (TypeError, ValueError):
-            continue
+            # Unknown close time must not silently disappear from daily risk accounting.
+            raise ValueError("closed_trade_missing_or_invalid_timestamp")
     return rows
 
 
+def _finite_number(value, name):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}_missing_or_invalid")
+    if not math.isfinite(number):
+        raise ValueError(f"{name}_missing_or_invalid")
+    return number
+
+
 def consecutive_losses(trades: List[Dict]) -> int:
-    closed = [t for t in trades if t.get("status") == "CLOSED" and t.get("result") in ("WIN", "LOSS")]
-    closed.sort(key=lambda t: str(t.get("closed_at") or t.get("time") or ""))
+    closed = [t for t in trades if t.get("status") == "CLOSED"]
+    for t in closed:
+        # Result labels and R-multiples are not authoritative; actual realized PnL is.
+        _finite_number(t.get("realized_pnl_usd"), "closed_trade_realized_pnl")
+        _parse_timestamp(t.get("closed_at") or t.get("time"))
+    closed.sort(key=lambda t: _parse_timestamp(t.get("closed_at") or t.get("time")))
     count = 0
     for t in reversed(closed):
-        if t.get("result") == "LOSS":
+        pnl = _finite_number(t.get("realized_pnl_usd"), "closed_trade_realized_pnl")
+        if pnl < 0:
             count += 1
+        elif pnl > 0:
+            break
         else:
+            # Explicit policy: breakeven resets the consecutive-loss streak.
             break
     return count
 
 
 def open_risk_usd(trades: List[Dict]) -> float:
-    return sum(float(t.get("risk_usd", 0) or 0) for t in trades if t.get("status") == "OPEN")
+    total = 0.0
+    for t in trades:
+        if t.get("status") != "OPEN":
+            continue
+        risk = _finite_number(t.get("risk_usd"), "open_trade_risk_usd")
+        if risk <= 0:
+            raise ValueError("open_trade_risk_usd_missing_or_nonpositive")
+        total += risk
+    return total
 
 
 def daily_realized_pnl_usd(trades: List[Dict], now=None) -> float:
-    return sum(float(t.get("realized_pnl_usd", 0) or 0) for t in _closed_today(trades, now))
+    rows = _closed_today(trades, now)
+    pnl_values = [_finite_number(t.get("realized_pnl_usd"), "closed_trade_realized_pnl") for t in rows]
+    return sum(pnl_values)
 
 
 def evaluate_risk(
@@ -219,27 +257,34 @@ def evaluate_risk(
     risk_usd = units * distance * spec.contract_size * spec.quote_to_usd
 
     opens = [t for t in trades if t.get("status") == "OPEN"]
-    total_open = open_risk_usd(trades)
-    total_open_pct = total_open / equity * 100.0
+    try:
+        total_open = open_risk_usd(trades)
+        total_open_pct = total_open / equity * 100.0
+        correlated_usd = open_risk_usd([
+            t for t in opens
+            if str(t.get("symbol") or t.get("pair") or "").upper() == str(symbol).upper()
+        ])
+        daily_pnl = daily_realized_pnl_usd(trades, now)
+        loss_streak = consecutive_losses(trades)
+    except ValueError as exc:
+        return {"allow": False, "reason": f"portfolio_data_integrity:{exc}"}
 
     same_symbol = [
         t for t in opens
         if str(t.get("symbol") or t.get("pair") or "").upper() == str(symbol).upper()
     ]
-    correlated_usd = open_risk_usd(same_symbol)
     correlated_pct = (correlated_usd + risk_usd) / equity * 100.0
-
-    daily_pnl = daily_realized_pnl_usd(trades, now)
     daily_loss_pct = max(0.0, -daily_pnl / equity * 100.0)
+    actual_risk_pct = risk_usd / equity * 100.0
 
     checks = [
         ("risk_lock", risk_usd > 0),
         ("rr", rr >= config.min_rr),
         ("max_open_positions", len(opens) < config.max_open_positions),
-        ("max_total_open_risk", total_open_pct + config.risk_per_trade_pct <= config.max_total_open_risk_pct),
+        ("max_total_open_risk", total_open_pct + actual_risk_pct <= config.max_total_open_risk_pct),
         ("max_correlated_risk", correlated_pct <= config.max_correlated_risk_pct),
         ("daily_loss_limit", daily_loss_pct < config.daily_loss_limit_pct),
-        ("consecutive_loss_lock", consecutive_losses(trades) < config.max_consecutive_losses),
+        ("consecutive_loss_lock", loss_streak < config.max_consecutive_losses),
     ]
     failed = [name for name, passed in checks if not passed]
 
@@ -247,7 +292,7 @@ def evaluate_risk(
         "allow": not failed,
         "reason": "PASS" if not failed else ",".join(failed),
         "equity_usd": round(equity, 4),
-        "risk_pct": config.risk_per_trade_pct,
+        "risk_pct": round(actual_risk_pct, 6),
         "risk_usd": round(risk_usd, 4),
         "position_size": round(units, 10),
         "contract_size": spec.contract_size,
@@ -261,7 +306,7 @@ def evaluate_risk(
         "correlated_risk_pct": round(correlated_pct, 4),
         "daily_realized_pnl_usd": round(daily_pnl, 4),
         "daily_loss_pct": round(daily_loss_pct, 4),
-        "consecutive_losses": consecutive_losses(trades),
+        "consecutive_losses": loss_streak,
         "checks": [{"name": n, "pass": p} for n, p in checks],
         "config": {
             "risk_per_trade_pct": config.risk_per_trade_pct,
