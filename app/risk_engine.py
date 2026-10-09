@@ -21,6 +21,23 @@ class RiskConfig:
     max_open_positions: int = 6
     min_rr: float = 1.5
 
+    def __post_init__(self):
+        pct_fields = (
+            ("risk_per_trade_pct", self.risk_per_trade_pct),
+            ("max_total_open_risk_pct", self.max_total_open_risk_pct),
+            ("max_correlated_risk_pct", self.max_correlated_risk_pct),
+            ("daily_loss_limit_pct", self.daily_loss_limit_pct),
+        )
+        for name, value in pct_fields:
+            if not math.isfinite(float(value)) or not 0 < float(value) <= 100:
+                raise ValueError(f"{name} must be finite and in (0, 100]")
+        if self.risk_per_trade_pct > self.max_total_open_risk_pct:
+            raise ValueError("risk_per_trade_pct cannot exceed max_total_open_risk_pct")
+        if not math.isfinite(float(self.min_rr)) or self.min_rr <= 0:
+            raise ValueError("min_rr must be finite and > 0")
+        if int(self.max_consecutive_losses) < 1 or int(self.max_open_positions) < 1:
+            raise ValueError("loss and position limits must be >= 1")
+
     @classmethod
     def from_env(cls, env=None):
         import os
@@ -82,8 +99,8 @@ def _positive_float(value, name):
         value = float(value)
     except (TypeError, ValueError):
         raise ValueError(f"{name} must be numeric")
-    if value <= 0:
-        raise ValueError(f"{name} must be > 0")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be finite and > 0")
     return value
 
 
