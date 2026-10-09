@@ -53,3 +53,12 @@ def test_smc_setup_dedupe_reservation_occurs_inside_risk_gated_logger():
 def test_synthetic_testtrade_cannot_create_ungated_ledger_entries():
     source = MAIN_PATH.read_text(encoding="utf-8")
     assert 'elif txt_base == "/testtrade":\n                send_telegram_msg("🛑 /testtrade disabled' in source
+
+
+def test_reset_cannot_clear_risk_history():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+    reset_start = source.index('elif txt_base == "/reset":')
+    reset_end = source.index('elif txt_base in ["/help", "/start"]:', reset_start)
+    reset_block = source[reset_start:reset_end]
+    assert "os.remove" not in reset_block
+    assert "daily-loss" in reset_block
