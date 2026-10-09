@@ -107,41 +107,43 @@ def log_new_trade(sig):
     return trade_id
 
 def update_trade_result(trade_id, result, exit_price=None):
-    """Close a paper trade only from an observed exit price; never fabricate R."""
+    """Close only from a valid observed exit; result labels never override realized PnL."""
+    if exit_price is None:
+        return False
     trades = load_trades()
     for t in trades:
-        if t['id'] == trade_id:
-            t['status'] = "CLOSED"
-            t['result'] = "WIN" if result == "WIN" else "LOSS"
-            if exit_price is not None:
-                try:
-                    t['exit_price'] = float(exit_price)
-                    t['realized_pnl_usd'] = round(realized_pnl_usd(t, t['exit_price']), 6)
-                    t['r'] = round(realized_r(t, t['exit_price']), 6)
-                except (TypeError, ValueError):
-                    t['exit_price'] = None
-                    t['realized_pnl_usd'] = None
-                    t['r'] = None
-            else:
-                t['exit_price'] = None
-                t['realized_pnl_usd'] = None
-                t['r'] = None
-            t['closed_at'] = pht_now().isoformat()
-            save_trades(trades)
-            return True
+        if t.get('id') != trade_id:
+            continue
+        if t.get('status') != "OPEN":
+            return False
+        try:
+            exit_value = float(exit_price)
+            pnl = realized_pnl_usd(t, exit_value)
+            r_multiple = realized_r(t, exit_value)
+        except (TypeError, ValueError):
+            return False
+        t['exit_price'] = exit_value
+        t['realized_pnl_usd'] = round(pnl, 6)
+        t['r'] = round(r_multiple, 6)
+        t['result'] = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BREAKEVEN"
+        t['status'] = "CLOSED"
+        t['closed_at'] = pht_now().isoformat()
+        save_trades(trades)
+        return True
     return False
 
 def calculate_stats(trades):
-    closed = [t for t in trades if t.get('result') in ['WIN', 'LOSS'] and t.get('r') is not None]
-    wins = len([t for t in closed if float(t.get('r', 0)) > 0])
-    losses = len([t for t in closed if float(t.get('r', 0)) < 0])
-    total = wins + losses
-    net = sum(float(t.get('r', 0) or 0) for t in closed)
-    gross_profit = sum(float(t.get('r', 0) or 0) for t in closed if float(t.get('r', 0)) > 0)
-    gross_loss = abs(sum(float(t.get('r', 0) or 0) for t in closed if float(t.get('r', 0)) < 0))
-    wr = round(wins / total * 100, 1) if total > 0 else 0
+    closed = [t for t in trades if t.get("status") == "CLOSED" and t.get("r") is not None]
+    wins = sum(1 for t in closed if float(t.get("r", 0)) > 0)
+    losses = sum(1 for t in closed if float(t.get("r", 0)) < 0)
+    breakevens = sum(1 for t in closed if float(t.get("r", 0)) == 0)
+    decisive = wins + losses
+    net = sum(float(t.get("r", 0) or 0) for t in closed)
+    gross_profit = sum(float(t.get("r", 0) or 0) for t in closed if float(t.get("r", 0)) > 0)
+    gross_loss = abs(sum(float(t.get("r", 0) or 0) for t in closed if float(t.get("r", 0)) < 0))
+    wr = round(wins / decisive * 100, 1) if decisive else 0
     pf = round(gross_profit / gross_loss, 2) if gross_loss > 0 else round(gross_profit, 2) if gross_profit > 0 else 0
-    exp = round(net / total, 4) if total > 0 else 0
+    exp = round(net / len(closed), 4) if closed else 0
     evolution = []
     rnet = 0.0
     rw = rl = 0
@@ -153,17 +155,21 @@ def calculate_stats(trades):
         rt = rw + rl
         evolution.append({
             "trade": i + 1,
-            "wr": round(rw / rt * 100, 1) if rt > 0 else 0,
+            "wr": round(rw / rt * 100, 1) if rt else 0,
             "pf": round(sum(float(x.get('r', 0) or 0) for x in closed[:i+1] if float(x.get('r', 0)) > 0) /
                        abs(sum(float(x.get('r', 0) or 0) for x in closed[:i+1] if float(x.get('r', 0)) < 0)), 2)
                        if any(float(x.get('r', 0)) < 0 for x in closed[:i+1]) else 0,
-            "exp": round(rnet / rt, 4) if rt > 0 else 0,
+            "exp": round(rnet / (i + 1), 4),
             "net": round(rnet, 4),
-            "result": t['result'],
+            "result": t.get('result', 'UNRESOLVED'),
             "time": t.get('pht_time', '')
         })
     return {
-        "total_trades": len(trades), "closed_trades": total, "open_trades": len([t for t in trades if t.get("status") == "OPEN"]),
+        "total_trades": len(trades),
+        "closed_trades": sum(1 for t in trades if t.get("status") == "CLOSED"),
+        "resolved_trades": len(closed),
+        "breakevens": breakevens,
+        "open_trades": sum(1 for t in trades if t.get("status") == "OPEN"),
         "wins": wins, "losses": losses, "wr": wr, "pf": pf, "exp": exp, "net": round(net, 4),
         "evolution": evolution, "trades": trades
     }
@@ -1397,6 +1403,39 @@ def smc_live_signal(explain=False):
     sig, checks = smc_signal(recs[-40:], pdh, pdl, explain=explain)
     return sig, checks, recs
 
+def risk_gate_and_log(sig):
+    """Single mandatory paper-entry gate shared by every strategy."""
+    equity_raw = os.getenv("PAPER_EQUITY_USD", "").strip()
+    if not equity_raw:
+        return None, {"allow": False, "reason": "PAPER_EQUITY_USD_not_configured"}
+    try:
+        equity = float(equity_raw)
+        if not math.isfinite(equity) or equity <= 0:
+            return None, {"allow": False, "reason": "PAPER_EQUITY_USD_invalid"}
+        risk = evaluate_risk(
+            load_trades(),
+            equity_usd=equity,
+            entry=sig.get("entry"),
+            sl=sig.get("sl"),
+            tp=sig.get("tp"),
+            side=sig.get("type"),
+            symbol=sig.get("pair", sig.get("symbol", "XAU/USD")),
+            config=RISK_CONFIG,
+        )
+    except (TypeError, ValueError) as exc:
+        return None, {"allow": False, "reason": f"risk_input_invalid:{exc}"}
+    if not risk.get("allow"):
+        return None, risk
+    sig.update({
+        "risk_pct": risk["risk_pct"], "risk_usd": risk["risk_usd"],
+        "position_size": risk["position_size"], "contract_size": risk["contract_size"],
+        "quote_to_usd": risk["quote_to_usd"], "size_step": risk["size_step"],
+        "risk_snapshot": risk, "execution_mode": "PAPER_ONLY",
+    })
+    trade_id = log_new_trade(sig)
+    return trade_id, risk
+
+
 def smc_scan(chat_id, auto=False):
     sig, checks, recs = smc_live_signal(explain=not auto)
     if recs is None:
@@ -1420,47 +1459,24 @@ def smc_scan(chat_id, auto=False):
         if key in _smc_used_live:
             if not auto: send_telegram_msg(f"ℹ️ Na-log na ang {sig['level']} sweep setup ngayong araw.", chat_id)
             return
-        _smc_used_live.add(key)
         sig["gate_summary"] = mtf_summary
         sig["audit_state"] = candidate["state"]
         sig["execution_mode"] = candidate["execution_mode"]
         sig["data_source"] = candidate["data_source"]
 
-        equity_raw = os.getenv("PAPER_EQUITY_USD", "")
-        if not equity_raw:
-            if not auto:
-                send_telegram_msg("RISK REJECTED: PAPER_EQUITY_USD is not configured. No paper entry.", chat_id)
-            return
-        risk = evaluate_risk(
-            load_trades(),
-            equity_usd=equity_raw,
-            entry=sig["entry"],
-            sl=sig["sl"],
-            tp=sig["tp"],
-            side=sig["type"],
-            symbol=sig.get("pair", "XAUUSD"),
-            config=RISK_CONFIG,
-        )
-        if not risk["allow"]:
+        trade_id, risk = risk_gate_and_log(sig)
+        if trade_id is None:
             if not auto:
                 send_telegram_msg(f"RISK GATE REJECTED: {risk['reason']} | open={risk.get('open_risk_pct', 0):.2f}% daily_loss={risk.get('daily_loss_pct', 0):.2f}% consecutive={risk.get('consecutive_losses', 0)}", chat_id)
             return
-
-        sig["risk_pct"] = risk["risk_pct"]
-        sig["risk_usd"] = risk["risk_usd"]
-        sig["position_size"] = risk["position_size"]
-        sig["contract_size"] = risk["contract_size"]
-        sig["quote_to_usd"] = risk["quote_to_usd"]
-        sig["size_step"] = risk["size_step"]
-        sig["risk_snapshot"] = risk
+        # Reserve the setup only after the paper trade was successfully logged.
         _smc_used_live.add(key)
-        trade_id = log_new_trade(sig)
         pht, utc = format_time_pht(sig['time'])
         caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 SMC {VERSION} PAPER ID #{trade_id}\n"
                    f"• {sig['type']} after {sig['level']} sweep + FVG\n"
                    f"• Entry `{format_price(sig['entry'])}`\n"
                    f"• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:{SMC_RR:g}\n"
-                   f"• Risk `${sig['risk']:.2f}` ({sig['risk']/sig['atr']:.1f}xATR)\n"
+                   f"• Risk `${sig['risk_usd']:.2f}` ({sig['risk_usd']/float(os.getenv('PAPER_EQUITY_USD'))*100:.3f}% equity)\n"
                    f"• FVG zone `{sig['fvg_lo']:.2f}-{sig['fvg_hi']:.2f}`\n"
                    f"• Time `{pht}` ({utc})\n"
                    f"• PAPER ONLY - Managed by completed M5 SL/TP")
@@ -1518,7 +1534,11 @@ def manual_scan(chat_id, auto=False):
         return
     sig = analyze_titan_mtf(clean, tf="M5", h1_trend=h1)
     if sig:
-        trade_id = log_new_trade(sig)
+        trade_id, risk = risk_gate_and_log(sig)
+        if trade_id is None:
+            if not auto:
+                send_telegram_msg(f"RISK GATE REJECTED: {risk['reason']}. No paper entry.", chat_id)
+            return
         pht, utc = format_time_pht(sig['time'])
         caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 {VERSION} PAPER ID #{trade_id}\n"
                    f"• {sig['pair']} {sig['type']} {sig['pinbar']}\n"
@@ -2132,10 +2152,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                     else:
                         send_telegram_msg(f"Trade #{tid} not found", cid)
             elif txt_base == "/testtrade":
-                test_sig = {"type": "BUY", "entry": 4142.47, "sl": 4140.67, "tp": 4146.07, "time": pht_now().isoformat(),
-                            "tf": "M5", "confluence": 60, "model_score": 70, "layers": ["TEST"], "reason": "TEST TRADE - dashboard testing"}
-                tid = log_new_trade(test_sig)
-                send_telegram_msg(f"🧪 Test trade #{tid} OPEN | /win {tid} or /loss {tid}", cid)
+                send_telegram_msg("🛑 /testtrade disabled: synthetic trades are not allowed in the risk ledger. Use /scan for a gated paper candidate.", cid)
             elif txt_base == "/reset":
                 try:
                     for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
