@@ -1694,13 +1694,32 @@ def strict_signal_lock():
         "kill_switch": True,
     })
 
+def _ledger_unavailable_response(exc):
+    # Never report an unavailable/corrupt ledger as an empty journal.
+    return JSONResponse(
+        {
+            "status": "unavailable",
+            "error": "PAPER_LEDGER_UNAVAILABLE",
+            "reason": str(exc),
+            "trading_mode": "PAPER",
+            "live_execution": False,
+        },
+        status_code=503,
+    )
+
 @app.get("/api/trades")
 def api_trades():
-    return JSONResponse(calculate_stats(load_trades()))
+    try:
+        return JSONResponse(calculate_stats(load_trades()))
+    except (RuntimeError, OSError) as exc:
+        return _ledger_unavailable_response(exc)
 
 @app.get("/api/stats")
 def api_stats():
-    return JSONResponse(calculate_stats(load_trades()))
+    try:
+        return JSONResponse(calculate_stats(load_trades()))
+    except (RuntimeError, OSError) as exc:
+        return _ledger_unavailable_response(exc)
 
 def _clean_live():
     data = fetch_live_tf("5min")
