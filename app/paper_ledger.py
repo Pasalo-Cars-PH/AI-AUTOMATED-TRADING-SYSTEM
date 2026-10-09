@@ -82,9 +82,12 @@ def transaction() -> Iterator[None]:
             if row is None:
                 raise RuntimeError("paper_ledger_state_row_missing")
             token = _active_session.set(session)
+            # Preserve exceptions raised by caller code while session.begin()
+            # rolls the transaction back. Ledger read/write errors are normalized
+            # at their call sites; connection/lock setup errors are wrapped below.
             yield
     except Exception as exc:
-        if isinstance(exc, RuntimeError):
+        if token is not None or isinstance(exc, RuntimeError):
             raise
         raise RuntimeError(f"paper_ledger_transaction_failed:{type(exc).__name__}") from exc
     finally:
