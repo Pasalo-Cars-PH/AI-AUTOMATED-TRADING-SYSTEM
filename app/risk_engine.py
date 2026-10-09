@@ -4,6 +4,9 @@ No broker execution lives here. A trade is eligible only when its monetary
 risk can be calculated from supplied equity, entry, and stop-loss.
 """
 from dataclasses import dataclass
+import json
+import math
+import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -33,6 +36,47 @@ class RiskConfig:
         )
 
 
+@dataclass(frozen=True)
+class InstrumentSpec:
+    """Verified contract metadata; size is expressed in lots/contracts."""
+    contract_size: float
+    quote_to_usd: float
+    size_step: float
+
+    @classmethod
+    def from_mapping(cls, raw):
+        if not isinstance(raw, dict):
+            raise ValueError("instrument_spec must be an object")
+        return cls(
+            contract_size=_positive_float(raw.get("contract_size"), "contract_size"),
+            quote_to_usd=_positive_float(raw.get("quote_to_usd"), "quote_to_usd"),
+            size_step=_positive_float(raw.get("size_step"), "size_step"),
+        )
+
+
+def instrument_spec_from_env(symbol, env=None):
+    env = os.environ if env is None else env
+    raw = env.get("INSTRUMENT_SPECS_JSON", "")
+    if not raw:
+        return None
+    try:
+        mapping = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(mapping, dict):
+        return None
+    key = str(symbol).strip().upper()
+    spec = mapping.get(key)
+    if spec is None:
+        compact = key.replace("/", "").replace("-", "")
+        spec = next((v for k, v in mapping.items()
+                     if str(k).strip().upper().replace("/", "").replace("-", "") == compact), None)
+    try:
+        return InstrumentSpec.from_mapping(spec) if spec is not None else None
+    except ValueError:
+        return None
+
+
 def _positive_float(value, name):
     try:
         value = float(value)
@@ -58,21 +102,28 @@ def stop_distance(entry, sl):
     return distance
 
 
-def position_size_units(equity_usd, risk_pct, entry, sl):
+def position_size_units(equity_usd, risk_pct, entry, sl, instrument_spec):
+    """Size in lots/contracts; requires explicit contract and quote conversion."""
     risk_usd = risk_amount_usd(equity_usd, risk_pct)
     distance = stop_distance(entry, sl)
-    return risk_usd / distance
+    spec = instrument_spec if isinstance(instrument_spec, InstrumentSpec) else InstrumentSpec.from_mapping(instrument_spec)
+    raw_size = risk_usd / (distance * spec.contract_size * spec.quote_to_usd)
+    # Round DOWN to the instrument's declared tradable size increment.
+    steps = math.floor((raw_size + 1e-12) / spec.size_step)
+    return round(steps * spec.size_step, 10)
 
 
 def realized_pnl_usd(trade: Dict, exit_price: float) -> float:
     entry = _positive_float(trade.get("entry"), "entry")
     exit_price = _positive_float(exit_price, "exit_price")
     units = _positive_float(trade.get("position_size"), "position_size")
+    contract_size = _positive_float(trade.get("contract_size"), "contract_size")
+    quote_to_usd = _positive_float(trade.get("quote_to_usd"), "quote_to_usd")
     side = str(trade.get("type", "")).upper()
     if side == "BUY":
-        return (exit_price - entry) * units
+        return (exit_price - entry) * units * contract_size * quote_to_usd
     if side == "SELL":
-        return (entry - exit_price) * units
+        return (entry - exit_price) * units * contract_size * quote_to_usd
     raise ValueError("trade side must be BUY or SELL")
 
 
@@ -129,9 +180,19 @@ def evaluate_risk(
     side,
     symbol,
     config: RiskConfig,
+    instrument_spec=None,
     now=None,
 ):
-    """Return a deterministic allow/reject decision and complete risk snapshot."""
+    """Return a deterministic allow/reject decision and complete risk snapshot.
+
+    Missing contract metadata is a hard rejection; never infer a lot size.
+    """
+    if instrument_spec is None:
+        instrument_spec = instrument_spec_from_env(symbol)
+    try:
+        spec = instrument_spec if isinstance(instrument_spec, InstrumentSpec) else InstrumentSpec.from_mapping(instrument_spec)
+    except (ValueError, TypeError):
+        return {"allow": False, "reason": "missing_or_invalid_instrument_spec"}
     try:
         equity = _positive_float(equity_usd, "equity_usd")
         entry = _positive_float(entry, "entry")
@@ -151,7 +212,11 @@ def evaluate_risk(
     reward = abs(tp - entry)
     rr = reward / distance if distance else 0.0
     risk_usd = risk_amount_usd(equity, config.risk_per_trade_pct)
-    units = risk_usd / distance
+    units = position_size_units(equity, config.risk_per_trade_pct, entry, sl, spec)
+    if units <= 0:
+        return {"allow": False, "reason": "position_size_below_minimum_step"}
+    # Monetary stop risk is computed from the rounded-down tradable size.
+    risk_usd = units * distance * spec.contract_size * spec.quote_to_usd
 
     opens = [t for t in trades if t.get("status") == "OPEN"]
     total_open = open_risk_usd(trades)
@@ -184,7 +249,10 @@ def evaluate_risk(
         "equity_usd": round(equity, 4),
         "risk_pct": config.risk_per_trade_pct,
         "risk_usd": round(risk_usd, 4),
-        "position_size": round(units, 8),
+        "position_size": round(units, 10),
+        "contract_size": spec.contract_size,
+        "quote_to_usd": spec.quote_to_usd,
+        "size_step": spec.size_step,
         "stop_distance": round(distance, 8),
         "rr": round(rr, 4),
         "open_positions": len(opens),
