@@ -55,7 +55,9 @@ def test_telegram_commands_fail_closed_without_authorized_chat_id(monkeypatch):
     monkeypatch.setattr(main, "PAPER_SCAN_PAUSED", False)
     sent = []
     monkeypatch.setattr(main, "send_telegram_msg", lambda msg, chat_id=None: sent.append((msg, chat_id)))
-    response = client.post("/telegram/webhook", json=telegram_update("/pause", chat_id="arbitrary-chat"))
+    payload = telegram_update("/pause", chat_id="arbitrary-chat")
+    payload["update_id"] = 999999
+    response = client.post("/telegram/webhook", json=payload)
     assert response.status_code == 200
     assert response.json()["status"] == "blocked"
     assert main.PAPER_SCAN_PAUSED is False
