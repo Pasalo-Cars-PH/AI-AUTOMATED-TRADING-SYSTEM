@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import math
 
 import pytest
 
@@ -151,3 +152,20 @@ def test_actual_risk_pct_reflects_rounded_position_size():
     assert r["allow"]
     assert r["risk_pct"] == pytest.approx(r["risk_usd"] / 10000 * 100)
     assert r["risk_pct"] <= 0.5
+
+
+def test_non_finite_instrument_metadata_is_rejected():
+    with pytest.raises(ValueError, match="finite"):
+        position_size_units(10000, 0.5, 100, 98, {
+            "contract_size": math.inf, "quote_to_usd": 1, "size_step": 0.01,
+        })
+
+
+def test_invalid_risk_configuration_is_rejected():
+    with pytest.raises(ValueError, match="risk_per_trade_pct"):
+        RiskConfig(risk_per_trade_pct=math.nan)
+
+
+def test_risk_per_trade_cannot_exceed_total_open_risk_limit():
+    with pytest.raises(ValueError, match="cannot exceed"):
+        RiskConfig(risk_per_trade_pct=4.0, max_total_open_risk_pct=3.0)
