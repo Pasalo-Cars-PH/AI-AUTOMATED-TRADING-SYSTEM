@@ -2171,13 +2171,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             elif txt_base == "/testtrade":
                 send_telegram_msg("🛑 /testtrade disabled: synthetic trades are not allowed in the risk ledger. Use /scan for a gated paper candidate.", cid)
             elif txt_base == "/reset":
-                try:
-                    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
-                        if os.path.exists(path):
-                            os.remove(path)
-                    send_telegram_msg("🔄 Reset: 0 trades. Fresh start.", cid)
-                except Exception as e:
-                    send_telegram_msg(f"Reset error {e}", cid)
+                send_telegram_msg(
+                    "🛑 /reset disabled in V4: clearing the journal could bypass daily-loss and consecutive-loss locks. "
+                    "Risk history is preserved; use a separate audited archival/migration workflow if needed.", cid
+                )
             elif txt_base in ["/help", "/start"]:
                 send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER COMMAND CENTER*\n• /status • /paperstatus • /scan • /bestsetup\n• /positions • /performance • /risk • /journal\n• /pause • /resume-paper\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /backtest [pages] [symbol] • /diag [pages] [symbol] • /pool\n• /reset\n🔒 Live execution commands remain disabled.", cid)
     except Exception as e:
