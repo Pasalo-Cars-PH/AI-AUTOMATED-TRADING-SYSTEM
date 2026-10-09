@@ -2215,7 +2215,26 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 )
             elif txt_base in ["/help", "/start"]:
                 send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER COMMAND CENTER*\n• /status • /paperstatus • /scan • /bestsetup\n• /positions • /performance • /risk • /journal\n• /pause • /resume-paper\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /backtest [pages] [symbol] • /diag [pages] [symbol] • /pool\n• /reset\n🔒 Live execution commands remain disabled.", cid)
+    except RuntimeError as e:
+        # Never make a missing/corrupt durable ledger look like an empty journal.
+        reason = str(e)
+        print(f"Telegram command blocked by runtime/data guard: {reason}")
+        try:
+            send_telegram_msg(
+                "⚠️ PAPER LEDGER / DATA UNAVAILABLE\\n"
+                f"Command could not complete: {reason}\\n"
+                "Paper entries remain fail-closed; verify persistent ledger storage before retrying.",
+                locals().get("cid")
+            )
+        except Exception as notify_error:
+            print(f"Telegram error notification failed: {notify_error}")
     except Exception as e:
-        print(e)
-        import traceback; traceback.print_exc()
+        print(f"Telegram webhook command failed: {type(e).__name__}: {e}")
+        try:
+            send_telegram_msg(
+                "⚠️ COMMAND FAILED\\nThe request could not be completed. Check service logs before retrying.",
+                locals().get("cid")
+            )
+        except Exception as notify_error:
+            print(f"Telegram error notification failed: {notify_error}")
     return {"status": "ok"}
