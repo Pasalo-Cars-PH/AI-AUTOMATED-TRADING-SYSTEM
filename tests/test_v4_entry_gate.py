@@ -62,3 +62,28 @@ def test_reset_cannot_clear_risk_history():
     reset_block = source[reset_start:reset_end]
     assert "os.remove" not in reset_block
     assert "daily-loss" in reset_block
+
+
+def test_paper_ledger_prefers_durable_storage_and_never_swallows_write_failure():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+    load_block = source[source.index("def load_trades():"):source.index("def save_trades(trades):")]
+    save_start = source.index("def save_trades(trades):")
+    save_end = source.index("def log_new_trade(sig):", save_start)
+    save_block = source[save_start:save_end]
+    assert "TRADES_FILE_PERSIST" in load_block
+    assert "TRADES_FILE_LEGACY" in load_block
+    assert "except: pass" not in load_block
+    assert "os.replace(temp_path, TRADES_FILE_PERSIST)" in save_block
+    assert "raise RuntimeError" in save_block
+    assert "os.path.ismount(mount_root)" in source
+
+
+def test_risk_gate_rejects_ledger_mount_or_io_failures():
+    tree = _main_ast()
+    helper = _function_nodes(tree, "risk_gate_and_log")[0]
+    assert any(
+        isinstance(n, ast.ExceptHandler)
+        and isinstance(n.type, ast.Tuple)
+        and any(isinstance(x, ast.Name) and x.id == "RuntimeError" for x in n.type.elts)
+        for n in ast.walk(helper)
+    )
