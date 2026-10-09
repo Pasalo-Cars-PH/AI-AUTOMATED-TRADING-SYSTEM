@@ -32,6 +32,21 @@ def test_pause_and_resume_are_paper_only(monkeypatch):
 
     assert all("DISABLED" in msg for msg in sent)
 
+
+def test_trade_apis_report_503_when_ledger_is_unavailable(monkeypatch):
+    def unavailable():
+        raise RuntimeError("paper_ledger_persistent_mount_missing:/mnt/data")
+
+    monkeypatch.setattr(main, "load_trades", unavailable)
+    for endpoint in ["/api/trades", "/api/stats"]:
+        response = client.get(endpoint)
+        assert response.status_code == 503
+        body = response.json()
+        assert body["status"] == "unavailable"
+        assert body["error"] == "PAPER_LEDGER_UNAVAILABLE"
+        assert body["trading_mode"] == "PAPER"
+        assert body["live_execution"] is False
+
 def test_execution_commands_remain_blocked():
     source = open("app/telegram.py", encoding="utf-8").read()
     for command in ["/unlock", "/buy", "/sell", "/order", "/trade", "/execute"]:
