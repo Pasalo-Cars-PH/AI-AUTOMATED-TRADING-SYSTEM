@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import requests, pandas as pd
 from app.paper_validation import create_candidate, gate_summary
 from app.risk_engine import RiskConfig, evaluate_risk, realized_pnl_usd, realized_r, open_risk_usd
+from app import paper_ledger
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -66,6 +67,8 @@ def _ledger_mount_ready():
         raise RuntimeError(f"paper_ledger_directory_not_writable:{parent}")
 
 def load_trades():
+    if paper_ledger.is_postgres_backend():
+        return paper_ledger.load_trades()
     # Durable ledger always wins; never prefer a stale ephemeral copy.
     _ledger_mount_ready()
     if os.path.exists(TRADES_FILE_PERSIST):
@@ -90,6 +93,9 @@ def load_trades():
     return get_seed_trades()
 
 def save_trades(trades):
+    if paper_ledger.is_postgres_backend():
+        paper_ledger.save_trades(trades)
+        return
     _ledger_mount_ready()
     parent = os.path.dirname(os.path.abspath(TRADES_FILE_PERSIST))
     temp_path = f"{TRADES_FILE_PERSIST}.tmp"
@@ -149,7 +155,7 @@ def log_new_trade(sig):
 
 def update_trade_result(trade_id, result, exit_price=None):
     """Close only from a valid observed exit; result labels never override realized PnL."""
-    with _paper_ledger_lock:
+    with _paper_ledger_lock, paper_ledger.transaction():
         if exit_price is None:
             return False
         trades = load_trades()
@@ -1449,7 +1455,7 @@ def smc_live_signal(explain=False):
 
 def risk_gate_and_log(sig, dedupe_key=None):
     """Single mandatory paper-entry gate shared by every strategy."""
-    with _paper_ledger_lock:
+    with _paper_ledger_lock, paper_ledger.transaction():
         equity_raw = os.getenv("PAPER_EQUITY_USD", "").strip()
         if not equity_raw:
             return None, {"allow": False, "reason": "PAPER_EQUITY_USD_not_configured"}
