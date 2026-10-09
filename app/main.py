@@ -2,7 +2,7 @@ import os, datetime, json, math, bisect, time, threading, random
 from contextlib import asynccontextmanager
 import requests, pandas as pd
 from app.paper_validation import create_candidate, gate_summary
-from app.risk_engine import RiskConfig, evaluate_risk, realized_pnl_usd, realized_r
+from app.risk_engine import RiskConfig, evaluate_risk, realized_pnl_usd, realized_r, open_risk_usd
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -2090,21 +2090,24 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 equity = os.getenv("PAPER_EQUITY_USD", "NOT_SET")
                 trades = load_trades()
                 opens = [t for t in trades if t.get("status") == "OPEN"]
-                open_risk = sum(float(t.get("risk_usd", 0) or 0) for t in opens)
                 try:
-                    open_pct = open_risk / float(equity) * 100 if equity != "NOT_SET" else 0
+                    open_risk = open_risk_usd(opens)
+                    if equity == "NOT_SET":
+                        open_pct_text = "UNKNOWN (equity not configured)"
+                    else:
+                        open_pct_text = f"{open_risk / float(equity) * 100:.2f}%"
                 except (TypeError, ValueError):
-                    open_pct = 0
+                    open_pct_text = "UNKNOWN — DATA INTEGRITY BLOCK"
                 send_telegram_msg(
                     "RISK / PORTFOLIO\n"
                     "Live execution DISABLED\n"
                     "Paper equity %s\n"
-                    "Risk/trade %.2f%% | Open risk %.2f%%\n"
+                    "Risk/trade %.2f%% | Open risk %s\n"
                     "Max total %.2f%% | Max correlated %.2f%%\n"
                     "Daily loss limit %.2f%% | Consecutive-loss lock %s\n"
                     "Max open %s | Min RR %.2f\n"
                     "Sizing = actual entry-to-SL distance"
-                    % (equity, RISK_CONFIG.risk_per_trade_pct, open_pct,
+                    % (equity, RISK_CONFIG.risk_per_trade_pct, open_pct_text,
                        RISK_CONFIG.max_total_open_risk_pct, RISK_CONFIG.max_correlated_risk_pct,
                        RISK_CONFIG.daily_loss_limit_pct, RISK_CONFIG.max_consecutive_losses,
                        RISK_CONFIG.max_open_positions, RISK_CONFIG.min_rr), cid)
@@ -2176,7 +2179,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 except Exception as e:
                     send_telegram_msg(f"Reset error {e}", cid)
             elif txt_base in ["/help", "/start"]:
-                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER COMMAND CENTER*\n• /status • /paperstatus • /scan • /bestsetup\n• /positions • /performance • /risk • /journal\n• /pause • /resume-paper\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /backtest [pages] [symbol] • /diag [pages] [symbol] • /pool\n• /testtrade • /reset\n🔒 Live execution commands remain disabled.", cid)
+                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER COMMAND CENTER*\n• /status • /paperstatus • /scan • /bestsetup\n• /positions • /performance • /risk • /journal\n• /pause • /resume-paper\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /backtest [pages] [symbol] • /diag [pages] [symbol] • /pool\n• /reset\n🔒 Live execution commands remain disabled.", cid)
     except Exception as e:
         print(e)
         import traceback; traceback.print_exc()
