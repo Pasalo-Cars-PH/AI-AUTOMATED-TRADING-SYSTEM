@@ -29,9 +29,11 @@ ATR_TP_MULT = 3.0          # RR 1:2
 VERSION = "V9.0"
 RISK_CONFIG = RiskConfig.from_env()
 
-# Trade storage for real-time dashboard
-TRADES_FILE = "/tmp/titan_trades_v6.json"
-TRADES_FILE_PERSIST = "/mnt/data/titan_trades_v6.json"
+# Paper ledger must live on durable storage. Render disks are mounted at /mnt/data;
+# if that mount is missing, paper entries must fail rather than silently use ephemeral /tmp.
+TRADES_FILE_PERSIST = os.getenv("PAPER_LEDGER_PATH", "/mnt/data/titan_trades_v6.json")
+TRADES_FILE_LEGACY = "/tmp/titan_trades_v6.json"
+TRADES_FILE = TRADES_FILE_PERSIST
 
 def pht_now(): return datetime.datetime.now(PHT)
 def format_time_pht(dt_str):
@@ -47,24 +49,60 @@ def format_price(p): return f"{float(p):.2f}"
 def get_seed_trades():
     return []   # wala nang fake seed
 
+def _ledger_mount_ready():
+    # On Render, /mnt/data must be an actual mounted persistent disk.
+    # Local development/test environments can override PAPER_LEDGER_PATH.
+    if os.getenv("RENDER"):
+        mount_root = os.getenv("PAPER_LEDGER_MOUNT", "/mnt/data")
+        if not os.path.ismount(mount_root):
+            raise RuntimeError(f"paper_ledger_persistent_mount_missing:{mount_root}")
+    parent = os.path.dirname(os.path.abspath(TRADES_FILE_PERSIST))
+    if not os.path.isdir(parent):
+        raise RuntimeError(f"paper_ledger_directory_missing:{parent}")
+    if not os.access(parent, os.W_OK):
+        raise RuntimeError(f"paper_ledger_directory_not_writable:{parent}")
+
 def load_trades():
-    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
+    # Durable ledger always wins; never prefer a stale ephemeral copy.
+    _ledger_mount_ready()
+    if os.path.exists(TRADES_FILE_PERSIST):
         try:
-            if os.path.exists(path):
-                with open(path, 'r') as f:
-                    data = json.load(f)
-                    if data and len(data) > 0:
-                        return data
-        except: pass
+            with open(TRADES_FILE_PERSIST, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"paper_ledger_read_failed:{exc}") from exc
+        if not isinstance(data, list):
+            raise RuntimeError("paper_ledger_invalid_format:expected_list")
+        return data
+    # Legacy migration source only when the durable ledger has not been created.
+    if os.path.exists(TRADES_FILE_LEGACY):
+        try:
+            with open(TRADES_FILE_LEGACY, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"legacy_paper_ledger_read_failed:{exc}") from exc
+        if not isinstance(data, list):
+            raise RuntimeError("legacy_paper_ledger_invalid_format:expected_list")
+        return data
     return get_seed_trades()
 
 def save_trades(trades):
-    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
+    _ledger_mount_ready()
+    parent = os.path.dirname(os.path.abspath(TRADES_FILE_PERSIST))
+    temp_path = f"{TRADES_FILE_PERSIST}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(trades, f, indent=2, allow_nan=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, TRADES_FILE_PERSIST)
+    except (OSError, TypeError, ValueError) as exc:
         try:
-            with open(path, 'w') as f:
-                json.dump(trades, f, indent=2)
-        except Exception as e:
-            print(f"Save trades error {path}: {e}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+        raise RuntimeError(f"paper_ledger_write_failed:{exc}") from exc
 
 def log_new_trade(sig):
     trades = load_trades()
