@@ -169,3 +169,14 @@ def test_invalid_risk_configuration_is_rejected():
 def test_risk_per_trade_cannot_exceed_total_open_risk_limit():
     with pytest.raises(ValueError, match="cannot exceed"):
         RiskConfig(risk_per_trade_pct=4.0, max_total_open_risk_pct=3.0)
+
+
+def test_correlated_risk_exact_boundary_is_rejected():
+    trades = [{"status": "OPEN", "risk_usd": 100, "symbol": "XAU/USD"}]
+    r = evaluate_risk(
+        trades, equity_usd=10000, entry=100, sl=98, tp=104, side="BUY",
+        symbol="XAU/USD", config=RiskConfig(), instrument_spec=UNIT_SPEC,
+    )
+    assert not r["allow"]
+    assert "max_correlated_risk" in r["reason"]
+    assert r["correlated_risk_pct"] == pytest.approx(1.5)
