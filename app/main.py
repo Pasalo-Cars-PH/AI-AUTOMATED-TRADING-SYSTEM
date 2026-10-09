@@ -2127,7 +2127,15 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             txt = update["message"]["text"].strip()
             txt_base = txt.split("@")[0].split()[0]
             args = txt.split()[1:]
-            if TELEGRAM_CHAT_ID and cid != str(TELEGRAM_CHAT_ID): return {"status": "ok"}
+            if not TELEGRAM_CHAT_ID:
+                send_telegram_msg(
+                    "🚫 TELEGRAM COMMANDS BLOCKED: TELEGRAM_CHAT_ID is not configured. "
+                    "Set the authorized chat ID before using paper controls.",
+                    cid,
+                )
+                return {"status": "blocked"}
+            if cid != str(TELEGRAM_CHAT_ID):
+                return {"status": "ok"}
             if MASTER_LIVE_ENABLE:
                 send_telegram_msg("🚫 SAFETY LOCK ACTIVE - PAPER ONLY", cid)
                 return {"status": "blocked"}
