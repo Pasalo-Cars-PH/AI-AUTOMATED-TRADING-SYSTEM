@@ -28,6 +28,9 @@ ATR_SL_MULT = 1.5
 ATR_TP_MULT = 3.0          # RR 1:2
 VERSION = "V9.0"
 RISK_CONFIG = RiskConfig.from_env()
+# Serialize risk-check + ledger mutations within this worker to prevent lost updates
+# and concurrent paper entries exceeding aggregate risk limits.
+_paper_ledger_lock = threading.RLock()
 
 # Paper ledger must live on durable storage. Render disks are mounted at /mnt/data;
 # if that mount is missing, paper entries must fail rather than silently use ephemeral /tmp.
@@ -146,29 +149,31 @@ def log_new_trade(sig):
 
 def update_trade_result(trade_id, result, exit_price=None):
     """Close only from a valid observed exit; result labels never override realized PnL."""
-    if exit_price is None:
+    with _paper_ledger_lock:
+        if exit_price is None:
+            return False
+        trades = load_trades()
+        for t in trades:
+            if t.get('id') != trade_id:
+                continue
+            if t.get('status') != "OPEN":
+                return False
+            try:
+                exit_value = float(exit_price)
+                pnl = realized_pnl_usd(t, exit_value)
+                r_multiple = realized_r(t, exit_value)
+            except (TypeError, ValueError):
+                return False
+            t['exit_price'] = exit_value
+            t['realized_pnl_usd'] = round(pnl, 6)
+            t['r'] = round(r_multiple, 6)
+            t['result'] = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BREAKEVEN"
+            t['status'] = "CLOSED"
+            t['closed_at'] = pht_now().isoformat()
+            save_trades(trades)
+            return True
         return False
-    trades = load_trades()
-    for t in trades:
-        if t.get('id') != trade_id:
-            continue
-        if t.get('status') != "OPEN":
-            return False
-        try:
-            exit_value = float(exit_price)
-            pnl = realized_pnl_usd(t, exit_value)
-            r_multiple = realized_r(t, exit_value)
-        except (TypeError, ValueError):
-            return False
-        t['exit_price'] = exit_value
-        t['realized_pnl_usd'] = round(pnl, 6)
-        t['r'] = round(r_multiple, 6)
-        t['result'] = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BREAKEVEN"
-        t['status'] = "CLOSED"
-        t['closed_at'] = pht_now().isoformat()
-        save_trades(trades)
-        return True
-    return False
+
 
 def calculate_stats(trades):
     closed = [t for t in trades if t.get("status") == "CLOSED" and t.get("r") is not None]
@@ -1444,48 +1449,50 @@ def smc_live_signal(explain=False):
 
 def risk_gate_and_log(sig, dedupe_key=None):
     """Single mandatory paper-entry gate shared by every strategy."""
-    equity_raw = os.getenv("PAPER_EQUITY_USD", "").strip()
-    if not equity_raw:
-        return None, {"allow": False, "reason": "PAPER_EQUITY_USD_not_configured"}
-    try:
-        equity = float(equity_raw)
-        if not math.isfinite(equity) or equity <= 0:
-            return None, {"allow": False, "reason": "PAPER_EQUITY_USD_invalid"}
-        risk = evaluate_risk(
-            load_trades(),
-            equity_usd=equity,
-            entry=sig.get("entry"),
-            sl=sig.get("sl"),
-            tp=sig.get("tp"),
-            side=sig.get("type"),
-            symbol=sig.get("pair", sig.get("symbol", "XAU/USD")),
-            config=RISK_CONFIG,
-        )
-    except (TypeError, ValueError, RuntimeError, OSError) as exc:
-        return None, {"allow": False, "reason": f"risk_input_or_ledger_invalid:{exc}"}
-    if not risk.get("allow"):
-        return None, risk
-    sig.update({
-        "risk_pct": risk["risk_pct"], "risk_usd": risk["risk_usd"],
-        "position_size": risk["position_size"], "contract_size": risk["contract_size"],
-        "quote_to_usd": risk["quote_to_usd"], "size_step": risk["size_step"],
-        "risk_snapshot": risk, "execution_mode": "PAPER_ONLY",
-    })
-    reserved = False
-    if dedupe_key is not None:
-        with _smc_used_live_lock:
-            if dedupe_key in _smc_used_live:
-                return None, {"allow": False, "reason": "duplicate_setup_already_reserved"}
-            _smc_used_live.add(dedupe_key)
-            reserved = True
-    try:
-        trade_id = log_new_trade(sig)
-    except Exception as exc:
-        if reserved:
+    with _paper_ledger_lock:
+        equity_raw = os.getenv("PAPER_EQUITY_USD", "").strip()
+        if not equity_raw:
+            return None, {"allow": False, "reason": "PAPER_EQUITY_USD_not_configured"}
+        try:
+            equity = float(equity_raw)
+            if not math.isfinite(equity) or equity <= 0:
+                return None, {"allow": False, "reason": "PAPER_EQUITY_USD_invalid"}
+            risk = evaluate_risk(
+                load_trades(),
+                equity_usd=equity,
+                entry=sig.get("entry"),
+                sl=sig.get("sl"),
+                tp=sig.get("tp"),
+                side=sig.get("type"),
+                symbol=sig.get("pair", sig.get("symbol", "XAU/USD")),
+                config=RISK_CONFIG,
+            )
+        except (TypeError, ValueError, RuntimeError, OSError) as exc:
+            return None, {"allow": False, "reason": f"risk_input_or_ledger_invalid:{exc}"}
+        if not risk.get("allow"):
+            return None, risk
+        sig.update({
+            "risk_pct": risk["risk_pct"], "risk_usd": risk["risk_usd"],
+            "position_size": risk["position_size"], "contract_size": risk["contract_size"],
+            "quote_to_usd": risk["quote_to_usd"], "size_step": risk["size_step"],
+            "risk_snapshot": risk, "execution_mode": "PAPER_ONLY",
+        })
+        reserved = False
+        if dedupe_key is not None:
             with _smc_used_live_lock:
-                _smc_used_live.discard(dedupe_key)
-        return None, {"allow": False, "reason": f"paper_log_failed:{exc}"}
-    return trade_id, risk
+                if dedupe_key in _smc_used_live:
+                    return None, {"allow": False, "reason": "duplicate_setup_already_reserved"}
+                _smc_used_live.add(dedupe_key)
+                reserved = True
+        try:
+            trade_id = log_new_trade(sig)
+        except Exception as exc:
+            if reserved:
+                with _smc_used_live_lock:
+                    _smc_used_live.discard(dedupe_key)
+            return None, {"allow": False, "reason": f"paper_log_failed:{exc}"}
+        return trade_id, risk
+
 
 
 def smc_scan(chat_id, auto=False):
