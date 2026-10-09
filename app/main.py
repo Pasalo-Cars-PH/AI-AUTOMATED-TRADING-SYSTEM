@@ -1364,6 +1364,7 @@ def validate_smc_mtf(sig, h1_trend, m15_trend):
 # ---------- SMC LIVE ----------
 _smc_live_cache = {"recs": None, "time": None}
 _smc_used_live = set()
+_smc_used_live_lock = threading.Lock()
 
 def fetch_m5_live(n=900):
     now = datetime.datetime.utcnow()
@@ -1403,7 +1404,7 @@ def smc_live_signal(explain=False):
     sig, checks = smc_signal(recs[-40:], pdh, pdl, explain=explain)
     return sig, checks, recs
 
-def risk_gate_and_log(sig):
+def risk_gate_and_log(sig, dedupe_key=None):
     """Single mandatory paper-entry gate shared by every strategy."""
     equity_raw = os.getenv("PAPER_EQUITY_USD", "").strip()
     if not equity_raw:
@@ -1432,7 +1433,20 @@ def risk_gate_and_log(sig):
         "quote_to_usd": risk["quote_to_usd"], "size_step": risk["size_step"],
         "risk_snapshot": risk, "execution_mode": "PAPER_ONLY",
     })
-    trade_id = log_new_trade(sig)
+    reserved = False
+    if dedupe_key is not None:
+        with _smc_used_live_lock:
+            if dedupe_key in _smc_used_live:
+                return None, {"allow": False, "reason": "duplicate_setup_already_reserved"}
+            _smc_used_live.add(dedupe_key)
+            reserved = True
+    try:
+        trade_id = log_new_trade(sig)
+    except Exception as exc:
+        if reserved:
+            with _smc_used_live_lock:
+                _smc_used_live.discard(dedupe_key)
+        return None, {"allow": False, "reason": f"paper_log_failed:{exc}"}
     return trade_id, risk
 
 
@@ -1464,13 +1478,11 @@ def smc_scan(chat_id, auto=False):
         sig["execution_mode"] = candidate["execution_mode"]
         sig["data_source"] = candidate["data_source"]
 
-        trade_id, risk = risk_gate_and_log(sig)
+        trade_id, risk = risk_gate_and_log(sig, dedupe_key=key)
         if trade_id is None:
             if not auto:
                 send_telegram_msg(f"RISK GATE REJECTED: {risk['reason']} | open={risk.get('open_risk_pct', 0):.2f}% daily_loss={risk.get('daily_loss_pct', 0):.2f}% consecutive={risk.get('consecutive_losses', 0)}", chat_id)
             return
-        # Reserve the setup only after the paper trade was successfully logged.
-        _smc_used_live.add(key)
         pht, utc = format_time_pht(sig['time'])
         caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 SMC {VERSION} PAPER ID #{trade_id}\n"
                    f"• {sig['type']} after {sig['level']} sweep + FVG\n"
@@ -2146,8 +2158,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                         stats = calculate_stats(load_trades())
                         trade = next((t for t in load_trades() if t.get("id") == tid), None)
                         rv = trade.get("r") if trade else None
+                        actual_result = trade.get("result", "UNRESOLVED") if trade else "UNRESOLVED"
+                        actual_icon = "✅" if actual_result == "WIN" else "❌" if actual_result == "LOSS" else "➖"
                         send_telegram_msg(
-                            f"{icon} Trade #{tid} {res} exit={exit_price} R={rv if rv is not None else 'N/A'} | "
+                            f"{actual_icon} Trade #{tid} actual={actual_result} exit={exit_price} R={rv if rv is not None else 'N/A'} | "
                             f"WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R Net {stats['net']}R | /dashboard", cid)
                     else:
                         send_telegram_msg(f"Trade #{tid} not found", cid)
