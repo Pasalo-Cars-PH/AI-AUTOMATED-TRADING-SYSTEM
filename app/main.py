@@ -90,6 +90,9 @@ def log_new_trade(sig):
         "risk_pct": sig.get('risk_pct'),
         "risk_usd": sig.get('risk_usd'),
         "position_size": sig.get('position_size'),
+        "contract_size": sig.get('contract_size'),
+        "quote_to_usd": sig.get('quote_to_usd'),
+        "size_step": sig.get('size_step'),
         "risk_snapshot": sig.get('risk_snapshot', {}),
         "status": "OPEN",
         "result": None,
@@ -1446,6 +1449,9 @@ def smc_scan(chat_id, auto=False):
         sig["risk_pct"] = risk["risk_pct"]
         sig["risk_usd"] = risk["risk_usd"]
         sig["position_size"] = risk["position_size"]
+        sig["contract_size"] = risk["contract_size"]
+        sig["quote_to_usd"] = risk["quote_to_usd"]
+        sig["size_step"] = risk["size_step"]
         sig["risk_snapshot"] = risk
         _smc_used_live.add(key)
         trade_id = log_new_trade(sig)
