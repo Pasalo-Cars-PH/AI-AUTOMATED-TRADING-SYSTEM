@@ -14,4 +14,4 @@ yfinance
 apscheduler
 pytz
 matplotlib
-psycopg[binary]==3.2.9
+psycopg[binary]==3.2.13
