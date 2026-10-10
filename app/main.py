@@ -2,6 +2,8 @@ import os, datetime, json, math, bisect, time, threading, random
 from contextlib import asynccontextmanager
 import requests, pandas as pd
 from app.paper_validation import create_candidate, gate_summary
+from app.risk_engine import RiskConfig, evaluate_risk, realized_pnl_usd, realized_r, open_risk_usd
+from app import paper_ledger
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -25,11 +27,17 @@ MIN_LAYERS = max(3, min(7, int(os.getenv("MIN_LAYERS", "5"))))  # deterministic 
 USE_ATR_SL = True          # SL/TP = ATR(10) multiples (live + backtest). False = fixed SL_D/TP_D
 ATR_SL_MULT = 1.5
 ATR_TP_MULT = 3.0          # RR 1:2
-VERSION = "V8.0"
+VERSION = "V9.0"
+RISK_CONFIG = RiskConfig.from_env()
+# Serialize risk-check + ledger mutations within this worker to prevent lost updates
+# and concurrent paper entries exceeding aggregate risk limits.
+_paper_ledger_lock = threading.RLock()
 
-# Trade storage for real-time dashboard
-TRADES_FILE = "/tmp/titan_trades_v6.json"
-TRADES_FILE_PERSIST = "/mnt/data/titan_trades_v6.json"
+# Paper ledger must live on durable storage. Render disks are mounted at /mnt/data;
+# if that mount is missing, paper entries must fail rather than silently use ephemeral /tmp.
+TRADES_FILE_PERSIST = os.getenv("PAPER_LEDGER_PATH", "/mnt/data/titan_trades_v6.json")
+TRADES_FILE_LEGACY = "/tmp/titan_trades_v6.json"
+TRADES_FILE = TRADES_FILE_PERSIST
 
 def pht_now(): return datetime.datetime.now(PHT)
 def format_time_pht(dt_str):
@@ -45,24 +53,65 @@ def format_price(p): return f"{float(p):.2f}"
 def get_seed_trades():
     return []   # wala nang fake seed
 
+def _ledger_mount_ready():
+    # On Render, /mnt/data must be an actual mounted persistent disk.
+    # Local development/test environments can override PAPER_LEDGER_PATH.
+    if os.getenv("RENDER"):
+        mount_root = os.getenv("PAPER_LEDGER_MOUNT", "/mnt/data")
+        if not os.path.ismount(mount_root):
+            raise RuntimeError(f"paper_ledger_persistent_mount_missing:{mount_root}")
+    parent = os.path.dirname(os.path.abspath(TRADES_FILE_PERSIST))
+    if not os.path.isdir(parent):
+        raise RuntimeError(f"paper_ledger_directory_missing:{parent}")
+    if not os.access(parent, os.W_OK):
+        raise RuntimeError(f"paper_ledger_directory_not_writable:{parent}")
+
 def load_trades():
-    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
+    if paper_ledger.is_postgres_backend():
+        return paper_ledger.load_trades()
+    # Durable ledger always wins; never prefer a stale ephemeral copy.
+    _ledger_mount_ready()
+    if os.path.exists(TRADES_FILE_PERSIST):
         try:
-            if os.path.exists(path):
-                with open(path, 'r') as f:
-                    data = json.load(f)
-                    if data and len(data) > 0:
-                        return data
-        except: pass
+            with open(TRADES_FILE_PERSIST, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"paper_ledger_read_failed:{exc}") from exc
+        if not isinstance(data, list):
+            raise RuntimeError("paper_ledger_invalid_format:expected_list")
+        return data
+    # Legacy migration source only when the durable ledger has not been created.
+    if os.path.exists(TRADES_FILE_LEGACY):
+        try:
+            with open(TRADES_FILE_LEGACY, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"legacy_paper_ledger_read_failed:{exc}") from exc
+        if not isinstance(data, list):
+            raise RuntimeError("legacy_paper_ledger_invalid_format:expected_list")
+        return data
     return get_seed_trades()
 
 def save_trades(trades):
-    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
+    if paper_ledger.is_postgres_backend():
+        paper_ledger.save_trades(trades)
+        return
+    _ledger_mount_ready()
+    parent = os.path.dirname(os.path.abspath(TRADES_FILE_PERSIST))
+    temp_path = f"{TRADES_FILE_PERSIST}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(trades, f, indent=2, allow_nan=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, TRADES_FILE_PERSIST)
+    except (OSError, TypeError, ValueError) as exc:
         try:
-            with open(path, 'w') as f:
-                json.dump(trades, f, indent=2)
-        except Exception as e:
-            print(f"Save trades error {path}: {e}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+        raise RuntimeError(f"paper_ledger_write_failed:{exc}") from exc
 
 def log_new_trade(sig):
     trades = load_trades()
@@ -84,9 +133,19 @@ def log_new_trade(sig):
         "execution_mode": sig.get('execution_mode', 'PAPER_ONLY'),
         "data_source": sig.get('data_source', 'UNKNOWN'),
         "gate_summary": sig.get('gate_summary', {}),
+        "symbol": sig.get('pair', sig.get('symbol', 'UNKNOWN')),
+        "risk_pct": sig.get('risk_pct'),
+        "risk_usd": sig.get('risk_usd'),
+        "position_size": sig.get('position_size'),
+        "contract_size": sig.get('contract_size'),
+        "quote_to_usd": sig.get('quote_to_usd'),
+        "size_step": sig.get('size_step'),
+        "risk_snapshot": sig.get('risk_snapshot', {}),
         "status": "OPEN",
         "result": None,
         "r": None,
+        "realized_pnl_usd": None,
+        "exit_price": None,
         "closed_at": None
     }
     trades.append(trade)
@@ -94,48 +153,73 @@ def log_new_trade(sig):
     print(f"Logged new trade #{trade_id} {trade['type']} {trade['entry']}")
     return trade_id
 
-def update_trade_result(trade_id, result):
-    trades = load_trades()
-    for t in trades:
-        if t['id'] == trade_id:
+def update_trade_result(trade_id, result, exit_price=None):
+    """Close only from a valid observed exit; result labels never override realized PnL."""
+    with _paper_ledger_lock, paper_ledger.transaction():
+        if exit_price is None:
+            return False
+        trades = load_trades()
+        for t in trades:
+            if t.get('id') != trade_id:
+                continue
+            if t.get('status') != "OPEN":
+                return False
+            try:
+                exit_value = float(exit_price)
+                pnl = realized_pnl_usd(t, exit_value)
+                r_multiple = realized_r(t, exit_value)
+            except (TypeError, ValueError):
+                return False
+            t['exit_price'] = exit_value
+            t['realized_pnl_usd'] = round(pnl, 6)
+            t['r'] = round(r_multiple, 6)
+            t['result'] = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "BREAKEVEN"
             t['status'] = "CLOSED"
-            t['result'] = "WIN" if result == "WIN" else "LOSS"
-            t['r'] = 2.0 if result == "WIN" else -1.0
             t['closed_at'] = pht_now().isoformat()
             save_trades(trades)
             return True
-    return False
+        return False
+
 
 def calculate_stats(trades):
-    closed = [t for t in trades if t.get('result') in ['WIN', 'LOSS']]
-    wins = len([t for t in closed if t['result'] == 'WIN'])
-    losses = len([t for t in closed if t['result'] == 'LOSS'])
-    total = wins + losses
-    net = sum([t.get('r', 0) for t in closed if t.get('r') is not None])
-    wr = round(wins / total * 100, 1) if total > 0 else 0
-    pf = round((wins * 2) / (losses * 1), 2) if losses > 0 else round(wins * 2, 2) if wins > 0 else 0
-    exp = round(net / total, 2) if total > 0 else 0
+    closed = [t for t in trades if t.get("status") == "CLOSED" and t.get("r") is not None]
+    wins = sum(1 for t in closed if float(t.get("r", 0)) > 0)
+    losses = sum(1 for t in closed if float(t.get("r", 0)) < 0)
+    breakevens = sum(1 for t in closed if float(t.get("r", 0)) == 0)
+    decisive = wins + losses
+    net = sum(float(t.get("r", 0) or 0) for t in closed)
+    gross_profit = sum(float(t.get("r", 0) or 0) for t in closed if float(t.get("r", 0)) > 0)
+    gross_loss = abs(sum(float(t.get("r", 0) or 0) for t in closed if float(t.get("r", 0)) < 0))
+    wr = round(wins / decisive * 100, 1) if decisive else 0
+    pf = round(gross_profit / gross_loss, 2) if gross_loss > 0 else round(gross_profit, 2) if gross_profit > 0 else 0
+    exp = round(net / len(closed), 4) if closed else 0
     evolution = []
+    rnet = 0.0
     rw = rl = 0
-    rnet = 0
     for i, t in enumerate(closed):
-        if t['result'] == 'WIN':
-            rw += 1; rnet += 2.0
-        else:
-            rl += 1; rnet -= 1.0
+        rv = float(t.get('r', 0) or 0)
+        if rv > 0: rw += 1
+        elif rv < 0: rl += 1
+        rnet += rv
         rt = rw + rl
         evolution.append({
             "trade": i + 1,
-            "wr": round(rw / rt * 100, 1) if rt > 0 else 0,
-            "pf": round((rw * 2) / (rl * 1), 2) if rl > 0 else 0,
-            "exp": round(rnet / rt, 2) if rt > 0 else 0,
-            "net": rnet,
-            "result": t['result'],
+            "wr": round(rw / rt * 100, 1) if rt else 0,
+            "pf": round(sum(float(x.get('r', 0) or 0) for x in closed[:i+1] if float(x.get('r', 0)) > 0) /
+                       abs(sum(float(x.get('r', 0) or 0) for x in closed[:i+1] if float(x.get('r', 0)) < 0)), 2)
+                       if any(float(x.get('r', 0)) < 0 for x in closed[:i+1]) else 0,
+            "exp": round(rnet / (i + 1), 4),
+            "net": round(rnet, 4),
+            "result": t.get('result', 'UNRESOLVED'),
             "time": t.get('pht_time', '')
         })
     return {
-        "total_trades": len(trades), "closed_trades": total, "open_trades": len(trades) - total,
-        "wins": wins, "losses": losses, "wr": wr, "pf": pf, "exp": exp, "net": net,
+        "total_trades": len(trades),
+        "closed_trades": sum(1 for t in trades if t.get("status") == "CLOSED"),
+        "resolved_trades": len(closed),
+        "breakevens": breakevens,
+        "open_trades": sum(1 for t in trades if t.get("status") == "OPEN"),
+        "wins": wins, "losses": losses, "wr": wr, "pf": pf, "exp": exp, "net": round(net, 4),
         "evolution": evolution, "trades": trades
     }
 
@@ -1329,6 +1413,7 @@ def validate_smc_mtf(sig, h1_trend, m15_trend):
 # ---------- SMC LIVE ----------
 _smc_live_cache = {"recs": None, "time": None}
 _smc_used_live = set()
+_smc_used_live_lock = threading.Lock()
 
 def fetch_m5_live(n=900):
     now = datetime.datetime.utcnow()
@@ -1368,6 +1453,54 @@ def smc_live_signal(explain=False):
     sig, checks = smc_signal(recs[-40:], pdh, pdl, explain=explain)
     return sig, checks, recs
 
+def risk_gate_and_log(sig, dedupe_key=None):
+    """Single mandatory paper-entry gate shared by every strategy."""
+    with _paper_ledger_lock, paper_ledger.transaction():
+        equity_raw = os.getenv("PAPER_EQUITY_USD", "").strip()
+        if not equity_raw:
+            return None, {"allow": False, "reason": "PAPER_EQUITY_USD_not_configured"}
+        try:
+            equity = float(equity_raw)
+            if not math.isfinite(equity) or equity <= 0:
+                return None, {"allow": False, "reason": "PAPER_EQUITY_USD_invalid"}
+            risk = evaluate_risk(
+                load_trades(),
+                equity_usd=equity,
+                entry=sig.get("entry"),
+                sl=sig.get("sl"),
+                tp=sig.get("tp"),
+                side=sig.get("type"),
+                symbol=sig.get("pair", sig.get("symbol", "XAU/USD")),
+                config=RISK_CONFIG,
+            )
+        except (TypeError, ValueError, RuntimeError, OSError) as exc:
+            return None, {"allow": False, "reason": f"risk_input_or_ledger_invalid:{exc}"}
+        if not risk.get("allow"):
+            return None, risk
+        sig.update({
+            "risk_pct": risk["risk_pct"], "risk_usd": risk["risk_usd"],
+            "position_size": risk["position_size"], "contract_size": risk["contract_size"],
+            "quote_to_usd": risk["quote_to_usd"], "size_step": risk["size_step"],
+            "risk_snapshot": risk, "execution_mode": "PAPER_ONLY",
+        })
+        reserved = False
+        if dedupe_key is not None:
+            with _smc_used_live_lock:
+                if dedupe_key in _smc_used_live:
+                    return None, {"allow": False, "reason": "duplicate_setup_already_reserved"}
+                _smc_used_live.add(dedupe_key)
+                reserved = True
+        try:
+            trade_id = log_new_trade(sig)
+        except Exception as exc:
+            if reserved:
+                with _smc_used_live_lock:
+                    _smc_used_live.discard(dedupe_key)
+            return None, {"allow": False, "reason": f"paper_log_failed:{exc}"}
+        return trade_id, risk
+
+
+
 def smc_scan(chat_id, auto=False):
     sig, checks, recs = smc_live_signal(explain=not auto)
     if recs is None:
@@ -1391,18 +1524,22 @@ def smc_scan(chat_id, auto=False):
         if key in _smc_used_live:
             if not auto: send_telegram_msg(f"ℹ️ Na-log na ang {sig['level']} sweep setup ngayong araw.", chat_id)
             return
-        _smc_used_live.add(key)
         sig["gate_summary"] = mtf_summary
         sig["audit_state"] = candidate["state"]
         sig["execution_mode"] = candidate["execution_mode"]
         sig["data_source"] = candidate["data_source"]
-        trade_id = log_new_trade(sig)
+
+        trade_id, risk = risk_gate_and_log(sig, dedupe_key=key)
+        if trade_id is None:
+            if not auto:
+                send_telegram_msg(f"RISK GATE REJECTED: {risk['reason']} | open={risk.get('open_risk_pct', 0):.2f}% daily_loss={risk.get('daily_loss_pct', 0):.2f}% consecutive={risk.get('consecutive_losses', 0)}", chat_id)
+            return
         pht, utc = format_time_pht(sig['time'])
         caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 SMC {VERSION} PAPER ID #{trade_id}\n"
                    f"• {sig['type']} after {sig['level']} sweep + FVG\n"
                    f"• Entry `{format_price(sig['entry'])}`\n"
                    f"• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:{SMC_RR:g}\n"
-                   f"• Risk `${sig['risk']:.2f}` ({sig['risk']/sig['atr']:.1f}xATR)\n"
+                   f"• Risk `${sig['risk_usd']:.2f}` ({sig['risk_usd']/float(os.getenv('PAPER_EQUITY_USD'))*100:.3f}% equity)\n"
                    f"• FVG zone `{sig['fvg_lo']:.2f}-{sig['fvg_hi']:.2f}`\n"
                    f"• Time `{pht}` ({utc})\n"
                    f"• PAPER ONLY - Managed by completed M5 SL/TP")
@@ -1460,7 +1597,11 @@ def manual_scan(chat_id, auto=False):
         return
     sig = analyze_titan_mtf(clean, tf="M5", h1_trend=h1)
     if sig:
-        trade_id = log_new_trade(sig)
+        trade_id, risk = risk_gate_and_log(sig)
+        if trade_id is None:
+            if not auto:
+                send_telegram_msg(f"RISK GATE REJECTED: {risk['reason']}. No paper entry.", chat_id)
+            return
         pht, utc = format_time_pht(sig['time'])
         caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 {VERSION} PAPER ID #{trade_id}\n"
                    f"• {sig['pair']} {sig['type']} {sig['pinbar']}\n"
@@ -1566,13 +1707,32 @@ def strict_signal_lock():
         "kill_switch": True,
     })
 
+def _ledger_unavailable_response(exc):
+    # Never report an unavailable/corrupt ledger as an empty journal.
+    return JSONResponse(
+        {
+            "status": "unavailable",
+            "error": "PAPER_LEDGER_UNAVAILABLE",
+            "reason": str(exc),
+            "trading_mode": "PAPER",
+            "live_execution": False,
+        },
+        status_code=503,
+    )
+
 @app.get("/api/trades")
 def api_trades():
-    return JSONResponse(calculate_stats(load_trades()))
+    try:
+        return JSONResponse(calculate_stats(load_trades()))
+    except (RuntimeError, OSError) as exc:
+        return _ledger_unavailable_response(exc)
 
 @app.get("/api/stats")
 def api_stats():
-    return JSONResponse(calculate_stats(load_trades()))
+    try:
+        return JSONResponse(calculate_stats(load_trades()))
+    except (RuntimeError, OSError) as exc:
+        return _ledger_unavailable_response(exc)
 
 def _clean_live():
     data = fetch_live_tf("5min")
@@ -1973,7 +2133,15 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             txt = update["message"]["text"].strip()
             txt_base = txt.split("@")[0].split()[0]
             args = txt.split()[1:]
-            if TELEGRAM_CHAT_ID and cid != str(TELEGRAM_CHAT_ID): return {"status": "ok"}
+            if not TELEGRAM_CHAT_ID:
+                send_telegram_msg(
+                    "🚫 TELEGRAM COMMANDS BLOCKED: TELEGRAM_CHAT_ID is not configured. "
+                    "Set the authorized chat ID before using paper controls.",
+                    cid,
+                )
+                return {"status": "blocked"}
+            if cid != str(TELEGRAM_CHAT_ID):
+                return {"status": "ok"}
             if MASTER_LIVE_ENABLE:
                 send_telegram_msg("🚫 SAFETY LOCK ACTIVE - PAPER ONLY", cid)
                 return {"status": "blocked"}
@@ -1997,7 +2165,30 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 s = calculate_stats(load_trades())
                 send_telegram_msg("PERFORMANCE\nTrades %s | Closed %s | W/L %s/%s | WR %s%% | PF %s | Exp %sR | Net %sR | Open %s" % (s["total_trades"], s["closed_trades"], s["wins"], s["losses"], s["wr"], s["pf"], s["exp"], s["net"], s["open_trades"]), cid)
             elif txt_base == "/risk":
-                send_telegram_msg("RISK / SAFETY\nLive execution DISABLED\nMaster live enable FALSE\nKill switch ACTIVE\nRR 1:2 | ATR SL 1.5x\nMinimum confluence %s/7\nSynthetic fallback DISABLED\nExecution commands BLOCKED" % MIN_LAYERS, cid)
+                equity = os.getenv("PAPER_EQUITY_USD", "NOT_SET")
+                trades = load_trades()
+                opens = [t for t in trades if t.get("status") == "OPEN"]
+                try:
+                    open_risk = open_risk_usd(opens)
+                    if equity == "NOT_SET":
+                        open_pct_text = "UNKNOWN (equity not configured)"
+                    else:
+                        open_pct_text = f"{open_risk / float(equity) * 100:.2f}%"
+                except (TypeError, ValueError):
+                    open_pct_text = "UNKNOWN — DATA INTEGRITY BLOCK"
+                send_telegram_msg(
+                    "RISK / PORTFOLIO\n"
+                    "Live execution DISABLED\n"
+                    "Paper equity %s\n"
+                    "Risk/trade %.2f%% | Open risk %s\n"
+                    "Max total %.2f%% | Max correlated %.2f%%\n"
+                    "Daily loss limit %.2f%% | Consecutive-loss lock %s\n"
+                    "Max open %s | Min RR %.2f\n"
+                    "Sizing = actual entry-to-SL distance"
+                    % (equity, RISK_CONFIG.risk_per_trade_pct, open_pct_text,
+                       RISK_CONFIG.max_total_open_risk_pct, RISK_CONFIG.max_correlated_risk_pct,
+                       RISK_CONFIG.daily_loss_limit_pct, RISK_CONFIG.max_consecutive_losses,
+                       RISK_CONFIG.max_open_positions, RISK_CONFIG.min_rr), cid)
             elif txt_base == "/journal":
                 trades = load_trades()
                 msg = "PAPER JOURNAL - LAST 10\n" + ("No paper trades recorded." if not trades else "\n".join("#%s %s %s %s %sR" % (t["id"], t.get("pht_time",""), t.get("type","?"), t.get("result") or "OPEN", t.get("r") if t.get("r") is not None else "-") for t in trades[-10:]))
@@ -2035,37 +2226,55 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             elif txt_base in ("/win", "/loss"):
                 res = "WIN" if txt_base == "/win" else "LOSS"
                 icon = "✅" if res == "WIN" else "❌"
-                rv = "+2R" if res == "WIN" else "-1R"
-                tid = None
-                if args:
-                    try: tid = int(args[0])
-                    except: send_telegram_msg(f"Usage {txt_base} [id]", cid); return {"status": "ok"}
+                if len(args) < 2:
+                    send_telegram_msg(f"Usage: {txt_base} [id] [actual_exit_price] — no fabricated R/PnL.", cid)
                 else:
-                    open_trades = [t for t in load_trades() if t.get('status') == 'OPEN']
-                    if open_trades: tid = open_trades[-1]['id']
-                if tid is None:
-                    send_telegram_msg("No open trades", cid)
-                elif update_trade_result(tid, res):
-                    stats = calculate_stats(load_trades())
-                    send_telegram_msg(f"{icon} Trade #{tid} {res} {rv} | WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R Net {stats['net']}R | /dashboard", cid)
-                else:
-                    send_telegram_msg(f"Trade #{tid} not found", cid)
+                    try:
+                        tid = int(args[0])
+                        exit_price = float(args[1])
+                    except (TypeError, ValueError):
+                        send_telegram_msg(f"Usage: {txt_base} [id] [actual_exit_price]", cid)
+                        return {"status": "ok"}
+                    if update_trade_result(tid, res, exit_price):
+                        stats = calculate_stats(load_trades())
+                        trade = next((t for t in load_trades() if t.get("id") == tid), None)
+                        rv = trade.get("r") if trade else None
+                        actual_result = trade.get("result", "UNRESOLVED") if trade else "UNRESOLVED"
+                        actual_icon = "✅" if actual_result == "WIN" else "❌" if actual_result == "LOSS" else "➖"
+                        send_telegram_msg(
+                            f"{actual_icon} Trade #{tid} actual={actual_result} exit={exit_price} R={rv if rv is not None else 'N/A'} | "
+                            f"WR {stats['wr']}% PF {stats['pf']} Exp {stats['exp']}R Net {stats['net']}R | /dashboard", cid)
+                    else:
+                        send_telegram_msg(f"Trade #{tid} not found", cid)
             elif txt_base == "/testtrade":
-                test_sig = {"type": "BUY", "entry": 4142.47, "sl": 4140.67, "tp": 4146.07, "time": pht_now().isoformat(),
-                            "tf": "M5", "confluence": 60, "model_score": 70, "layers": ["TEST"], "reason": "TEST TRADE - dashboard testing"}
-                tid = log_new_trade(test_sig)
-                send_telegram_msg(f"🧪 Test trade #{tid} OPEN | /win {tid} or /loss {tid}", cid)
+                send_telegram_msg("🛑 /testtrade disabled: synthetic trades are not allowed in the risk ledger. Use /scan for a gated paper candidate.", cid)
             elif txt_base == "/reset":
-                try:
-                    for path in [TRADES_FILE, TRADES_FILE_PERSIST]:
-                        if os.path.exists(path):
-                            os.remove(path)
-                    send_telegram_msg("🔄 Reset: 0 trades. Fresh start.", cid)
-                except Exception as e:
-                    send_telegram_msg(f"Reset error {e}", cid)
+                send_telegram_msg(
+                    "🛑 /reset disabled in V4: clearing the journal could bypass daily-loss and consecutive-loss locks. "
+                    "Risk history is preserved; use a separate audited archival/migration workflow if needed.", cid
+                )
             elif txt_base in ["/help", "/start"]:
-                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER COMMAND CENTER*\n• /status • /paperstatus • /scan • /bestsetup\n• /positions • /performance • /risk • /journal\n• /pause • /resume-paper\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /backtest [pages] [symbol] • /diag [pages] [symbol] • /pool\n• /testtrade • /reset\n🔒 Live execution commands remain disabled.", cid)
+                send_telegram_msg(f"🔒 *TITAN {VERSION} M5 PAPER COMMAND CENTER*\n• /status • /paperstatus • /scan • /bestsetup\n• /positions • /performance • /risk • /journal\n• /pause • /resume-paper\n• /dashboard • /trades\n• /win [id] • /loss [id]\n• /backtest [pages] [symbol] • /diag [pages] [symbol] • /pool\n• /reset\n🔒 Live execution commands remain disabled.", cid)
+    except RuntimeError as e:
+        # Never make a missing/corrupt durable ledger look like an empty journal.
+        reason = str(e)
+        print(f"Telegram command blocked by runtime/data guard: {reason}")
+        try:
+            send_telegram_msg(
+                "⚠️ PAPER LEDGER / DATA UNAVAILABLE\\n"
+                f"Command could not complete: {reason}\\n"
+                "Paper entries remain fail-closed; verify persistent ledger storage before retrying.",
+                locals().get("cid")
+            )
+        except Exception as notify_error:
+            print(f"Telegram error notification failed: {notify_error}")
     except Exception as e:
-        print(e)
-        import traceback; traceback.print_exc()
+        print(f"Telegram webhook command failed: {type(e).__name__}: {e}")
+        try:
+            send_telegram_msg(
+                "⚠️ COMMAND FAILED\\nThe request could not be completed. Check service logs before retrying.",
+                locals().get("cid")
+            )
+        except Exception as notify_error:
+            print(f"Telegram error notification failed: {notify_error}")
     return {"status": "ok"}
