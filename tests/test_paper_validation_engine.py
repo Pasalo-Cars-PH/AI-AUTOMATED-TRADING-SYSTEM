@@ -27,7 +27,9 @@ def test_candidate_is_paper_only_and_auditable():
     signal = {
         "pair": "XAUUSD", "type": "BUY", "entry": 4000,
         "sl": 3990, "tp": 4020, "time": "2026-10-09 08:00:00",
-        "version": "V8.0", "rr": 2.0
+        "version": "V8.0", "rr": 2.0,
+        "confluence_score": 100,
+        "confluence_components": [{"name": "sweep", "points": 20}],
     }
     candidate = create_candidate(signal, [{"name": "H1", "pass": True}])
     assert candidate["state"] == "ACTIONABLE"

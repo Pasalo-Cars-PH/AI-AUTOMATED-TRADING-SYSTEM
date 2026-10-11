@@ -1401,6 +1401,24 @@ def fetch_m15_trend():
     except Exception:
         return "UNKNOWN", "NO_DATA"
 
+def score_smc_confluence(sig, mtf_gates):
+    """Transparent rule-confluence score, not an AI probability or win-rate estimate.
+    Components are awarded only for present strategy layers and passing H1/M15 gates.
+    """
+    layers = {str(x).upper() for x in (sig.get("layers") or [])}
+    components = {
+        "liquidity_sweep": (20, any(x in layers for x in ("PDH_SWEEP", "PDL_SWEEP"))),
+        "displacement": (20, "DISP" in layers),
+        "fair_value_gap": (20, "FVG" in layers),
+        "killzone": (10, "KZ" in layers),
+        "h1_alignment": (15, any(g.get("name") == "H1 alignment" and g.get("pass") for g in mtf_gates)),
+        "m15_alignment": (15, any(g.get("name") == "M15 alignment" and g.get("pass") for g in mtf_gates)),
+    }
+    score = sum(points for points, passed in components.values() if passed)
+    return score, [{"name": name, "points": points, "pass": bool(passed)}
+                   for name, (points, passed) in components.items()]
+
+
 def validate_smc_mtf(sig, h1_trend, m15_trend):
     expected = {"BUY": "BULL", "SELL": "BEAR"}.get(sig.get("type"))
     gates = [
@@ -1517,6 +1535,15 @@ def smc_scan(chat_id, auto=False):
                 failed = ", ".join(mtf_summary["failed_names"])
                 send_telegram_msg(f"MTF GATE REJECTED: {failed} | H1={h1_trend} M15={m15_trend} | source={m15_source}", chat_id)
             return
+        confluence_score, score_components = score_smc_confluence(sig, mtf_gates)
+        checks.append({"name": "Confluence score >= 75", "pass": confluence_score >= 75,
+                       "actual": f"{confluence_score}/100 (rule confluence, not win probability)"})
+        if confluence_score < 75:
+            if not auto:
+                send_telegram_msg(f"CONFLUENCE GATE REJECTED: {confluence_score}/100; minimum 75. No paper entry.", chat_id)
+            return
+        sig["confluence_score"] = confluence_score
+        sig["confluence_components"] = score_components
         sig["version"] = VERSION
         sig["rr"] = SMC_RR
         candidate = create_candidate(sig, checks, data_source=m15_source)
