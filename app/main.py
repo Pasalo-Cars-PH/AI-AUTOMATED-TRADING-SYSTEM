@@ -1585,9 +1585,12 @@ def smc_scan(chat_id, auto=False):
 
 def smc_pretrade():
     sig, checks, recs = smc_live_signal(explain=True)
-    out = {"timestamp": pht_now().isoformat(), "tf": "M5", "h1_trend": "n/a (SMC)", "version": VERSION,
-           "data_source": getattr(fetch_m5_live, "last_source", "UNKNOWN"), "h1_full": {}, "ichi": None,
-           "layers": [], "boosters": [], "indicators": {}, "passed_layers": 0, "confluence": 0, "model_score": 0}
+    out = {"timestamp": pht_now().isoformat(), "tf": "M5", "h1_trend": "UNKNOWN", "version": VERSION,
+           "data_source": getattr(fetch_m5_live, "last_source", "UNKNOWN"), "h1_full": None,
+           "ichi": {"status": "NOT_COMPUTED_BY_SMC_PRETRADE"}, "layers": [], "boosters": [],
+           "indicators": {}, "passed_layers": 0, "confluence": 0, "model_score": 0,
+           "analysis_contract": {"strategy": "SMC", "layer_source": "actual_gate_results",
+                                 "score_is_probability": False}}
     if not recs:
         out.update({"error": "No valid live M5 data", "data_status": "NO_DATA",
                     "indicator_status": "UNAVAILABLE", "api_key_set": bool(TWELVE_DATA_API_KEY)})
@@ -1638,6 +1641,44 @@ def smc_pretrade():
                      "sc": 0, "datetime": str(c['datetime'])}
     out["gates"] = [{"id": i + 1, "name": ck['name'], "desc": "", "required": "", "actual": ck['actual'],
                      "pass": ck['pass'], "fail_reason": "" if ck['pass'] else "failed"} for i, ck in enumerate(checks)]
+    # Populate dashboard layer fields only from real strategy gate evidence; never infer a setup from indicators.
+    gate_names = {str(ck.get("name", "")).lower(): bool(ck.get("pass")) for ck in checks}
+    layer_map = {
+        "KZ": ("killzone",),
+        "PDH_PDL": ("pdh/pdl",),
+        "SWEEP": ("sweep pdh/pdl", "sweep"),
+        "DISP_FVG": ("displacement+fvg",),
+    }
+    actual_layers = []
+    for layer, aliases in layer_map.items():
+        if any(gate_names.get(alias, False) for alias in aliases):
+            actual_layers.append(layer)
+    out["layers"] = actual_layers
+    out["passed_layers"] = len(actual_layers)
+    # Boosters are descriptive indicator facts, not additional trade permissions.
+    boosters = []
+    if valid_indicators and ema20 is not None and ema50 is not None:
+        if closes[-1] > ema20 > ema50:
+            boosters.append("EMA_BULL_ALIGNMENT")
+        elif closes[-1] < ema20 < ema50:
+            boosters.append("EMA_BEAR_ALIGNMENT")
+    if isinstance(supertrend, dict) and supertrend.get("trend") in ("BULL", "BEAR"):
+        boosters.append("SUPERTREND_" + supertrend["trend"])
+    if valid_indicators and rsi14 is not None:
+        if rsi14 <= 30:
+            boosters.append("RSI_OVERSOLD")
+        elif rsi14 >= 70:
+            boosters.append("RSI_OVERBOUGHT")
+    out["boosters"] = boosters
+    # SMC MTF data is only required and computed for a valid candidate; mark unavailable honestly otherwise.
+    if sig:
+        try:
+            h1_data = fetch_h1_supertrend_adx()
+            out["h1_full"] = h1_data if isinstance(h1_data, dict) else None
+            out["h1_trend"] = h1_data.get("trend_simple", "UNKNOWN") if isinstance(h1_data, dict) else "UNKNOWN"
+        except Exception:
+            out["h1_full"] = None
+            out["h1_trend"] = "UNKNOWN"
     out["signal"] = sig
     out["decision"] = sig['type'] if sig and age_min <= 15 and valid_indicators else "SKIP"
     failed = [ck['name'] for ck in checks if not ck['pass']]
