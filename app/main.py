@@ -1927,7 +1927,7 @@ async function load(){
   const ci = data.candle||{};
   document.getElementById('candleInfo').innerHTML =
    `<b>CANDLE:</b> ${ci.datetime||''} O:${ci.open} H:${ci.high} L:${ci.low} C:${ci.close} Body:${(ci.body||0).toFixed(3)} Range:${(ci.range||0).toFixed(3)} SC:${((ci.sc||0)*100).toFixed(1)}%<br>`+
-   `<b>INDICATORS:</b> EMA20:${(data.indicators?.ema20||0).toFixed(2)} EMA50:${(data.indicators?.ema50||0).toFixed(2)} RSI:${(data.indicators?.rsi||0).toFixed(1)} | Layers ${data.passed_layers||0}/7 | Source ${data.data_source||''} Price ${data.live_price||''}`;
+   `<b>INDICATORS:</b> EMA20:${data.indicators?.ema20 != null && Number.isFinite(Number(data.indicators.ema20)) ? Number(data.indicators.ema20).toFixed(2) : 'N/A'} EMA50:${data.indicators?.ema50 != null && Number.isFinite(Number(data.indicators.ema50)) ? Number(data.indicators.ema50).toFixed(2) : 'N/A'} RSI:${data.indicators?.rsi != null && Number.isFinite(Number(data.indicators.rsi)) ? Number(data.indicators.rsi).toFixed(1) : 'N/A'} | Layers ${data.passed_layers||0}/7 | Source ${data.data_source||''} Price ${data.live_price||''}`;
   const ichi = data.ichi || data.h1_full?.ichi;
   const h1f = data.h1_full || {};
   document.getElementById('ichiInfo').innerHTML = `<b>H1 TREND (V7.6):</b> ${data.h1_trend} | EMA20/50 H1: ${h1f.ema_trend||''}` + (ichi ? ` | Ichimoku (display lang): ${ichi.trend} ${ichi.inside_cloud?'(inside cloud)':''}` : '');
@@ -1964,6 +1964,7 @@ setInterval(load, 30000);
 </script>
 </body></html>
 """
+    html = html.replace("TITAN V7.6", f"TITAN {VERSION}")
     return HTMLResponse(content=html)
 
 
@@ -2058,6 +2059,19 @@ async function fetchStats(){
  try{
   const res = await fetch('/api/stats');
   const data = await res.json();
+  if(!res.ok || data.status === 'unavailable' || data.error){
+   document.getElementById('lastUpdate').textContent = 'LEDGER UNAVAILABLE — stats are not valid; check server/DB logs.';
+   document.getElementById('total').textContent = 'N/A';
+   document.getElementById('wins').textContent = 'N/A';
+   document.getElementById('losses').textContent = 'N/A';
+   document.getElementById('wr').textContent = 'N/A';
+   document.getElementById('pf').textContent = 'N/A';
+   document.getElementById('exp').textContent = 'N/A';
+   document.getElementById('net').textContent = 'N/A';
+   document.getElementById('open').textContent = 'N/A';
+   document.getElementById('progress').textContent = 'Ledger unavailable';
+   return;
+  }
   tradesData = data;
   updateUI(data);
  }catch(e){
@@ -2137,6 +2151,7 @@ setInterval(fetchStats, 10000);
 </body>
 </html>
     """
+    html_content = html_content.replace("TITAN V7.6", f"TITAN {VERSION}")
     return HTMLResponse(content=html_content)
 
 
