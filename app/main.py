@@ -1437,9 +1437,11 @@ def fetch_m5_live(n=900):
     now = datetime.datetime.utcnow()
     c = _smc_live_cache
     if c["recs"] and c["time"] and (now - c["time"]).total_seconds() < 60:
+        fetch_m5_live.last_source = "LIVE_TWELVEDATA_5min_CACHED"
         return c["recs"]
     vals = fetch_data("XAU/USD", "5min", n)
     if not vals or len(vals) < 200:
+        fetch_m5_live.last_source = "NO_DATA"
         return None
     recs = []
     for v in reversed(vals):                   # newest-first -> oldest-first
@@ -1449,14 +1451,20 @@ def fetch_m5_live(n=900):
                 recs.append({"datetime": pd.Timestamp(v["datetime"]), "open": o, "high": h, "low": l, "close": cl})
         except: pass
     if len(recs) < 200:
+        fetch_m5_live.last_source = "NO_DATA_INVALID_CANDLES"
         return None
     try:
         if now < recs[-1]['datetime'].to_pydatetime() + datetime.timedelta(minutes=5):
             recs = recs[:-1]                   # drop forming candle
     except: pass
+    if len(recs) < 60:
+        fetch_m5_live.last_source = "NO_DATA_AFTER_CLOSED_BAR_FILTER"
+        return None
     c["recs"] = recs
     c["time"] = now
+    fetch_m5_live.last_source = "LIVE_TWELVEDATA_5min"
     return recs
+fetch_m5_live.last_source = "UNKNOWN"
 
 def smc_live_signal(explain=False):
     recs = fetch_m5_live(900)
@@ -1578,22 +1586,62 @@ def smc_scan(chat_id, auto=False):
 def smc_pretrade():
     sig, checks, recs = smc_live_signal(explain=True)
     out = {"timestamp": pht_now().isoformat(), "tf": "M5", "h1_trend": "n/a (SMC)", "version": VERSION,
-           "data_source": "LIVE_TWELVEDATA_5min", "h1_full": {}, "ichi": None, "layers": [], "boosters": [],
-           "indicators": {}, "passed_layers": 0, "confluence": 0, "model_score": 0}
+           "data_source": getattr(fetch_m5_live, "last_source", "UNKNOWN"), "h1_full": {}, "ichi": None,
+           "layers": [], "boosters": [], "indicators": {}, "passed_layers": 0, "confluence": 0, "model_score": 0}
     if not recs:
-        out["error"] = "No data"
+        out.update({"error": "No valid live M5 data", "data_status": "NO_DATA",
+                    "indicator_status": "UNAVAILABLE", "api_key_set": bool(TWELVE_DATA_API_KEY)})
         return out
+    # All calculations use validated, oldest-to-newest CLOSED candles only.
+    closes = [float(x["close"]) for x in recs]
+    highs = [float(x["high"]) for x in recs]
+    lows = [float(x["low"]) for x in recs]
+    opens = [float(x["open"]) for x in recs]
+    last = recs[-1]
+    now_utc = datetime.datetime.utcnow()
+    candle_time = pd.Timestamp(last["datetime"]).to_pydatetime()
+    if candle_time.tzinfo is not None:
+        candle_time = candle_time.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    age_min = max(0.0, (now_utc - (candle_time + datetime.timedelta(minutes=5))).total_seconds() / 60.0)
+    ema20 = calculate_ema(closes, 20)
+    ema50 = calculate_ema(closes, 50)
+    rsi14 = calculate_rsi(closes, 14) if len(closes) >= 15 else None
+    atr_series = _atr_series(highs, lows, closes, 14)
+    atr14 = atr_series[-1] if atr_series else None
+    supertrend = calculate_supertrend(highs, lows, closes, 10, 3.0)
+    required = {"ema20": ema20, "ema50": ema50, "rsi14": rsi14, "atr14": atr14}
+    valid_indicators = all(v is not None and math.isfinite(float(v)) for v in required.values())
+    if atr14 is not None and atr14 <= 0:
+        valid_indicators = False
+    out["data_status"] = "STALE" if age_min > 15 else "LIVE_CLOSED_CANDLES"
+    out["last_closed_candle_age_minutes"] = round(age_min, 2)
+    out["bars_used"] = len(recs)
+    out["api_key_set"] = bool(TWELVE_DATA_API_KEY)
+    out["indicator_status"] = "OK" if valid_indicators else "UNAVAILABLE"
+    out["indicators"] = {
+        "ema20": ema20 if valid_indicators else None,
+        "ema50": ema50 if valid_indicators else None,
+        "rsi": rsi14 if valid_indicators else None,
+        "atr14": atr14 if valid_indicators else None,
+        "supertrend": supertrend,
+        "close": closes[-1],
+        "calculation": "local_python_closed_candles",
+    }
+    if age_min > 15:
+        checks.append({"name": "Data freshness", "pass": False, "actual": f"last closed M5 candle {age_min:.1f} min old"})
+    if not valid_indicators:
+        checks.append({"name": "Indicator validity", "pass": False, "actual": "EMA/RSI/ATR unavailable or invalid"})
     c = recs[-1]
     out["live_price"] = c['close']
     out["candle"] = {"open": c['open'], "high": c['high'], "low": c['low'], "close": c['close'],
-                     "body": abs(c['close'] - c['open']), "range": c['high'] - c['low'], "sc": 0,
-                     "datetime": str(c['datetime'])}
+                     "body": abs(c['close'] - c['open']), "range": c['high'] - c['low'],
+                     "sc": 0, "datetime": str(c['datetime'])}
     out["gates"] = [{"id": i + 1, "name": ck['name'], "desc": "", "required": "", "actual": ck['actual'],
                      "pass": ck['pass'], "fail_reason": "" if ck['pass'] else "failed"} for i, ck in enumerate(checks)]
     out["signal"] = sig
-    out["decision"] = sig['type'] if sig else "SKIP"
+    out["decision"] = sig['type'] if sig and age_min <= 15 and valid_indicators else "SKIP"
     failed = [ck['name'] for ck in checks if not ck['pass']]
-    out["reason"] = sig['reason'] if sig else ("Failed: " + ", ".join(failed) if failed else "No setup")
+    out["reason"] = sig['reason'] if sig and out["decision"] != "SKIP" else ("Failed: " + ", ".join(failed) if failed else "No setup")
     return out
 
 
