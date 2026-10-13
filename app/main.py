@@ -1836,6 +1836,43 @@ def _ledger_unavailable_response(exc):
         status_code=503,
     )
 
+@app.get("/api/ledger/health")
+def api_ledger_health():
+    """Read-only application-side ledger diagnostic; never mutates ledger state."""
+    try:
+        backend_name = paper_ledger.backend()
+        if backend_name == "postgres":
+            trades = paper_ledger.load_trades()
+            return JSONResponse({
+                "status": "ok",
+                "backend": "postgres",
+                "database_read": "ok",
+                "trade_count": len(trades),
+                "write_test": "not_performed_read_only",
+                "trading_mode": "PAPER",
+                "live_execution": False,
+            })
+        return JSONResponse({
+            "status": "not_ready",
+            "backend": backend_name,
+            "database_read": "not_applicable",
+            "reason": "PAPER_LEDGER_BACKEND_NOT_POSTGRES",
+            "write_test": "not_performed_read_only",
+            "trading_mode": "PAPER",
+            "live_execution": False,
+        }, status_code=503)
+    except (RuntimeError, OSError) as exc:
+        return JSONResponse({
+            "status": "unavailable",
+            "backend": "postgres" if paper_ledger.is_postgres_backend() else "unknown",
+            "database_read": "failed",
+            "reason": str(exc),
+            "write_test": "not_performed_read_only",
+            "trading_mode": "PAPER",
+            "live_execution": False,
+        }, status_code=503)
+
+
 @app.get("/api/trades")
 def api_trades():
     try:
