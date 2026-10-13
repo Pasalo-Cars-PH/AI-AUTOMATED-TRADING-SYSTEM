@@ -1855,7 +1855,7 @@ def api_ledger_write_test(request: Request):
         # Use a short transaction and a same-value UPDATE. Always rollback, including
         # successful UPDATEs; updated_at and trades payload are deliberately untouched.
         session.begin()
-        row = session.execute(text(
+        row = session.execute(paper_ledger.text(
             "SELECT id FROM titan_private.paper_ledger_state WHERE id = 1 FOR UPDATE"
         )).first()
         if row is None:
@@ -1863,7 +1863,7 @@ def api_ledger_write_test(request: Request):
             return JSONResponse({"status": "failed", "write_test": "failed",
                                  "reason": "paper_ledger_state_row_missing",
                                  "trading_mode": "PAPER", "live_execution": False}, status_code=503)
-        result = session.execute(text(
+        result = session.execute(paper_ledger.text(
             "UPDATE titan_private.paper_ledger_state SET trades = trades WHERE id = 1"
         ))
         if result.rowcount != 1:
