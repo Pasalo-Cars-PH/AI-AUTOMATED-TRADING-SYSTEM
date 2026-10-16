@@ -1836,12 +1836,22 @@ def _ledger_unavailable_response(exc):
         status_code=503,
     )
 
+def _token_ok(supplied: str, expected: str) -> bool:
+    """Constant-time token comparison; malformed/non-ASCII values fail closed."""
+    if not expected or not supplied:
+        return False
+    try:
+        return __import__("hmac").compare_digest(supplied, expected)
+    except (TypeError, ValueError, UnicodeError):
+        return False
+
+
 @app.post("/api/ledger/write-test")
 def api_ledger_write_test(request: Request):
     """Authenticated, rollback-only UPDATE permission probe; never commits ledger changes."""
     expected = os.getenv("PAPER_LEDGER_WRITE_TEST_TOKEN", "").strip()
     supplied = request.headers.get("x-paper-ledger-test-token", "")
-    if not expected or not supplied or not __import__("hmac").compare_digest(supplied, expected):
+    if not _token_ok(supplied, expected):
         return JSONResponse({"status": "unauthorized", "write_test": "not_run",
                              "trading_mode": "PAPER", "live_execution": False}, status_code=401)
     if not paper_ledger.is_postgres_backend():
@@ -1855,6 +1865,8 @@ def api_ledger_write_test(request: Request):
         # Use a short transaction and a same-value UPDATE. Always rollback, including
         # successful UPDATEs; updated_at and trades payload are deliberately untouched.
         session.begin()
+        # Bound lock waits so this diagnostic cannot hang behind another transaction.
+        session.execute(paper_ledger.text("SET LOCAL lock_timeout = '2s'"))
         row = session.execute(paper_ledger.text(
             "SELECT id FROM titan_private.paper_ledger_state WHERE id = 1 FOR UPDATE"
         )).first()

@@ -2,7 +2,7 @@ import os
 import requests
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 from app.market.models import Candle
 
@@ -40,7 +40,8 @@ class TwelveDataProvider:
             "symbol": formatted_symbol,
             "interval": interval,
             "outputsize": limit,
-            "apikey": api_key
+            "apikey": api_key,
+            "timezone": "UTC"
         }
 
         try:
@@ -54,7 +55,8 @@ class TwelveDataProvider:
             for item in reversed(data["values"]):
                 dt_str = item["datetime"]
                 dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S" if len(dt_str) > 10 else "%Y-%m-%d")
-                ts = int(dt.timestamp())
+                # Provider timestamps are explicitly requested in UTC.
+                ts = int(dt.replace(tzinfo=timezone.utc).timestamp())
 
                 candles.append(Candle(
                     timestamp=ts,
