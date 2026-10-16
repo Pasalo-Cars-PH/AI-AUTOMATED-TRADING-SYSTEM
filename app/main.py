@@ -1836,7 +1836,6 @@ def _ledger_unavailable_response(exc):
         status_code=503,
     )
 
-@app.post("/api/ledger/write-test")
 def _token_ok(supplied: str, expected: str) -> bool:
     """Constant-time token comparison; malformed/non-ASCII values fail closed."""
     if not expected or not supplied:
@@ -1847,6 +1846,7 @@ def _token_ok(supplied: str, expected: str) -> bool:
         return False
 
 
+@app.post("/api/ledger/write-test")
 def api_ledger_write_test(request: Request):
     """Authenticated, rollback-only UPDATE permission probe; never commits ledger changes."""
     expected = os.getenv("PAPER_LEDGER_WRITE_TEST_TOKEN", "").strip()
