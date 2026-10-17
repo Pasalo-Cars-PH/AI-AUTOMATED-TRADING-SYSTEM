@@ -2066,7 +2066,7 @@ def pretrade_dashboard():
     html = """
 <!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TITAN V7.6 PRE-TRADE</title>
+<title>TITAN V9.0 PRE-TRADE</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px}
@@ -2089,7 +2089,7 @@ body{background:#000;color:#fff;font-family:monospace;padding:8px;font-size:11px
 </head>
 <body>
 <div class="header">
-<h1>🔍 TITAN V7.6 PRE-TRADE - 3 GATES / 7 LAYERS (need 3) <span style="color:#22c55e">● LIVE</span></h1>
+<h1>🔍 TITAN V9.0 PRE-TRADE - 3 GATES / 7 LAYERS (need 3) <span style="color:#22c55e">● LIVE</span></h1>
 <p>Bakit pumasa / bumagsak ang setup bago mag-signal. H1 = SuperTrend(10,3)+EMA50. Ichimoku box ay display lang.</p>
 <p id="last" style="font-size:9px;color:#666"></p>
 </div>
@@ -2168,7 +2168,7 @@ def dashboard():
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TITAN V7.6 PAPER DASHBOARD</title>
+<title>TITAN V9.0 PAPER DASHBOARD</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;color:#fff;font-family:'Courier New',monospace;padding:12px}
@@ -2203,9 +2203,16 @@ th{background:#111;color:#888}
 </head>
 <body>
 <div class="header">
-<h1>🔒 TITAN V7.6 M5 PAPER - HONEST DASHBOARD <span id="auto">● LIVE</span></h1>
+<h1>🔒 TITAN V9.0 M5 PAPER - HONEST DASHBOARD <span id="auto">● LIVE</span></h1>
 <p>Live paper trades lang (walang fake seed). Breakeven sa RR 1:2 = 33.3% WR. Kailangan ng 100+ closed trades bago pagkatiwalaan.</p>
 <p id="lastUpdate" style="color:#666;font-size:9px;margin-top:4px">Last update: loading...</p>
+</div>
+
+<div class="evolution" id="scanPipeline" style="border-color:#f59e0b">
+<h3 style="color:#f59e0b">⚙️ V9.0 SCAN PIPELINE — READ-ONLY CHECK</h3>
+<p id="pipelineState" style="color:#aaa;margin:6px 0">Checking market data and strategy analysis...</p>
+<p id="pipelineDetail" style="color:#666;font-size:10px;overflow-wrap:anywhere">No pipeline result yet.</p>
+<button class="btn" onclick="fetchPipeline()">🔄 CHECK PIPELINE</button>
 </div>
 
 <div class="grid" id="statsGrid">
@@ -2246,6 +2253,28 @@ th{background:#111;color:#888}
 
 <script>
 let tradesData = {evolution:[], trades:[]};
+
+async function fetchPipeline(){
+ const state = document.getElementById('pipelineState');
+ const detail = document.getElementById('pipelineDetail');
+ state.textContent = 'Checking /api/pretrade...';
+ try{
+  const res = await fetch('/api/pretrade', {cache:'no-store'});
+  const data = await res.json();
+  const version = data.version || 'VERSION NOT REPORTED';
+  const source = data.data_source || data.source || 'SOURCE NOT REPORTED';
+  const decision = data.decision || data.signal?.type || data.signal || 'NO ACTIONABLE SIGNAL';
+  const reason = data.reason || data.error || data.detail || 'No reason reported';
+  const ok = res.ok && !data.error && source !== 'NO_DATA' && source !== 'UNKNOWN';
+  state.textContent = (ok ? 'RESPONSE RECEIVED — inspect details' : 'DATA / ANALYSIS NOT VERIFIED') + ' | HTTP ' + res.status;
+  state.style.color = ok ? '#f59e0b' : '#ef4444';
+  detail.textContent = 'Version: ' + version + ' | Source: ' + source + ' | Decision: ' + String(decision) + ' | Detail: ' + String(reason).slice(0,220) + ' | Time: ' + (data.timestamp || new Date().toISOString());
+ }catch(e){
+  state.textContent = 'PIPELINE REQUEST FAILED';
+  state.style.color = '#ef4444';
+  detail.textContent = String(e);
+ }
+}
 
 async function fetchStats(){
  try{
@@ -2325,7 +2354,9 @@ function updateChart(evolution){
 }
 
 fetchStats();
+fetchPipeline();
 setInterval(fetchStats, 10000);
+setInterval(fetchPipeline, 60000);
 </script>
 </body>
 </html>
