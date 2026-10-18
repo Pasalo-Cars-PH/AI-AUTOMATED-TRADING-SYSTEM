@@ -2176,7 +2176,7 @@ setInterval(load, 30000);
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
-    html_content = f"""
+    html_content = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2344,6 +2344,7 @@ setInterval(fetchStats, 10000);
 </body>
 </html>
     """
+    html_content = html_content.replace("{VERSION}", VERSION).replace("{STRATEGY}", STRATEGY)
     return HTMLResponse(content=html_content)
 
 
