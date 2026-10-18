@@ -129,6 +129,8 @@ def main() -> int:
         "fetch_data": getattr(app_main, "fetch_data", None),
         "fetch_data_with_fallback": getattr(app_main, "fetch_data_with_fallback", None),
         "fetch_live_tf": getattr(app_main, "fetch_live_tf", None),
+        "smc_day_levels": getattr(app_main, "smc_day_levels", None),
+        "smc_prev_map": getattr(app_main, "smc_prev_map", None),
     }
     source_locations = {name: line_of(fn) for name, fn in functions.items() if fn is not None}
     source_excerpt = []
@@ -164,11 +166,14 @@ def main() -> int:
 - PDH comparison: {pdh_comparison}
 - PDL comparison: {pdl_comparison}
 - Direct fetch cache behavior: export calls fetch_data directly, bypassing _twelve_data_cache wrapper.
+- Production wrapper cache TTL: 120 seconds (per fetch_data_with_fallback source).
+- Stale-cache diagnostic: {"entry age exceeds 120s (stale by wrapper TTL)" if cache_age is not None and cache_age >= 120 else "matching process-local entry is younger than 120s" if cache_age is not None else "no matching process-local cache entry; stale status unavailable"}.
 - Production wrapper cache key inspected: {cache_key}
 - Matching wrapper cache entry present in this process: {"yes" if cached else "no"}
 - Matching wrapper cache age: {f"{cache_age:.3f}s" if cache_age is not None else "unavailable/no matching entry"}
 - Cache note: this process-local cache check does not reveal a separate Render worker's cache.
 - Source locations: {", ".join(f"{k}={v}" for k, v in source_locations.items())}
+- PDH/PDL production logic: smc_day_levels groups highs/lows by parsed date; smc_prev_map selects the latest prior day having at least 100 bars. Compare this production behavior with the independently computed previous UTC calendar-day extrema above.
 - API key: read from TWELVE_DATA_API_KEY; never written to output.
 
 ## Interpretation limits
@@ -191,6 +196,7 @@ PDH/PDL are valid only if the export contains the intended complete previous UTC
     print(f"PDL: {pdl_comparison}")
     print(f"Cache key: {cache_key}; age: {f'{cache_age:.3f}s' if cache_age is not None else 'unavailable'}")
     print(f"Source locations: {source_locations}")
+    print("Production PDH/PDL functions: smc_day_levels and smc_prev_map; see report for file/line and source excerpts.")
     return 0
 
 
