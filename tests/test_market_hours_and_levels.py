@@ -1,4 +1,6 @@
 import datetime as dt
+import os
+from zoneinfo import ZoneInfo
 
 from app.main import market_hours_status, smc_day_levels, smc_prev_map
 
@@ -17,16 +19,33 @@ def _bars(start, count, high=100.5, low=100.0, step_minutes=5):
     return rows
 
 
-def test_xau_market_guard_skips_sunday_before_session_open():
-    now = dt.datetime(2026, 10, 18, 13, 15)  # Sunday UTC
-    is_open, reason = market_hours_status("XAU/USD", now)
-    assert is_open is False
-    assert reason == "WEEKEND_SUNDAY_PREOPEN"
+def _utc_for_local(value):
+    return dt.datetime.fromisoformat(value).replace(tzinfo=ZoneInfo("America/New_York")).astimezone(dt.timezone.utc)
 
 
-def test_crypto_market_guard_is_24_7_even_on_weekend():
-    now = dt.datetime(2026, 10, 18, 13, 15)
-    assert market_hours_status("BTCUSD", now) == (True, "CRYPTO_24_7")
+def test_market_hours_friday_close_saturday_and_sunday_boundaries(monkeypatch):
+    monkeypatch.setenv("MARKET_TIMEZONE", "America/New_York")
+    assert market_hours_status("XAU/USD", _utc_for_local("2026-10-23T16:59")) == (True, "SESSION_OPEN")
+    assert market_hours_status("XAU/USD", _utc_for_local("2026-10-23T17:00")) == (False, "WEEKEND_FRIDAY_AFTER_CLOSE")
+    assert market_hours_status("XAU/USD", _utc_for_local("2026-10-24T12:00")) == (False, "WEEKEND_SATURDAY")
+    assert market_hours_status("XAU/USD", _utc_for_local("2026-10-25T17:59")) == (False, "WEEKEND_SUNDAY_PREOPEN")
+    assert market_hours_status("XAU/USD", _utc_for_local("2026-10-25T18:00")) == (True, "SESSION_OPEN")
+
+
+def test_market_hours_daily_break_and_crypto_weekend(monkeypatch):
+    monkeypatch.setenv("MARKET_TIMEZONE", "America/New_York")
+    assert market_hours_status("XAU/USD", _utc_for_local("2026-10-20T17:30")) == (False, "DAILY_MAINTENANCE_BREAK")
+    assert market_hours_status("XAU/USD", _utc_for_local("2026-10-20T18:00")) == (True, "SESSION_OPEN")
+    assert market_hours_status("BTCUSD", _utc_for_local("2026-10-24T12:00")) == (True, "CRYPTO_24_7")
+
+
+def test_market_hours_follow_dst_transition_automatically(monkeypatch):
+    monkeypatch.setenv("MARKET_TIMEZONE", "America/New_York")
+    # Same broker-local Sunday open maps to 22:00 UTC before spring DST and 21:00 UTC after.
+    assert market_hours_status("XAU/USD", dt.datetime(2026, 3, 8, 21, 59, tzinfo=dt.timezone.utc)) == (False, "WEEKEND_SUNDAY_PREOPEN")
+    assert market_hours_status("XAU/USD", dt.datetime(2026, 3, 8, 22, 0, tzinfo=dt.timezone.utc)) == (True, "SESSION_OPEN")
+    assert market_hours_status("XAU/USD", dt.datetime(2026, 11, 1, 22, 59, tzinfo=dt.timezone.utc)) == (False, "WEEKEND_SUNDAY_PREOPEN")
+    assert market_hours_status("XAU/USD", dt.datetime(2026, 11, 1, 23, 0, tzinfo=dt.timezone.utc)) == (True, "SESSION_OPEN")
 
 
 def test_weekend_gap_does_not_replace_previous_valid_utc_trading_day():
@@ -39,33 +58,31 @@ def test_weekend_gap_does_not_replace_previous_valid_utc_trading_day():
     records += _bars(saturday, 3, high=4165.0, low=4164.0)
     records += _bars(sunday, 3, high=4166.0, low=4163.0)
     records += _bars(monday, 3, high=4167.0, low=4162.0)
-
-    levels = smc_day_levels(records)
-    prev = smc_prev_map(levels)
+    prev = smc_prev_map(smc_day_levels(records))
     assert prev[monday.date()] == (4164.86, 4164.61)
     assert prev[sunday.date()] == (4164.86, 4164.61)
 
 
+def test_zero_range_day_is_rejected():
+    friday = _bars(dt.datetime(2026, 10, 16, 0, 0), 100, high=100.0, low=100.0)
+    monday = _bars(dt.datetime(2026, 10, 19, 0, 0), 3, high=102.0, low=99.0)
+    assert smc_prev_map(smc_day_levels(friday + monday))[dt.date(2026, 10, 19)] is None
+
+
 def test_previous_day_with_large_intraday_gap_is_rejected():
     friday = _bars(dt.datetime(2026, 10, 16, 0, 0), 50, high=101, low=100)
-    # A second cluster separated by 8 hours creates a suspiciously incomplete day.
     friday += _bars(dt.datetime(2026, 10, 16, 9, 0), 50, high=101, low=100)
     monday = _bars(dt.datetime(2026, 10, 19, 0, 0), 3, high=102, low=99)
-    prev = smc_prev_map(smc_day_levels(friday + monday))
-    assert prev[dt.date(2026, 10, 19)] is None
+    assert smc_prev_map(smc_day_levels(friday + monday))[dt.date(2026, 10, 19)] is None
 
 
 def test_smc_signal_does_not_fetch_or_evaluate_gates_when_market_closed(monkeypatch):
     import app.main as app_main
-
     monkeypatch.setattr(app_main, "market_hours_status", lambda *args, **kwargs: (False, "WEEKEND_SUNDAY_PREOPEN"))
-
     def fail_if_fetched(*args, **kwargs):
         raise AssertionError("market data must not be fetched while market is closed")
-
     monkeypatch.setattr(app_main, "fetch_m5_live", fail_if_fetched)
     signal, checks, records = app_main.smc_live_signal(explain=True)
-    assert signal is None
-    assert records is None
+    assert signal is None and records is None
     assert checks[0]["name"] == "Market hours"
     assert "MARKET_CLOSED, skip" in checks[0]["actual"]
