@@ -16,6 +16,11 @@ PAPER_SCAN_PAUSED = False
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
+# Observability only; these do not alter strategy thresholds or execution permissions.
+_last_market_fetch = {}
+_scan_heartbeat = {"started_utc": None, "finished_utc": None, "result": "NEVER_RUN", "sequence": 0}
+_SCAN_INTERVAL_SECONDS = 5 * 60
+
 
 PHT = pytz.timezone('Asia/Manila')
 scheduler = BackgroundScheduler()
@@ -469,17 +474,36 @@ def is_bearish_engulfing(c0, c1):
 def fetch_data(symbol, interval, outputsize):
     url = "https://api.twelvedata.com/time_series"
     params = {"symbol": symbol, "interval": interval, "outputsize": outputsize, "timezone": "UTC", "apikey": TWELVE_DATA_API_KEY}
+    started = time.monotonic()
+    meta = {"provider": "twelvedata", "symbol": symbol, "interval": interval, "outputsize": outputsize}
     try:
         if not TWELVE_DATA_API_KEY:
-            print("ERROR: TWELVE_DATA_API_KEY not set!")
+            meta.update({"status": "ERROR", "error": "TWELVE_DATA_API_KEY_NOT_SET"})
+            _last_market_fetch.update(meta)
+            print(f"[MARKET-DATA] provider=twelvedata symbol={symbol} interval={interval} status=ERROR error=TWELVE_DATA_API_KEY_NOT_SET latency_ms={(time.monotonic()-started)*1000:.1f}")
             return None
-        res = requests.get(url, params=params, timeout=12).json()
-        if "values" not in res:
-            print(f"TwelveData error: {res}")
+        response = requests.get(url, params=params, timeout=12)
+        latency_ms = (time.monotonic() - started) * 1000
+        try:
+            res = response.json()
+        except Exception:
+            res = {}
+        error_code = res.get("code") if isinstance(res, dict) else None
+        error_msg = res.get("message") if isinstance(res, dict) else None
+        rate_limited = response.status_code == 429 or str(error_code) in {"429", "4290", "403"}
+        meta.update({"http_status": response.status_code, "latency_ms": round(latency_ms, 1),
+                     "rate_limited": rate_limited, "provider_code": error_code,
+                     "error": error_msg, "rows": len(res.get("values", [])) if isinstance(res, dict) else 0})
+        _last_market_fetch.update(meta)
+        if response.status_code >= 400 or "values" not in res:
+            print(f"[MARKET-DATA] provider=twelvedata symbol={symbol} interval={interval} status=ERROR http={response.status_code} rate_limited={rate_limited} latency_ms={latency_ms:.1f} code={error_code} error={error_msg}")
             return None
+        print(f"[MARKET-DATA] provider=twelvedata symbol={symbol} interval={interval} status=OK http={response.status_code} rows={len(res['values'])} latency_ms={latency_ms:.1f} rate_limited={rate_limited}")
         return res["values"]
     except Exception as e:
-        print(f"fetch_data exception: {e}")
+        latency_ms = (time.monotonic() - started) * 1000
+        _last_market_fetch.update({**meta, "status": "ERROR", "error": str(e), "latency_ms": round(latency_ms, 1)})
+        print(f"[MARKET-DATA] provider=twelvedata symbol={symbol} interval={interval} status=ERROR latency_ms={latency_ms:.1f} error={type(e).__name__}:{e}")
         return None
 
 _price_cache = {"price": 0, "time": None, "source": "INIT"}
@@ -502,8 +526,12 @@ def fetch_data_with_fallback(symbol="XAU/USD", interval="5min", outputsize=100):
     now = datetime.datetime.utcnow()
     cache_key = (symbol.upper(), interval, int(outputsize))
     cached = _twelve_data_cache.get(cache_key)
-    if cached and cached.get("data") and cached.get("time") and (now - cached["time"]).total_seconds() < 120:
-        return cached["data"], "LIVE_CACHED_" + interval
+    if cached and cached.get("data") and cached.get("time"):
+        cache_age = (now - cached["time"]).total_seconds()
+        if cache_age < 120:
+            print(f"[MARKET-DATA] cache=HIT key={cache_key} age_seconds={cache_age:.1f} ttl_seconds=120 rows={len(cached['data'])}")
+            return cached["data"], "LIVE_CACHED_" + interval
+        print(f"[MARKET-DATA] cache=STALE key={cache_key} age_seconds={cache_age:.1f} ttl_seconds=120")
     data = fetch_data(symbol, interval, outputsize)
     if data and len(data) >= min(60, outputsize):
         _twelve_data_cache[cache_key] = {"data": data, "time": now, "symbol": symbol, "interval": interval}
