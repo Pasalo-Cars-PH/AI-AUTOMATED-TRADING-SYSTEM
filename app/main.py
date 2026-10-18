@@ -1528,10 +1528,12 @@ def risk_gate_and_log(sig, dedupe_key=None):
 
 
 def smc_scan(chat_id, auto=False):
-    sig, checks, recs = smc_live_signal(explain=not auto)
+    sig, checks, recs = smc_live_signal(explain=True)
     if recs is None:
+        print(f"[SCAN {VERSION}/{STRATEGY}] stage=market_data result=NO_DATA source={getattr(fetch_m5_live, 'last_source', 'UNKNOWN')}")
         if not auto: send_telegram_msg("Data fail - no data, no trade", chat_id)
         return
+    print(f"[SCAN {VERSION}/{STRATEGY}] stage=market_data result=OK closed_bars={len(recs)} last_closed_candle={recs[-1].get('datetime')} source={getattr(fetch_m5_live, 'last_source', 'UNKNOWN')}")
     if sig:
         h1 = fetch_h1_supertrend_adx()
         h1_trend = h1.get("trend_simple") if isinstance(h1, dict) else "UNKNOWN"
@@ -1539,6 +1541,7 @@ def smc_scan(chat_id, auto=False):
         mtf_gates, mtf_summary = validate_smc_mtf(sig, h1_trend, m15_trend)
         checks.extend(mtf_gates)
         if not mtf_summary["all_pass"]:
+            print(f"[SCAN {VERSION}/{STRATEGY}] stage=mtf_gate result=REJECT h1={h1_trend} m15={m15_trend} source={m15_source} failed={mtf_summary.get('failed_names', [])}")
             if not auto:
                 failed = ", ".join(mtf_summary["failed_names"])
                 send_telegram_msg(f"MTF GATE REJECTED: {failed} | H1={h1_trend} M15={m15_trend} | source={m15_source}", chat_id)
@@ -1547,6 +1550,7 @@ def smc_scan(chat_id, auto=False):
         checks.append({"name": "Confluence score >= 75", "pass": confluence_score >= 75,
                        "actual": f"{confluence_score}/100 (rule confluence, not win probability)"})
         if confluence_score < 75:
+            print(f"[SCAN {VERSION}/{STRATEGY}] stage=confluence result=REJECT score={confluence_score} required=75")
             if not auto:
                 send_telegram_msg(f"CONFLUENCE GATE REJECTED: {confluence_score}/100; minimum 75. No paper entry.", chat_id)
             return
@@ -1566,6 +1570,7 @@ def smc_scan(chat_id, auto=False):
 
         trade_id, risk = risk_gate_and_log(sig, dedupe_key=key)
         if trade_id is None:
+            print(f"[SCAN {VERSION}/{STRATEGY}] stage=risk_ledger result=REJECT reason={risk.get('reason', 'unknown')}")
             if not auto:
                 send_telegram_msg(f"RISK GATE REJECTED: {risk['reason']} | open={risk.get('open_risk_pct', 0):.2f}% daily_loss={risk.get('daily_loss_pct', 0):.2f}% consecutive={risk.get('consecutive_losses', 0)}", chat_id)
             return
@@ -1579,9 +1584,12 @@ def smc_scan(chat_id, auto=False):
                    f"• Time `{pht}` ({utc})\n"
                    f"• PAPER ONLY - Managed by completed M5 SL/TP")
         send_telegram_msg(caption, chat_id)
-    elif not auto:
-        lines = "\n".join(f"{'✅' if c['pass'] else '❌'} {c['name']}: {c['actual']}" for c in checks)
-        send_telegram_msg(f"ℹ️ No SMC setup ({VERSION})\n{lines}", chat_id)
+    else:
+        failed = [f"{ck.get('name')}={ck.get('actual')}" for ck in checks if not ck.get("pass")]
+        print(f"[SCAN {VERSION}/{STRATEGY}] stage=signal_gates result=NO_SETUP checks={len(checks)} failed={failed}")
+        if not auto:
+            lines = "\n".join(f"{'✅' if ck['pass'] else '❌'} {ck['name']}: {ck['actual']}" for ck in checks)
+            send_telegram_msg(f"ℹ️ No SMC setup ({VERSION})\n{lines}", chat_id)
 
 def smc_pretrade():
     sig, checks, recs = smc_live_signal(explain=True)
@@ -1744,7 +1752,11 @@ def auto_scan_job():
         now_utc = datetime.datetime.utcnow()
         if not TELEGRAM_CHAT_ID: return
         if STRATEGY == "SMC":
-            if not in_killzone((now_utc - datetime.timedelta(minutes=5)).hour): return
+            scan_candle_hour = (now_utc - datetime.timedelta(minutes=5)).hour
+            if not in_killzone(scan_candle_hour):
+                print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=SKIP_OUTSIDE_KILLZONE utc_hour={now_utc.hour}")
+                return
+            print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=START utc={now_utc.isoformat()} safety=PAPER_ONLY")
             smc_scan(TELEGRAM_CHAT_ID, auto=True)
             return
         if not (7 <= now_utc.hour <= 19): return
@@ -1779,7 +1791,9 @@ app.add_middleware(
 @app.get("/")
 def root():
     return {
-        "status": f"XAUUSD TITAN {VERSION} M5 PAPER",
+        "status": f"XAUUSD TITAN {VERSION} {STRATEGY} M5 PAPER",
+        "version": VERSION,
+        "strategy": STRATEGY,
         "mode": "PAPER",
         "master_enable": False,
         "kill_switch": True,
@@ -2168,7 +2182,7 @@ def dashboard():
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TITAN V7.6 PAPER DASHBOARD</title>
+<title>TITAN {VERSION} {STRATEGY} M5 PAPER DASHBOARD</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;color:#fff;font-family:'Courier New',monospace;padding:12px}
@@ -2203,7 +2217,7 @@ th{background:#111;color:#888}
 </head>
 <body>
 <div class="header">
-<h1>🔒 TITAN V7.6 M5 PAPER - HONEST DASHBOARD <span id="auto">● LIVE</span></h1>
+<h1>🔒 TITAN {VERSION} {STRATEGY} M5 PAPER - HONEST DASHBOARD <span id="auto">● LIVE</span></h1>
 <p>Live paper trades lang (walang fake seed). Breakeven sa RR 1:2 = 33.3% WR. Kailangan ng 100+ closed trades bago pagkatiwalaan.</p>
 <p id="lastUpdate" style="color:#666;font-size:9px;margin-top:4px">Last update: loading...</p>
 </div>
@@ -2330,6 +2344,7 @@ setInterval(fetchStats, 10000);
 </body>
 </html>
     """
+    html_content = html_content.replace("{VERSION}", VERSION).replace("{STRATEGY}", STRATEGY)
     return HTMLResponse(content=html_content)
 
 
