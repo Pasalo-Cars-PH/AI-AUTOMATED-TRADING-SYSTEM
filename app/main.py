@@ -1836,6 +1836,8 @@ def market_hours_status(symbol, now_utc=None):
         now_utc = now_utc.replace(tzinfo=datetime.timezone.utc)
     now_local = now_utc.astimezone(ZoneInfo(os.getenv("MARKET_TIMEZONE", "America/New_York")))
     normalized = str(symbol).upper().replace("/", "")
+    if normalized not in {"BTCUSD", "ETHUSD", "SOLUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT"}:
+        print("[MARKET-HOURS] holiday_calendar=UNCONFIGURED known_gap=broker_holidays_and_special_closures_not_checked")
     if normalized in {"BTCUSD", "ETHUSD", "SOLUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT"}:
         return True, "CRYPTO_24_7"
     def _clock(name, default):
