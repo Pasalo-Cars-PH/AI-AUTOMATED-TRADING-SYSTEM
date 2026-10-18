@@ -49,7 +49,7 @@ def test_weekend_gap_does_not_replace_previous_valid_utc_trading_day():
 def test_previous_day_with_large_intraday_gap_is_rejected():
     friday = _bars(dt.datetime(2026, 10, 16, 0, 0), 50, high=101, low=100)
     # A second cluster separated by 8 hours creates a suspiciously incomplete day.
-    friday += _bars(dt.datetime(2026, 10, 16, 8, 0), 50, high=101, low=100)
+    friday += _bars(dt.datetime(2026, 10, 16, 9, 0), 50, high=101, low=100)
     monday = _bars(dt.datetime(2026, 10, 19, 0, 0), 3, high=102, low=99)
     prev = smc_prev_map(smc_day_levels(friday + monday))
     assert prev[dt.date(2026, 10, 19)] is None
