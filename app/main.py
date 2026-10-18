@@ -1094,11 +1094,19 @@ def smc_prev_map(levels, min_bars=100):
         nonflat = float(item[0]) > float(item[1])
         # A date is only eligible if it is a weekday with enough observations,
         # meaningful temporal coverage, no >4h intraday hole, and nonzero range.
-        if weekday and bars >= min_bars and enough_coverage and not has_gaps and nonflat:
+        duration_hours = (last_ts - first_ts).total_seconds() / 3600 if first_ts and last_ts else 0
+        day_range = float(item[0]) - float(item[1])
+        reasons = []
+        if not weekday: reasons.append("WEEKEND_DAY")
+        if bars < min_bars: reasons.append("INSUFFICIENT_BARS")
+        if not enough_coverage: reasons.append("INSUFFICIENT_TIME_COVERAGE")
+        if has_gaps: reasons.append("INTRADAY_GAP_OVER_240M")
+        if not nonflat: reasons.append("ZERO_RANGE")
+        accepted = not reasons
+        print(f"[PDH-PDL] date={day} accepted={str(accepted).lower()} bars={bars} range={day_range:.5f} coverage_hours={duration_hours:.2f} max_gap_minutes={max_gap} reason={'OK' if accepted else ','.join(reasons)}")
+        if accepted:
             last = (float(item[0]), float(item[1]))
             last_day = day
-        elif bars:
-            print(f"[PDH-PDL] date={day} accepted=false bars={bars} range={float(item[0])-float(item[1]):.5f} weekday={weekday} duration_hours={(last_ts-first_ts).total_seconds()/3600 if first_ts and last_ts else 0:.2f} max_gap_minutes={max_gap} reason=DATA_QUALITY_OR_INCOMPLETE")
     return out
 
 def smc_signal(win, pdh, pdl, explain=False):
