@@ -53,3 +53,19 @@ def test_previous_day_with_large_intraday_gap_is_rejected():
     monday = _bars(dt.datetime(2026, 10, 19, 0, 0), 3, high=102, low=99)
     prev = smc_prev_map(smc_day_levels(friday + monday))
     assert prev[dt.date(2026, 10, 19)] is None
+
+
+def test_smc_signal_does_not_fetch_or_evaluate_gates_when_market_closed(monkeypatch):
+    import app.main as app_main
+
+    monkeypatch.setattr(app_main, "market_hours_status", lambda *args, **kwargs: (False, "WEEKEND_SUNDAY_PREOPEN"))
+
+    def fail_if_fetched(*args, **kwargs):
+        raise AssertionError("market data must not be fetched while market is closed")
+
+    monkeypatch.setattr(app_main, "fetch_m5_live", fail_if_fetched)
+    signal, checks, records = app_main.smc_live_signal(explain=True)
+    assert signal is None
+    assert records is None
+    assert checks[0]["name"] == "Market hours"
+    assert "MARKET_CLOSED, skip" in checks[0]["actual"]
