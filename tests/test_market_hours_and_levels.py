@@ -28,6 +28,8 @@ def test_market_hours_friday_close_saturday_and_sunday_boundaries(monkeypatch):
     assert market_hours_status("XAU/USD", _utc_for_local("2026-10-23T16:59")) == (True, "SESSION_OPEN")
     assert market_hours_status("XAU/USD", _utc_for_local("2026-10-23T17:00")) == (False, "WEEKEND_FRIDAY_AFTER_CLOSE")
     assert market_hours_status("XAU/USD", _utc_for_local("2026-10-24T12:00")) == (False, "WEEKEND_SATURDAY")
+    assert market_hours_status("XAU/USD", _utc_for_local("2026-10-25T16:59")) == (False, "WEEKEND_SUNDAY_PREOPEN")
+    assert market_hours_status("XAU/USD", _utc_for_local("2026-10-25T17:00")) == (False, "WEEKEND_SUNDAY_PREOPEN")
     assert market_hours_status("XAU/USD", _utc_for_local("2026-10-25T17:59")) == (False, "WEEKEND_SUNDAY_PREOPEN")
     assert market_hours_status("XAU/USD", _utc_for_local("2026-10-25T18:00")) == (True, "SESSION_OPEN")
 
@@ -86,3 +88,28 @@ def test_smc_signal_does_not_fetch_or_evaluate_gates_when_market_closed(monkeypa
     assert signal is None and records is None
     assert checks[0]["name"] == "Market hours"
     assert "MARKET_CLOSED, skip" in checks[0]["actual"]
+
+
+
+def test_auto_scan_job_uses_one_defined_utc_timestamp_for_killzone(monkeypatch):
+    import app.main as app_main
+
+    fixed_now = dt.datetime(2026, 10, 20, 12, 4, 59)
+    class FixedDateTime:
+        @staticmethod
+        def utcnow():
+            return fixed_now
+
+    monkeypatch.setattr(app_main.datetime, "datetime", FixedDateTime)
+    monkeypatch.setattr(app_main, "MASTER_LIVE_ENABLE", False)
+    monkeypatch.setattr(app_main, "PAPER_SCAN_PAUSED", False)
+    monkeypatch.setattr(app_main, "TELEGRAM_CHAT_ID", "test-chat")
+    monkeypatch.setattr(app_main, "STRATEGY", "SMC")
+    monkeypatch.setattr(app_main, "market_hours_status", lambda symbol, now: (True, "SESSION_OPEN"))
+    observed = []
+    monkeypatch.setattr(app_main, "in_killzone", lambda hour: observed.append(hour) or True)
+    monkeypatch.setattr(app_main, "smc_scan", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_main, "_record_scan_heartbeat", lambda *args, **kwargs: None)
+
+    app_main.auto_scan_job()
+    assert observed == [11]
