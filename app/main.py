@@ -1774,11 +1774,50 @@ def manual_scan(chat_id, auto=False):
             h1s = h1['trend_simple'] if isinstance(h1, dict) else h1
             send_telegram_msg(f"ℹ️ No setup M5 {VERSION} PAPER ONLY\nH1 `{h1s}`\nTry ulit sa 5 mins.\nDashboard: /dashboard", chat_id)
 
+def market_hours_status(symbol, now_utc=None):
+    """Conservative weekly session guard. Crypto is 24/7; metals/FX use UTC weekend closure.
+    Defaults reflect a common XAU/FX session (Sun 22:00 UTC open, Fri 21:00 UTC close);
+    broker-specific holidays and DST must be configured/verified separately.
+    """
+    now_utc = now_utc or datetime.datetime.utcnow()
+    if now_utc.tzinfo is not None:
+        now_utc = now_utc.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    normalized = str(symbol).upper().replace("/", "")
+    if normalized in {"BTCUSD", "ETHUSD", "SOLUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT"}:
+        return True, "CRYPTO_24_7"
+    sunday_open_hour = int(os.getenv("MARKET_SUNDAY_OPEN_UTC_HOUR", "22"))
+    friday_close_hour = int(os.getenv("MARKET_FRIDAY_CLOSE_UTC_HOUR", "21"))
+    if now_utc.weekday() == 5:
+        return False, "WEEKEND_SATURDAY"
+    if now_utc.weekday() == 6 and now_utc.hour < sunday_open_hour:
+        return False, "WEEKEND_SUNDAY_PREOPEN"
+    if now_utc.weekday() == 4 and now_utc.hour >= friday_close_hour:
+        return False, "WEEKEND_FRIDAY_AFTER_CLOSE"
+    return True, "SESSION_OPEN"
+
+def _record_scan_heartbeat(result, started_utc=None):
+    finished = datetime.datetime.utcnow()
+    _scan_heartbeat["started_utc"] = started_utc.isoformat() if started_utc else finished.isoformat()
+    _scan_heartbeat["finished_utc"] = finished.isoformat()
+    _scan_heartbeat["result"] = str(result)
+    _scan_heartbeat["sequence"] += 1
+    print(f"[SCAN-HEARTBEAT] sequence={_scan_heartbeat['sequence']} started_utc={_scan_heartbeat['started_utc']} finished_utc={finished.isoformat()} result={result}")
+
 def auto_scan_job():
+    started_utc = datetime.datetime.utcnow()
     try:
-        if MASTER_LIVE_ENABLE or PAPER_SCAN_PAUSED: return
-        now_utc = datetime.datetime.utcnow()
-        if not TELEGRAM_CHAT_ID: return
+        if MASTER_LIVE_ENABLE or PAPER_SCAN_PAUSED:
+            _record_scan_heartbeat("BLOCKED_BY_SAFETY_OR_PAUSE", started_utc)
+            return
+        market_open, market_reason = market_hours_status("XAU/USD", started_utc)
+        if not market_open:
+            print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=MARKET_CLOSED, skip symbol=XAU/USD utc={started_utc.isoformat()} reason={market_reason}")
+            _record_scan_heartbeat("MARKET_CLOSED", started_utc)
+            return
+        if not TELEGRAM_CHAT_ID:
+            print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=SKIP_NO_TELEGRAM_CHAT_ID utc={started_utc.isoformat()}")
+            _record_scan_heartbeat("SKIP_NO_TELEGRAM_CHAT_ID", started_utc)
+            return
         if STRATEGY == "SMC":
             scan_candle_hour = (now_utc - datetime.timedelta(minutes=5)).hour
             if not in_killzone(scan_candle_hour):
@@ -1786,12 +1825,15 @@ def auto_scan_job():
                 return
             print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=START utc={now_utc.isoformat()} safety=PAPER_ONLY")
             smc_scan(TELEGRAM_CHAT_ID, auto=True)
+            _record_scan_heartbeat("SCAN_COMPLETE", started_utc)
             return
         if not (7 <= now_utc.hour <= 19): return
         print(f"[AUTO-SCAN {VERSION}] {now_utc} scanning M5...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
+        _record_scan_heartbeat("SCAN_COMPLETE", started_utc)
     except Exception as e:
         print(f"Auto scan error: {e}")
+        _record_scan_heartbeat(f"ERROR:{type(e).__name__}", started_utc)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1833,6 +1875,9 @@ def root():
 
 @app.get("/health")
 def health():
+    now = datetime.datetime.utcnow()
+    finished = _scan_heartbeat.get("finished_utc")
+    age_seconds = (now - datetime.datetime.fromisoformat(finished)).total_seconds() if finished else None
     return {
         "status": "ok",
         "version": VERSION,
@@ -1840,7 +1885,16 @@ def health():
         "master_enable": False,
         "kill_switch": True,
         "live_enabled": False,
+        "scan_heartbeat": dict(_scan_heartbeat),
+        "seconds_since_last_scan": round(age_seconds, 1) if age_seconds is not None else None,
+        "scan_missed": bool(age_seconds is not None and age_seconds > 2 * _SCAN_INTERVAL_SECONDS),
+        "scheduler_running": scheduler.running,
     }
+
+@app.head("/health")
+def health_head():
+    # HEAD-compatible liveness check; no market-data request or trading side effect.
+    return JSONResponse(content=None, status_code=200)
 
 @app.get("/status")
 def status():
