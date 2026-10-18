@@ -1481,28 +1481,6 @@ def validate_smc_mtf(sig, h1_trend, m15_trend):
     ]
     return gates, gate_summary(gates)
 
-# ---------- MARKET SESSION / DAILY LEVEL TEST HELPERS ----------
-def market_hours_status(symbol, now_utc=None):
-    """Conservative weekly session guard. Crypto is 24/7; metals/FX use UTC weekend closure.
-    Defaults reflect a common XAU/FX session (Sun 22:00 UTC open, Fri 21:00 UTC close);
-    broker-specific holidays and DST must be configured/verified separately.
-    """
-    now_utc = now_utc or datetime.datetime.utcnow()
-    if now_utc.tzinfo is not None:
-        now_utc = now_utc.astimezone(datetime.timezone.utc).replace(tzinfo=None)
-    normalized = str(symbol).upper().replace("/", "")
-    if normalized in {"BTCUSD", "ETHUSD", "SOLUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT"}:
-        return True, "CRYPTO_24_7"
-    sunday_open_hour = int(os.getenv("MARKET_SUNDAY_OPEN_UTC_HOUR", "22"))
-    friday_close_hour = int(os.getenv("MARKET_FRIDAY_CLOSE_UTC_HOUR", "21"))
-    if now_utc.weekday() == 5:
-        return False, "WEEKEND_SATURDAY"
-    if now_utc.weekday() == 6 and now_utc.hour < sunday_open_hour:
-        return False, "WEEKEND_SUNDAY_PREOPEN"
-    if now_utc.weekday() == 4 and now_utc.hour >= friday_close_hour:
-        return False, "WEEKEND_FRIDAY_AFTER_CLOSE"
-    return True, "SESSION_OPEN"
-
 # ---------- SMC LIVE ----------
 _smc_live_cache = {"recs": None, "time": None}
 _smc_used_live = set()
