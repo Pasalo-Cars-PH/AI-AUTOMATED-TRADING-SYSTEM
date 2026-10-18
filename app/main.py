@@ -1528,7 +1528,7 @@ def risk_gate_and_log(sig, dedupe_key=None):
 
 
 def smc_scan(chat_id, auto=False):
-    sig, checks, recs = smc_live_signal(explain=not auto)
+    sig, checks, recs = smc_live_signal(explain=True)
     if recs is None:
         print(f"[SCAN {VERSION}/{STRATEGY}] stage=market_data result=NO_DATA source={getattr(fetch_m5_live, 'last_source', 'UNKNOWN')}")
         if not auto: send_telegram_msg("Data fail - no data, no trade", chat_id)
