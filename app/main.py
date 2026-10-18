@@ -1815,24 +1815,36 @@ def manual_scan(chat_id, auto=False):
             send_telegram_msg(f"ℹ️ No setup M5 {VERSION} PAPER ONLY\nH1 `{h1s}`\nTry ulit sa 5 mins.\nDashboard: /dashboard", chat_id)
 
 def market_hours_status(symbol, now_utc=None):
-    """Conservative weekly session guard. Crypto is 24/7; metals/FX use UTC weekend closure.
-    Defaults reflect a common XAU/FX session (Sun 22:00 UTC open, Fri 21:00 UTC close);
-    broker-specific holidays and DST must be configured/verified separately.
+    """Configurable broker-session guard; local IANA timezone handles DST automatically.
+
+    Configure MARKET_TIMEZONE (default America/New_York), MARKET_SUNDAY_OPEN_LOCAL
+    (18:00), MARKET_FRIDAY_CLOSE_LOCAL (17:00), MARKET_DAILY_BREAK_START_LOCAL
+    (17:00), and MARKET_DAILY_BREAK_END_LOCAL (18:00). Broker holidays/special
+    closures still require a verified holiday calendar and are not inferred here.
     """
-    now_utc = now_utc or datetime.datetime.utcnow()
-    if now_utc.tzinfo is not None:
-        now_utc = now_utc.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    from zoneinfo import ZoneInfo
+    now_utc = now_utc or datetime.datetime.now(datetime.timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=datetime.timezone.utc)
+    now_local = now_utc.astimezone(ZoneInfo(os.getenv("MARKET_TIMEZONE", "America/New_York")))
     normalized = str(symbol).upper().replace("/", "")
     if normalized in {"BTCUSD", "ETHUSD", "SOLUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT"}:
         return True, "CRYPTO_24_7"
-    sunday_open_hour = int(os.getenv("MARKET_SUNDAY_OPEN_UTC_HOUR", "22"))
-    friday_close_hour = int(os.getenv("MARKET_FRIDAY_CLOSE_UTC_HOUR", "21"))
-    if now_utc.weekday() == 5:
+    def _clock(name, default):
+        return datetime.datetime.strptime(os.getenv(name, default), "%H:%M").time()
+    sunday_open = _clock("MARKET_SUNDAY_OPEN_LOCAL", "18:00")
+    friday_close = _clock("MARKET_FRIDAY_CLOSE_LOCAL", "17:00")
+    break_start = _clock("MARKET_DAILY_BREAK_START_LOCAL", "17:00")
+    break_end = _clock("MARKET_DAILY_BREAK_END_LOCAL", "18:00")
+    day, clock = now_local.weekday(), now_local.time().replace(tzinfo=None)
+    if day == 5:
         return False, "WEEKEND_SATURDAY"
-    if now_utc.weekday() == 6 and now_utc.hour < sunday_open_hour:
+    if day == 6 and clock < sunday_open:
         return False, "WEEKEND_SUNDAY_PREOPEN"
-    if now_utc.weekday() == 4 and now_utc.hour >= friday_close_hour:
+    if day == 4 and clock >= friday_close:
         return False, "WEEKEND_FRIDAY_AFTER_CLOSE"
+    if day in {0, 1, 2, 3} and break_start <= clock < break_end:
+        return False, "DAILY_MAINTENANCE_BREAK"
     return True, "SESSION_OPEN"
 
 def _record_scan_heartbeat(result, started_utc=None):
@@ -1845,6 +1857,7 @@ def _record_scan_heartbeat(result, started_utc=None):
 
 def auto_scan_job():
     started_utc = datetime.datetime.utcnow()
+    now_utc = started_utc  # shared UTC timestamp for all scheduler gates/logs in this cycle
     try:
         if MASTER_LIVE_ENABLE or PAPER_SCAN_PAUSED:
             _record_scan_heartbeat("BLOCKED_BY_SAFETY_OR_PAUSE", started_utc)
