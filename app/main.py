@@ -1056,24 +1056,49 @@ def in_killzone(h):
     return any(a <= h < b for a, b in SMC_KZ)
 
 def smc_day_levels(records):
+    """Group candles by UTC calendar date; track coverage metadata for audit."""
     d = {}
     for r in records:
-        day = pd.Timestamp(r['datetime']).date()
+        stamp = pd.Timestamp(r["datetime"])
+        if stamp.tzinfo is not None:
+            stamp = stamp.tz_convert("UTC").tz_localize(None)
+        day = stamp.date()
         e = d.get(day)
         if e is None:
-            d[day] = [r['high'], r['low'], 1]
+            d[day] = [float(r["high"]), float(r["low"]), 1, stamp, stamp, None]
         else:
-            e[0] = max(e[0], r['high']); e[1] = min(e[1], r['low']); e[2] += 1
+            e[0] = max(e[0], float(r["high"]))
+            e[1] = min(e[1], float(r["low"]))
+            e[2] += 1
+            previous = e[4]
+            gap = (stamp - previous).total_seconds() / 60
+            e[5] = max(e[5] or 0, gap)
+            e[4] = stamp
     return d
 
 def smc_prev_map(levels, min_bars=100):
-    """day -> (PDH, PDL) ng huling buong araw bago nito (UTC calendar day)."""
+    """Map each UTC date to prior usable trading day's levels; reject weekend/flat/gapped samples."""
     out = {}
     last = None
+    last_day = None
     for day in sorted(levels):
         out[day] = last
-        if levels[day][2] >= min_bars:
-            last = (levels[day][0], levels[day][1])
+        item = levels[day]
+        bars = item[2]
+        first_ts = item[3] if len(item) > 3 else None
+        last_ts = item[4] if len(item) > 4 else None
+        max_gap = item[5] if len(item) > 5 else None
+        weekday = day.weekday() < 5
+        enough_coverage = bool(first_ts and last_ts and (last_ts - first_ts).total_seconds() >= 6 * 3600)
+        has_gaps = max_gap is not None and max_gap > 240
+        nonflat = float(item[0]) > float(item[1])
+        # A date is only eligible if it is a weekday with enough observations,
+        # meaningful temporal coverage, no >4h intraday hole, and nonzero range.
+        if weekday and bars >= min_bars and enough_coverage and not has_gaps and nonflat:
+            last = (float(item[0]), float(item[1]))
+            last_day = day
+        elif bars:
+            print(f"[PDH-PDL] date={day} accepted=false bars={bars} range={float(item[0])-float(item[1]):.5f} weekday={weekday} duration_hours={(last_ts-first_ts).total_seconds()/3600 if first_ts and last_ts else 0:.2f} max_gap_minutes={max_gap} reason=DATA_QUALITY_OR_INCOMPLETE")
     return out
 
 def smc_signal(win, pdh, pdl, explain=False):
@@ -1502,8 +1527,18 @@ def smc_live_signal(explain=False):
     age_min = (datetime.datetime.utcnow() - (t0.to_pydatetime() + datetime.timedelta(minutes=5))).total_seconds() / 60
     if age_min > 15:
         return None, [{"name": "Data fresh", "pass": False, "actual": f"{age_min:.0f} min old"}], recs
-    pl = smc_prev_map(smc_day_levels(recs)).get(t0.date())
+    day_levels = smc_day_levels(recs)
+    prev_map = smc_prev_map(day_levels)
+    pl = prev_map.get(t0.date())
     pdh, pdl = pl if pl else (None, None)
+    prev_days = [day for day in sorted(day_levels) if day < t0.date()]
+    if prev_days:
+        prev_day = prev_days[-1]
+        item = day_levels[prev_day]
+        print(f"[PDH-PDL] symbol=XAU/USD target_utc_date={t0.date()} prior_observed_date={prev_day} raw_high={item[0]:.2f} raw_low={item[1]:.2f} raw_range={item[0]-item[1]:.2f} bars={item[2]} accepted_levels={pl if pl else 'NONE'}")
+    close_boundary = t0.to_pydatetime() + datetime.timedelta(minutes=5)
+    delta_seconds = (datetime.datetime.utcnow() - close_boundary).total_seconds()
+    print(f"[CANDLE-FRESHNESS] symbol=XAU/USD tf=M5 last_open_utc={t0.isoformat()} close_boundary_utc={close_boundary.isoformat()} now_utc={datetime.datetime.utcnow().isoformat()} delta_seconds={delta_seconds:.1f} closed={delta_seconds >= 0}")
     sig, checks = smc_signal(recs[-40:], pdh, pdl, explain=explain)
     return sig, checks, recs
 
@@ -1822,6 +1857,7 @@ def auto_scan_job():
             scan_candle_hour = (now_utc - datetime.timedelta(minutes=5)).hour
             if not in_killzone(scan_candle_hour):
                 print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=SKIP_OUTSIDE_KILLZONE utc_hour={now_utc.hour}")
+                _record_scan_heartbeat("SKIP_OUTSIDE_KILLZONE", started_utc)
                 return
             print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=START utc={now_utc.isoformat()} safety=PAPER_ONLY")
             smc_scan(TELEGRAM_CHAT_ID, auto=True)
