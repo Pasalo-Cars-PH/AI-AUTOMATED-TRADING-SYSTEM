@@ -1520,6 +1520,11 @@ def fetch_m5_live(n=900):
 fetch_m5_live.last_source = "UNKNOWN"
 
 def smc_live_signal(explain=False):
+    market_open, market_reason = market_hours_status("XAU/USD", datetime.datetime.utcnow())
+    if not market_open:
+        now_text = datetime.datetime.utcnow().isoformat()
+        print(f"[SMC] result=MARKET_CLOSED, skip symbol=XAU/USD utc={now_text} reason={market_reason}")
+        return None, [{"name": "Market hours", "pass": False, "actual": f"MARKET_CLOSED, skip ({market_reason})"}], None
     recs = fetch_m5_live(900)
     if not recs:
         return None, [], None
