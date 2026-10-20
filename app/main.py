@@ -16,6 +16,11 @@ PAPER_SCAN_PAUSED = False
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
+# Observability only; these do not alter strategy thresholds or execution permissions.
+_last_market_fetch = {}
+_scan_heartbeat = {"started_utc": None, "finished_utc": None, "result": "NEVER_RUN", "sequence": 0}
+_SCAN_INTERVAL_SECONDS = 5 * 60
+
 
 PHT = pytz.timezone('Asia/Manila')
 scheduler = BackgroundScheduler()
@@ -469,17 +474,36 @@ def is_bearish_engulfing(c0, c1):
 def fetch_data(symbol, interval, outputsize):
     url = "https://api.twelvedata.com/time_series"
     params = {"symbol": symbol, "interval": interval, "outputsize": outputsize, "timezone": "UTC", "apikey": TWELVE_DATA_API_KEY}
+    started = time.monotonic()
+    meta = {"provider": "twelvedata", "symbol": symbol, "interval": interval, "outputsize": outputsize}
     try:
         if not TWELVE_DATA_API_KEY:
-            print("ERROR: TWELVE_DATA_API_KEY not set!")
+            meta.update({"status": "ERROR", "error": "TWELVE_DATA_API_KEY_NOT_SET"})
+            _last_market_fetch.update(meta)
+            print(f"[MARKET-DATA] provider=twelvedata symbol={symbol} interval={interval} status=ERROR error=TWELVE_DATA_API_KEY_NOT_SET latency_ms={(time.monotonic()-started)*1000:.1f}")
             return None
-        res = requests.get(url, params=params, timeout=12).json()
-        if "values" not in res:
-            print(f"TwelveData error: {res}")
+        response = requests.get(url, params=params, timeout=12)
+        latency_ms = (time.monotonic() - started) * 1000
+        try:
+            res = response.json()
+        except Exception:
+            res = {}
+        error_code = res.get("code") if isinstance(res, dict) else None
+        error_msg = res.get("message") if isinstance(res, dict) else None
+        rate_limited = response.status_code == 429 or str(error_code) in {"429", "4290", "403"}
+        meta.update({"http_status": response.status_code, "latency_ms": round(latency_ms, 1),
+                     "rate_limited": rate_limited, "provider_code": error_code,
+                     "error": error_msg, "rows": len(res.get("values", [])) if isinstance(res, dict) else 0})
+        _last_market_fetch.update(meta)
+        if response.status_code >= 400 or "values" not in res:
+            print(f"[MARKET-DATA] provider=twelvedata symbol={symbol} interval={interval} status=ERROR http={response.status_code} rate_limited={rate_limited} latency_ms={latency_ms:.1f} code={error_code} error={error_msg}")
             return None
+        print(f"[MARKET-DATA] provider=twelvedata symbol={symbol} interval={interval} status=OK http={response.status_code} rows={len(res['values'])} latency_ms={latency_ms:.1f} rate_limited={rate_limited}")
         return res["values"]
     except Exception as e:
-        print(f"fetch_data exception: {e}")
+        latency_ms = (time.monotonic() - started) * 1000
+        _last_market_fetch.update({**meta, "status": "ERROR", "error": str(e), "latency_ms": round(latency_ms, 1)})
+        print(f"[MARKET-DATA] provider=twelvedata symbol={symbol} interval={interval} status=ERROR latency_ms={latency_ms:.1f} error={type(e).__name__}:{e}")
         return None
 
 _price_cache = {"price": 0, "time": None, "source": "INIT"}
@@ -502,8 +526,12 @@ def fetch_data_with_fallback(symbol="XAU/USD", interval="5min", outputsize=100):
     now = datetime.datetime.utcnow()
     cache_key = (symbol.upper(), interval, int(outputsize))
     cached = _twelve_data_cache.get(cache_key)
-    if cached and cached.get("data") and cached.get("time") and (now - cached["time"]).total_seconds() < 120:
-        return cached["data"], "LIVE_CACHED_" + interval
+    if cached and cached.get("data") and cached.get("time"):
+        cache_age = (now - cached["time"]).total_seconds()
+        if cache_age < 120:
+            print(f"[MARKET-DATA] cache=HIT key={cache_key} age_seconds={cache_age:.1f} ttl_seconds=120 rows={len(cached['data'])}")
+            return cached["data"], "LIVE_CACHED_" + interval
+        print(f"[MARKET-DATA] cache=STALE key={cache_key} age_seconds={cache_age:.1f} ttl_seconds=120")
     data = fetch_data(symbol, interval, outputsize)
     if data and len(data) >= min(60, outputsize):
         _twelve_data_cache[cache_key] = {"data": data, "time": now, "symbol": symbol, "interval": interval}
@@ -1028,24 +1056,57 @@ def in_killzone(h):
     return any(a <= h < b for a, b in SMC_KZ)
 
 def smc_day_levels(records):
+    """Group candles by UTC calendar date; track coverage metadata for audit."""
     d = {}
     for r in records:
-        day = pd.Timestamp(r['datetime']).date()
+        stamp = pd.Timestamp(r["datetime"])
+        if stamp.tzinfo is not None:
+            stamp = stamp.tz_convert("UTC").tz_localize(None)
+        day = stamp.date()
         e = d.get(day)
         if e is None:
-            d[day] = [r['high'], r['low'], 1]
+            d[day] = [float(r["high"]), float(r["low"]), 1, stamp, stamp, None]
         else:
-            e[0] = max(e[0], r['high']); e[1] = min(e[1], r['low']); e[2] += 1
+            e[0] = max(e[0], float(r["high"]))
+            e[1] = min(e[1], float(r["low"]))
+            e[2] += 1
+            previous = e[4]
+            gap = (stamp - previous).total_seconds() / 60
+            e[5] = max(e[5] or 0, gap)
+            e[4] = stamp
     return d
 
 def smc_prev_map(levels, min_bars=100):
-    """day -> (PDH, PDL) ng huling buong araw bago nito (UTC calendar day)."""
+    """Map each UTC date to prior usable trading day's levels; reject weekend/flat/gapped samples."""
     out = {}
     last = None
+    last_day = None
     for day in sorted(levels):
         out[day] = last
-        if levels[day][2] >= min_bars:
-            last = (levels[day][0], levels[day][1])
+        item = levels[day]
+        bars = item[2]
+        first_ts = item[3] if len(item) > 3 else None
+        last_ts = item[4] if len(item) > 4 else None
+        max_gap = item[5] if len(item) > 5 else None
+        weekday = day.weekday() < 5
+        enough_coverage = bool(first_ts and last_ts and (last_ts - first_ts).total_seconds() >= 6 * 3600)
+        has_gaps = max_gap is not None and max_gap > 240
+        nonflat = float(item[0]) > float(item[1])
+        # A date is only eligible if it is a weekday with enough observations,
+        # meaningful temporal coverage, no >4h intraday hole, and nonzero range.
+        duration_hours = (last_ts - first_ts).total_seconds() / 3600 if first_ts and last_ts else 0
+        day_range = float(item[0]) - float(item[1])
+        reasons = []
+        if not weekday: reasons.append("WEEKEND_DAY")
+        if bars < min_bars: reasons.append("INSUFFICIENT_BARS")
+        if not enough_coverage: reasons.append("INSUFFICIENT_TIME_COVERAGE")
+        if has_gaps: reasons.append("INTRADAY_GAP_OVER_240M")
+        if not nonflat: reasons.append("ZERO_RANGE")
+        accepted = not reasons
+        print(f"[PDH-PDL] date={day} accepted={str(accepted).lower()} bars={bars} range={day_range:.5f} coverage_hours={duration_hours:.2f} max_gap_minutes={max_gap} reason={'OK' if accepted else ','.join(reasons)}")
+        if accepted:
+            last = (float(item[0]), float(item[1]))
+            last_day = day
     return out
 
 def smc_signal(win, pdh, pdl, explain=False):
@@ -1467,6 +1528,11 @@ def fetch_m5_live(n=900):
 fetch_m5_live.last_source = "UNKNOWN"
 
 def smc_live_signal(explain=False):
+    market_open, market_reason = market_hours_status("XAU/USD", datetime.datetime.utcnow())
+    if not market_open:
+        now_text = datetime.datetime.utcnow().isoformat()
+        print(f"[SMC] result=MARKET_CLOSED, skip symbol=XAU/USD utc={now_text} reason={market_reason}")
+        return None, [{"name": "Market hours", "pass": False, "actual": f"MARKET_CLOSED, skip ({market_reason})"}], None
     recs = fetch_m5_live(900)
     if not recs:
         return None, [], None
@@ -1474,8 +1540,18 @@ def smc_live_signal(explain=False):
     age_min = (datetime.datetime.utcnow() - (t0.to_pydatetime() + datetime.timedelta(minutes=5))).total_seconds() / 60
     if age_min > 15:
         return None, [{"name": "Data fresh", "pass": False, "actual": f"{age_min:.0f} min old"}], recs
-    pl = smc_prev_map(smc_day_levels(recs)).get(t0.date())
+    day_levels = smc_day_levels(recs)
+    prev_map = smc_prev_map(day_levels)
+    pl = prev_map.get(t0.date())
     pdh, pdl = pl if pl else (None, None)
+    prev_days = [day for day in sorted(day_levels) if day < t0.date()]
+    if prev_days:
+        prev_day = prev_days[-1]
+        item = day_levels[prev_day]
+        print(f"[PDH-PDL] symbol=XAU/USD target_utc_date={t0.date()} prior_observed_date={prev_day} raw_high={item[0]:.2f} raw_low={item[1]:.2f} raw_range={item[0]-item[1]:.2f} bars={item[2]} accepted_levels={pl if pl else 'NONE'}")
+    close_boundary = t0.to_pydatetime() + datetime.timedelta(minutes=5)
+    delta_seconds = (datetime.datetime.utcnow() - close_boundary).total_seconds()
+    print(f"[CANDLE-FRESHNESS] symbol=XAU/USD tf=M5 last_open_utc={t0.isoformat()} close_boundary_utc={close_boundary.isoformat()} now_utc={datetime.datetime.utcnow().isoformat()} delta_seconds={delta_seconds:.1f} closed={delta_seconds >= 0}")
     sig, checks = smc_signal(recs[-40:], pdh, pdl, explain=explain)
     return sig, checks, recs
 
@@ -1746,24 +1822,82 @@ def manual_scan(chat_id, auto=False):
             h1s = h1['trend_simple'] if isinstance(h1, dict) else h1
             send_telegram_msg(f"ℹ️ No setup M5 {VERSION} PAPER ONLY\nH1 `{h1s}`\nTry ulit sa 5 mins.\nDashboard: /dashboard", chat_id)
 
+def market_hours_status(symbol, now_utc=None):
+    """Configurable broker-session guard; local IANA timezone handles DST automatically.
+
+    Configure MARKET_TIMEZONE (default America/New_York), MARKET_SUNDAY_OPEN_LOCAL
+    (18:00), MARKET_FRIDAY_CLOSE_LOCAL (17:00), MARKET_DAILY_BREAK_START_LOCAL
+    (17:00), and MARKET_DAILY_BREAK_END_LOCAL (18:00). Broker holidays/special
+    closures still require a verified holiday calendar and are not inferred here.
+    """
+    from zoneinfo import ZoneInfo
+    now_utc = now_utc or datetime.datetime.now(datetime.timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=datetime.timezone.utc)
+    now_local = now_utc.astimezone(ZoneInfo(os.getenv("MARKET_TIMEZONE", "America/New_York")))
+    normalized = str(symbol).upper().replace("/", "")
+    if normalized not in {"BTCUSD", "ETHUSD", "SOLUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT"}:
+        print("[MARKET-HOURS] holiday_calendar=UNCONFIGURED known_gap=broker_holidays_and_special_closures_not_checked")
+    if normalized in {"BTCUSD", "ETHUSD", "SOLUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT"}:
+        return True, "CRYPTO_24_7"
+    def _clock(name, default):
+        return datetime.datetime.strptime(os.getenv(name, default), "%H:%M").time()
+    sunday_open = _clock("MARKET_SUNDAY_OPEN_LOCAL", "18:00")
+    friday_close = _clock("MARKET_FRIDAY_CLOSE_LOCAL", "17:00")
+    break_start = _clock("MARKET_DAILY_BREAK_START_LOCAL", "17:00")
+    break_end = _clock("MARKET_DAILY_BREAK_END_LOCAL", "18:00")
+    day, clock = now_local.weekday(), now_local.time().replace(tzinfo=None)
+    if day == 5:
+        return False, "WEEKEND_SATURDAY"
+    if day == 6 and clock < sunday_open:
+        return False, "WEEKEND_SUNDAY_PREOPEN"
+    if day == 4 and clock >= friday_close:
+        return False, "WEEKEND_FRIDAY_AFTER_CLOSE"
+    if day in {0, 1, 2, 3} and break_start <= clock < break_end:
+        return False, "DAILY_MAINTENANCE_BREAK"
+    return True, "SESSION_OPEN"
+
+def _record_scan_heartbeat(result, started_utc=None):
+    finished = datetime.datetime.utcnow()
+    _scan_heartbeat["started_utc"] = started_utc.isoformat() if started_utc else finished.isoformat()
+    _scan_heartbeat["finished_utc"] = finished.isoformat()
+    _scan_heartbeat["result"] = str(result)
+    _scan_heartbeat["sequence"] += 1
+    print(f"[SCAN-HEARTBEAT] sequence={_scan_heartbeat['sequence']} started_utc={_scan_heartbeat['started_utc']} finished_utc={finished.isoformat()} result={result}")
+
 def auto_scan_job():
+    started_utc = datetime.datetime.utcnow()
+    now_utc = started_utc  # shared UTC timestamp for all scheduler gates/logs in this cycle
     try:
-        if MASTER_LIVE_ENABLE or PAPER_SCAN_PAUSED: return
-        now_utc = datetime.datetime.utcnow()
-        if not TELEGRAM_CHAT_ID: return
+        if MASTER_LIVE_ENABLE or PAPER_SCAN_PAUSED:
+            _record_scan_heartbeat("BLOCKED_BY_SAFETY_OR_PAUSE", started_utc)
+            return
+        market_open, market_reason = market_hours_status("XAU/USD", started_utc)
+        if not market_open:
+            print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=MARKET_CLOSED, skip symbol=XAU/USD utc={started_utc.isoformat()} reason={market_reason}")
+            _record_scan_heartbeat("MARKET_CLOSED", started_utc)
+            return
+        if not TELEGRAM_CHAT_ID:
+            print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=SKIP_NO_TELEGRAM_CHAT_ID utc={started_utc.isoformat()}")
+            _record_scan_heartbeat("SKIP_NO_TELEGRAM_CHAT_ID", started_utc)
+            return
         if STRATEGY == "SMC":
             scan_candle_hour = (now_utc - datetime.timedelta(minutes=5)).hour
             if not in_killzone(scan_candle_hour):
                 print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=SKIP_OUTSIDE_KILLZONE utc_hour={now_utc.hour}")
+                _record_scan_heartbeat("SKIP_OUTSIDE_KILLZONE", started_utc)
                 return
             print(f"[AUTO-SCAN {VERSION}/{STRATEGY}] result=START utc={now_utc.isoformat()} safety=PAPER_ONLY")
             smc_scan(TELEGRAM_CHAT_ID, auto=True)
+            _record_scan_heartbeat("SCAN_COMPLETE", started_utc)
             return
         if not (7 <= now_utc.hour <= 19): return
         print(f"[AUTO-SCAN {VERSION}] {now_utc} scanning M5...")
         manual_scan(TELEGRAM_CHAT_ID, auto=True)
+        _record_scan_heartbeat("SCAN_COMPLETE", started_utc)
     except Exception as e:
         print(f"Auto scan error: {e}")
+        _record_scan_heartbeat(f"ERROR:{type(e).__name__}", started_utc)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1805,6 +1939,9 @@ def root():
 
 @app.get("/health")
 def health():
+    now = datetime.datetime.utcnow()
+    finished = _scan_heartbeat.get("finished_utc")
+    age_seconds = (now - datetime.datetime.fromisoformat(finished)).total_seconds() if finished else None
     return {
         "status": "ok",
         "version": VERSION,
@@ -1812,7 +1949,16 @@ def health():
         "master_enable": False,
         "kill_switch": True,
         "live_enabled": False,
+        "scan_heartbeat": dict(_scan_heartbeat),
+        "seconds_since_last_scan": round(age_seconds, 1) if age_seconds is not None else None,
+        "scan_missed": bool(age_seconds is not None and age_seconds > 2 * _SCAN_INTERVAL_SECONDS),
+        "scheduler_running": scheduler.running,
     }
+
+@app.head("/health")
+def health_head():
+    # HEAD-compatible liveness check; no market-data request or trading side effect.
+    return JSONResponse(content=None, status_code=200)
 
 @app.get("/status")
 def status():
