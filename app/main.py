@@ -1,4 +1,4 @@
-import os, datetime, json, math, bisect, time, threading, random
+import os, datetime, json, math, bisect, time, threading, random, csv
 from contextlib import asynccontextmanager
 import requests, pandas as pd
 from app.paper_validation import create_candidate, gate_summary
@@ -1297,33 +1297,69 @@ def smc_funnel(records):
     return names, reached
 
 # ---------- SMC BACKTEST / DIAG ----------
+def _export_smc_backtest_ledger(records, trades, symbol, pages):
+    """Export sim_smc output without changing strategy rules."""
+    path = os.getenv("BACKTEST_LEDGER_CSV", os.path.join("artifacts", "smc_backtest_ledger.csv"))
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    cut = int(len(records) * SPLIT_FRAC)
+    rows = []
+    for number, trade in enumerate(trades, 1):
+        idx = int(trade["idx"])
+        candle = records[idx] if 0 <= idx < len(records) else {}
+        rows.append({
+            "trade_number": number, "symbol": symbol, "pages_requested": pages,
+            "bar_index": idx, "entry_bar_time": str(candle.get("datetime", "")),
+            "side": trade.get("type", ""), "hour_utc": trade.get("hour", ""),
+            "level": trade.get("level", ""), "risk_distance": trade.get("sl_d", ""),
+            "atr": trade.get("atr", ""), "net_r": trade.get("r", ""),
+            "split": "IN_SAMPLE" if idx < cut else "OUT_OF_SAMPLE",
+        })
+    fields = ["trade_number", "symbol", "pages_requested", "bar_index", "entry_bar_time",
+              "side", "hour_utc", "level", "risk_distance", "atr", "net_r", "split"]
+    temp = path + ".tmp"
+    with open(temp, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
+    return {"strategy": "SMC", "symbol": symbol, "pages_requested": pages,
+            "bars": len(records), "trades_count": len(rows), "csv_path": path, "trades": rows}
+
 def run_backtest_smc(chat_id, pages=10, symbol="XAU/USD"):
     if MASTER_LIVE_ENABLE:
         send_telegram_msg("🚫 LIVE BLOCKED - PAPER ONLY", chat_id)
-        return
+        return {"status": "blocked", "reason": "MASTER_LIVE_ENABLE"}
     if not _job_lock.acquire(blocking=False):
         send_telegram_msg("⏳ May tumatakbo pang /backtest o /diag. Hintayin muna matapos.", chat_id)
-        return
+        return {"status": "blocked", "reason": "BACKTEST_ALREADY_RUNNING"}
     send_telegram_msg(f"⏳ TITAN {VERSION} SMC backtest {symbol}... {pages} pages (~{pages*10//60+1} min kung walang cache)", chat_id)
     try:
         cost = SYMBOL_COST[symbol]
         rec = get_hist_cached(pages=pages, symbol=symbol)
         if not rec or len(rec) < 3000:
-            send_telegram_msg(f"⚠️ Kulang ang data ({len(rec) if rec else 0} bars). Try ulit mamaya.", chat_id)
-            return
+            count = len(rec) if rec else 0
+            send_telegram_msg(f"⚠️ Kulang ang data ({count} bars). Try ulit mamaya.", chat_id)
+            return {"status": "insufficient_data", "symbol": symbol, "pages_requested": pages,
+                    "bars": count, "trades_count": 0, "trades": []}
         cut = int(len(rec) * SPLIT_FRAC)
         days = len({pd.Timestamp(r['datetime']).date() for r in rec})
         tr = sim_smc(rec, "market", cost=cost)
-        msg = (f"📊 TITAN {VERSION} SMC {symbol} | {len(rec)} bars (~{days} araw) | cost {cost:g}/trade\n"
-               f"PDH/PDL sweep + FVG | KZ 07-10 & 12-16 UTC | SL sa sweep extreme | RR 1:{SMC_RR:g} | market entry\n\n")
-        msg += _fmt("ALL", summarize(tr)) + "\n"
-        msg += _fmt("IN-SAMPLE 2/3", summarize([t for t in tr if t['idx'] < cut])) + "\n"
-        msg += _fmt("OUT-OF-SAMPLE 1/3", summarize([t for t in tr if t['idx'] >= cut])) + "\n\n"
+        ledger = _export_smc_backtest_ledger(rec, tr, symbol, pages)
+        msg = (f"📊 TITAN {VERSION} SMC {symbol} | {len(rec)} bars (~{days} araw) | cost {cost:g}/trade\\n"
+               f"PDH/PDL sweep + FVG | KZ 07-10 & 12-16 UTC | SL sa sweep extreme | RR 1:{SMC_RR:g} | market entry\\n\\n")
+        msg += _fmt("ALL", summarize(tr)) + "\\n"
+        msg += _fmt("IN-SAMPLE 2/3", summarize([t for t in tr if t['idx'] < cut])) + "\\n"
+        msg += _fmt("OUT-OF-SAMPLE 1/3", summarize([t for t in tr if t['idx'] >= cut])) + "\\n\\n"
+        msg += f"CSV ledger: {ledger['csv_path']} | rows: {ledger['trades_count']}\\n"
         msg += "BE = breakeven WR pagkatapos ng cost. Para sa baseline at stability: /diag"
         send_telegram_msg(msg, chat_id)
+        return {"status": "ok", **ledger}
     except Exception as e:
         import traceback; traceback.print_exc()
         send_telegram_msg(f"Err {e}", chat_id)
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
     finally:
         _job_lock.release()
 
