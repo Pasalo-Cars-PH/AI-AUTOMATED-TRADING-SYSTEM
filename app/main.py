@@ -1711,7 +1711,7 @@ def smc_scan(chat_id, auto=False):
         pht, utc = format_time_pht(sig['time'])
         caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 SMC {VERSION} PAPER ID #{trade_id}\n"
                    f"• {sig['type']} after {sig['level']} sweep + FVG\n"
-                   f"• H4 bias {h4_trend} | EMA20 {h4['ema20']:.2f} / EMA50 {h4['ema50']:.2f}\n"\n"
+                   f"• H4 bias {h4_trend} | EMA20 {h4['ema20']:.2f} / EMA50 {h4['ema50']:.2f}\n"
                    f"• Entry `{format_price(sig['entry'])}`\n"
                    f"• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:{SMC_RR:g}\n"
                    f"• Risk `${sig['risk_usd']:.2f}` ({sig['risk_usd']/float(os.getenv('PAPER_EQUITY_USD'))*100:.3f}% equity)\n"
