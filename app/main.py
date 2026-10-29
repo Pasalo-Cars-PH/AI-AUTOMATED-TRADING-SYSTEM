@@ -1603,6 +1603,52 @@ def risk_gate_and_log(sig, dedupe_key=None):
 
 
 
+def fetch_h4_ema_bias():
+    """Return fail-closed H4 trend using only completed Twelve Data candles."""
+    vals = fetch_data("XAU/USD", "4h", 100)
+    if not vals or len(vals) < 60:
+        return {"trend": "UNKNOWN", "source": "NO_DATA", "reason": "need_60_h4_candles"}
+    try:
+        rows = []
+        for v in reversed(vals):
+            row_time = pd.Timestamp(v["datetime"])
+            if row_time.tzinfo is not None:
+                row_time = row_time.tz_convert("UTC").tz_localize(None)
+            close = float(v["close"])
+            if close > 0 and math.isfinite(close):
+                rows.append({"datetime": row_time, "close": close})
+        now = datetime.datetime.utcnow()
+        if rows and now < rows[-1]["datetime"].to_pydatetime() + datetime.timedelta(hours=4):
+            rows = rows[:-1]
+        if len(rows) < 60:
+            return {"trend": "UNKNOWN", "source": "NO_DATA_CLOSED_BARS", "reason": "need_60_closed_h4_candles"}
+        last = rows[-1]
+        candle_close_time = last["datetime"].to_pydatetime() + datetime.timedelta(hours=4)
+        age_hours = (now - candle_close_time).total_seconds() / 3600.0
+        if age_hours < 0 or age_hours > 8:
+            return {"trend": "UNKNOWN", "source": "STALE", "reason": f"last_closed_h4_age_hours={age_hours:.2f}"}
+        closes = [r["close"] for r in rows]
+        ema20 = calculate_ema(closes, 20)
+        ema50 = calculate_ema(closes, 50)
+        close = closes[-1]
+        if any(v is None or not math.isfinite(float(v)) for v in (ema20, ema50, close)):
+            return {"trend": "UNKNOWN", "source": "INVALID_INDICATORS", "reason": "ema_invalid"}
+        if ema20 > ema50 and close > ema20 and close > ema50:
+            trend = "BULL"
+        elif ema20 < ema50 and close < ema20 and close < ema50:
+            trend = "BEAR"
+        else:
+            trend = "NEUTRAL"
+        result = {"trend": trend, "source": "LIVE_TWELVEDATA_4h_CLOSED", "ema20": ema20,
+                  "ema50": ema50, "close": close, "candle_time": last["datetime"].isoformat(),
+                  "age_hours": round(age_hours, 2)}
+        print(f"[H4-EMA-GATE] symbol=XAU/USD result={trend} close={close:.2f} ema20={ema20:.2f} ema50={ema50:.2f} source={result['source']} age_hours={age_hours:.2f}")
+        return result
+    except Exception as exc:
+        print(f"[H4-EMA-GATE] result=UNKNOWN error={type(exc).__name__}:{exc}")
+        return {"trend": "UNKNOWN", "source": "ERROR", "reason": type(exc).__name__}
+
+
 def smc_scan(chat_id, auto=False):
     sig, checks, recs = smc_live_signal(explain=True)
     if recs is None:
@@ -1611,6 +1657,18 @@ def smc_scan(chat_id, auto=False):
         return
     print(f"[SCAN {VERSION}/{STRATEGY}] stage=market_data result=OK closed_bars={len(recs)} last_closed_candle={recs[-1].get('datetime')} source={getattr(fetch_m5_live, 'last_source', 'UNKNOWN')}")
     if sig:
+        h4 = fetch_h4_ema_bias()
+        h4_trend = h4.get("trend", "UNKNOWN")
+        expected_h4 = {"BUY": "BULL", "SELL": "BEAR"}.get(sig.get("type"))
+        h4_pass = h4_trend == expected_h4 and h4_trend in {"BULL", "BEAR"}
+        h4_gate = {"name": "H4 EMA20/EMA50 bias", "pass": h4_pass,
+                   "actual": f"signal={sig.get('type')} H4={h4_trend} close={h4.get('close', 'n/a')} EMA20={h4.get('ema20', 'n/a')} EMA50={h4.get('ema50', 'n/a')} source={h4.get('source', 'UNKNOWN')}"}
+        checks.append(h4_gate)
+        if not h4_pass:
+            print(f"[SCAN {VERSION}/{STRATEGY}] stage=h4_ema_gate result=REJECT signal={sig.get('type')} h4={h4_trend} reason={h4.get('reason', 'bias_mismatch_or_neutral')}")
+            if not auto:
+                send_telegram_msg(f"H4 EMA GATE REJECTED — no trade. Signal={sig.get('type')} H4={h4_trend}; EMA20/EMA50 alignment required. Source={h4.get('source', 'UNKNOWN')}", chat_id)
+            return
         h1 = fetch_h1_supertrend_adx()
         h1_trend = h1.get("trend_simple") if isinstance(h1, dict) else "UNKNOWN"
         m15_trend, m15_source = fetch_m15_trend()
@@ -1653,6 +1711,7 @@ def smc_scan(chat_id, auto=False):
         pht, utc = format_time_pht(sig['time'])
         caption = (f"{'🤖 AUTO' if auto else '⚡ MANUAL'} XAUUSD M5 SMC {VERSION} PAPER ID #{trade_id}\n"
                    f"• {sig['type']} after {sig['level']} sweep + FVG\n"
+                   f"• H4 bias {h4_trend} | EMA20 {h4['ema20']:.2f} / EMA50 {h4['ema50']:.2f}\n"\n"
                    f"• Entry `{format_price(sig['entry'])}`\n"
                    f"• SL `{format_price(sig['sl'])}` TP `{format_price(sig['tp'])}` RR 1:{SMC_RR:g}\n"
                    f"• Risk `${sig['risk_usd']:.2f}` ({sig['risk_usd']/float(os.getenv('PAPER_EQUITY_USD'))*100:.3f}% equity)\n"
