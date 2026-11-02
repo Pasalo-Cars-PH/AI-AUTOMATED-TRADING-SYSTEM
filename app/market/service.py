@@ -28,7 +28,7 @@ class MarketDataService:
         self.crypto_symbols = {"BTCUSD", "ETHUSD", "SOLUSD"}
         self.fx_metal_symbols = {
             "XAUUSD", "EURUSD", "GBPUSD", "USDJPY",
-            "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
+            "AUDUSD", "USDCAD", "USDCHF", "NZDUSD", "GBPJPY", "GBPJPY",
         }
 
     def normalize_symbol(self, raw_symbol: str) -> str:

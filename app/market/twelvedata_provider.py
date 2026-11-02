@@ -34,7 +34,14 @@ class TwelveDataProvider:
             return []
 
         formatted_symbol = self._format_symbol(symbol)
-        interval = "5min" if timeframe.upper() in ["M5", "5M"] else timeframe.lower()
+        interval_map = {
+            "M1": "1min", "M5": "5min", "M15": "15min", "M30": "30min",
+            "H1": "1h", "H4": "4h", "D1": "1day",
+        }
+        interval = interval_map.get(timeframe.upper())
+        if interval is None:
+            logger.warning(f"TWELVEDATA_UNSUPPORTED_TIMEFRAME | {timeframe}")
+            return []
 
         params = {
             "symbol": formatted_symbol,
