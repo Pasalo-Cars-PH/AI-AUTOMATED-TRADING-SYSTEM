@@ -69,7 +69,7 @@ class BinanceProvider:
             else:
                 binance_symbol = clean_symbol
 
-            interval_map = {"M1": "1m", "M5": "5m", "M15": "15m", "H1": "1h", "D1": "1d"}
+            interval_map = {"M1": "1m", "M5": "5m", "M15": "15m", "H1": "1h", "H4": "4h", "D1": "1d"}
             interval = interval_map.get(timeframe.upper(), "5m")
 
             params = {
