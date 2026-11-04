@@ -24,7 +24,7 @@ class Checkpoint:
     group: str
     weight: int
     feature: str
-    direction: str = "directional"
+    direction: str = "neutral"
     hard_gate: bool = False
 
 
@@ -53,25 +53,25 @@ class Decision:
 
 CHECKPOINTS = (
     Checkpoint(1, "AMD + Volume Profile", "regime", 5, "amd_vp"),
-    Checkpoint(2, "EMA Hybrid", "trend", 6, "ema_hybrid"),
-    Checkpoint(3, "RSI", "momentum", 3, "rsi"),
-    Checkpoint(4, "MACD", "momentum", 3, "macd"),
+    Checkpoint(2, "EMA Hybrid", "trend", 6, "ema_hybrid", direction="directional"),
+    Checkpoint(3, "RSI", "momentum", 3, "rsi", direction="directional"),
+    Checkpoint(4, "MACD", "momentum", 3, "macd", direction="directional"),
     Checkpoint(5, "ADX", "momentum", 3, "adx"),
-    Checkpoint(6, "BOS / CHOCH", "structure", 6, "bos_choch"),
-    Checkpoint(7, "Fair Value Gap", "structure", 5, "fvg"),
-    Checkpoint(8, "Order Block", "structure", 5, "order_block"),
-    Checkpoint(9, "Spring / Upthrust", "regime", 4, "spring_upthrust"),
-    Checkpoint(10, "OTE", "location", 4, "ote"),
+    Checkpoint(6, "BOS / CHOCH", "structure", 6, "bos_choch", direction="directional"),
+    Checkpoint(7, "Fair Value Gap", "structure", 5, "fvg", direction="directional"),
+    Checkpoint(8, "Order Block", "structure", 5, "order_block", direction="directional"),
+    Checkpoint(9, "Spring / Upthrust", "regime", 4, "spring_upthrust", direction="directional"),
+    Checkpoint(10, "OTE", "location", 4, "ote", direction="directional"),
     Checkpoint(11, "Kill Zones", "timing", 4, "killzone", hard_gate=True),
     Checkpoint(12, "News + DXY", "macro", 5, "news_dxy", hard_gate=True),
     Checkpoint(13, "Dynamic Management", "management", 0, "dynamic_management"),
-    Checkpoint(14, "Wyckoff Phase", "regime", 4, "wyckoff"),
+    Checkpoint(14, "Wyckoff Phase", "regime", 4, "wyckoff", direction="directional"),
     Checkpoint(15, "Balance + RR", "risk", 5, "balance_rr", hard_gate=True),
     Checkpoint(16, "Volume + Imbalance", "volume", 5, "volume_imbalance"),
-    Checkpoint(17, "S/R + Supply / Demand", "location", 5, "sr_supply_demand"),
-    Checkpoint(18, "Liquidity Sweep", "liquidity", 7, "liquidity_sweep"),
-    Checkpoint(19, "Market Structure", "structure", 7, "market_structure"),
-    Checkpoint(20, "Timeframe Alignment", "mtf", 9, "timeframe_alignment", hard_gate=True),
+    Checkpoint(17, "S/R + Supply / Demand", "location", 5, "sr_supply_demand", direction="directional"),
+    Checkpoint(18, "Liquidity Sweep", "liquidity", 7, "liquidity_sweep", direction="directional"),
+    Checkpoint(19, "Market Structure", "structure", 7, "market_structure", direction="directional"),
+    Checkpoint(20, "Timeframe Alignment", "mtf", 9, "timeframe_alignment", direction="directional", hard_gate=True),
 )
 
 # Each feature must be a mapping with status PASS/FAIL and a non-empty reason.
