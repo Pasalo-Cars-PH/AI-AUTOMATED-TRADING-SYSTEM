@@ -8,6 +8,7 @@ def connect_demo():
     a=mt5.account_info(); t=mt5.terminal_info()
     if a is None or t is None: raise RuntimeError("MT5 account/terminal info unavailable")
     if int(a.trade_mode)!=int(mt5.ACCOUNT_TRADE_MODE_DEMO): raise RuntimeError("SAFETY BLOCK: account is NOT DEMO")
+    if int(a.margin_mode)!=int(mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING): raise RuntimeError("SAFETY BLOCK: Vantage account must be HEDGING mode")
     if not t.connected or not t.trade_allowed or not a.trade_allowed: raise RuntimeError("Terminal/account disconnected or trading disabled")
     return a
 def volume_for_risk(symbol,entry,sl,equity):
@@ -30,7 +31,7 @@ def validate_pending(s):
     return True,"OK"
 def place_pending(s):
     a=mt5.account_info()
-    if a is None or int(a.trade_mode)!=int(mt5.ACCOUNT_TRADE_MODE_DEMO): raise RuntimeError("DEMO account re-check failed")
+    if a is None or int(a.trade_mode)!=int(mt5.ACCOUNT_TRADE_MODE_DEMO) or int(a.margin_mode)!=int(mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING): raise RuntimeError("DEMO + HEDGING account re-check failed")
     if not SETTINGS.allow_orders: return {"status":"DRY_RUN_LOCKED","reason":"MT5_ALLOW_ORDERS=false"}
     if s["symbol"] not in ALLOWED_SYMBOLS or s["side"] not in ("BUY","SELL") or not s["aligned"] or s["score"]<80: return {"status":"REJECTED","reason":"Allowlist/alignment/score gate"}
     ok,why=validate_pending(s)
@@ -45,7 +46,7 @@ def place_pending(s):
     return {"status":"PLACED_DEMO","ticket":res.order,"volume":vol,"estimated_risk":round(risk,2),"risk_budget":round(budget,2),"entry":req["price"],"sl":req["sl"],"tp":req["tp"]}
 def manage_positions():
     a=mt5.account_info()
-    if a is None or int(a.trade_mode)!=int(mt5.ACCOUNT_TRADE_MODE_DEMO): raise RuntimeError("Position manager requires DEMO account")
+    if a is None or int(a.trade_mode)!=int(mt5.ACCOUNT_TRADE_MODE_DEMO) or int(a.margin_mode)!=int(mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING): raise RuntimeError("Position manager requires DEMO HEDGING account")
     positions=mt5.positions_get()
     if positions is None: return
     try: state=json.load(open(SETTINGS.state_file,encoding="utf-8"))
@@ -58,7 +59,7 @@ def manage_positions():
         pip=info.point*10 if info.digits in (3,5) else info.point
         cur=tick.bid if p.type==mt5.POSITION_TYPE_BUY else tick.ask
         pp=(cur-p.price_open)/pip if p.type==mt5.POSITION_TYPE_BUY else (p.price_open-cur)/pip
-        key=str(p.ticket); st=state.setdefault(key,{"tp1_done":False})
+        key=str(p.ticket); st=state.setdefault(key,{"tp1_done":False,"initial_risk":abs(p.price_open-p.sl) if p.sl else pip*20})
         if pp>=20:
             be=round(p.price_open,info.digits); better=(p.sl==0 or be>p.sl) if p.type==mt5.POSITION_TYPE_BUY else (p.sl==0 or be<p.sl)
             if better:
@@ -76,7 +77,7 @@ def manage_positions():
                     if r and r.retcode==mt5.TRADE_RETCODE_DONE: st["tp1_done"]=True; dirty=True
         if st["tp1_done"]:
             # Trail by original risk distance; never loosen the stop.
-            dist=abs(p.price_open-p.sl) if p.sl else pip*20; trail=round(cur-dist if p.type==mt5.POSITION_TYPE_BUY else cur+dist,info.digits)
+            dist=float(st.get("initial_risk",pip*20)); trail=round(cur-dist if p.type==mt5.POSITION_TYPE_BUY else cur+dist,info.digits)
             better=(trail>p.sl) if p.type==mt5.POSITION_TYPE_BUY else (p.sl==0 or trail<p.sl)
             if better and ((p.type==mt5.POSITION_TYPE_BUY and trail<cur) or (p.type==mt5.POSITION_TYPE_SELL and trail>cur)):
                 r=mt5.order_send({"action":mt5.TRADE_ACTION_SLTP,"position":p.ticket,"symbol":p.symbol,"sl":trail,"tp":p.tp,"magic":SETTINGS.magic})
