@@ -1,0 +1,1 @@
+"""Vantage MT5 demo-only executor. Live trading is intentionally unsupported."""
