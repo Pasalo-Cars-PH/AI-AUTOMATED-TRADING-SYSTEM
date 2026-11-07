@@ -90,7 +90,7 @@ def build_features(
     fvg_events = fair_value_gaps(xs)
     latest_fvg = next((event for event in reversed(fvg_events) if event["index"] == len(xs) - 1), None)
     features["fvg"] = (
-        _feature("PASS", "Three-candle FVG formed on latest closed candle", latest_fvg["direction"], **latest_fvg)
+        _feature("PASS", "Three-candle FVG formed on latest closed candle", latest_fvg["direction"], **{k: v for k, v in latest_fvg.items() if k != "direction"})
         if latest_fvg else
         _feature("FAIL", "No three-candle FVG formed on latest closed candle")
     )
@@ -98,14 +98,14 @@ def build_features(
     sweep_events = liquidity_sweeps(xs, sweep_lookback)
     latest_sweep = next((event for event in reversed(sweep_events) if event["index"] == len(xs) - 1), None)
     features["liquidity_sweep"] = (
-        _feature("PASS", "Liquidity sweep and close back through prior level", latest_sweep["direction"], **latest_sweep)
+        _feature("PASS", "Liquidity sweep and close back through prior level", latest_sweep["direction"], **{k: v for k, v in latest_sweep.items() if k != "direction"})
         if latest_sweep else
         _feature("FAIL", "No liquidity sweep on latest closed candle")
     )
 
     bos = structure_break(xs)
     if bos.get("status") == "PASS":
-        features["bos_choch"] = _feature("PASS", f"Confirmed {bos['event']}", bos["direction"], **bos)
+        features["bos_choch"] = _feature("PASS", f"Confirmed {bos['event']}", bos["direction"], **{k: v for k, v in bos.items() if k not in {"status", "direction"}})
         features["market_structure"] = _feature("PASS", "Latest close broke a confirmed swing", bos["direction"], **bos)
     else:
         features["bos_choch"] = _feature(
