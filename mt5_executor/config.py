@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 import os
+from dotenv import load_dotenv
+load_dotenv()
 ALLOWED_SYMBOLS=("GBPJPY","USDJPY")
 TIMEFRAMES=("H4","H1","M15","M5")
 @dataclass(frozen=True)
