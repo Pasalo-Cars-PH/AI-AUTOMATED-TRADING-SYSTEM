@@ -8,7 +8,7 @@ class TestIndicators(unittest.TestCase):
  def test_rsi_flat(self): self.assertEqual(rsi([5]*20,14),50)
  def test_macd_flat(self): self.assertAlmostEqual(macd([10]*60)["histogram"],0)
  def test_adx_flat(self): self.assertAlmostEqual(adx([10]*40,[10]*40,[10]*40,14)["adx"],0)
- def test_true_range(self): self.assertEqual(true_ranges([11,13],[9,10],[10,12]),[3,3])
+ def test_true_range(self): self.assertEqual(true_ranges([11,13],[9,10],[10,12]),[3.0])
  def test_ema_short_input_rejected(self):
   with self.assertRaises(ValueError): ema([1,2],3)
 
