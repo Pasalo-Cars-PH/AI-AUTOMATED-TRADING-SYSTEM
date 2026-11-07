@@ -67,7 +67,7 @@ def score_checkpoints(frames,side):
 def analyze(symbol):
     if symbol not in ALLOWED_SYMBOLS: raise ValueError("Symbol not allowlisted")
     frames={tf:indicators(rates(symbol,tf)) for tf in TIMEFRAMES}; dirs={tf:direction(frames[tf]) for tf in TIMEFRAMES}
-    aligned=len(set(dirs.values())==1) if False else (len(set(dirs.values()))==1 and dirs["H4"] in ("BUY","SELL"))
+    aligned=(len(set(dirs.values()))==1 and dirs["H4"] in ("BUY","SELL"))
     side=dirs["H4"] if aligned else "WAIT"
     score,checks=score_checkpoints(frames,side) if aligned else (0,{"alignment gate":0})
     tick=mt5.symbol_info_tick(symbol); info=mt5.symbol_info(symbol)
