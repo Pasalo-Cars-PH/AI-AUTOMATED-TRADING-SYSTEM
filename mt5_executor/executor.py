@@ -33,6 +33,10 @@ def place_pending(s):
     a=mt5.account_info()
     if a is None or int(a.trade_mode)!=int(mt5.ACCOUNT_TRADE_MODE_DEMO) or int(a.margin_mode)!=int(mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING): raise RuntimeError("DEMO + HEDGING account re-check failed")
     if not SETTINGS.allow_orders: return {"status":"DRY_RUN_LOCKED","reason":"MT5_ALLOW_ORDERS=false"}
+    existing_orders=mt5.orders_get(symbol=s["symbol"]) or ()
+    existing_positions=mt5.positions_get(symbol=s["symbol"]) or ()
+    if any(getattr(x,"magic",None)==SETTINGS.magic for x in existing_orders): return {"status":"SKIPPED_DUPLICATE","reason":"TITAN pending order already exists for symbol"}
+    if any(getattr(x,"magic",None)==SETTINGS.magic for x in existing_positions): return {"status":"SKIPPED_DUPLICATE","reason":"TITAN position already exists for symbol"}
     if s["symbol"] not in ALLOWED_SYMBOLS or s["side"] not in ("BUY","SELL") or not s["aligned"] or s["score"]<80: return {"status":"REJECTED","reason":"Allowlist/alignment/score gate"}
     ok,why=validate_pending(s)
     if not ok: return {"status":"REJECTED","reason":why}
