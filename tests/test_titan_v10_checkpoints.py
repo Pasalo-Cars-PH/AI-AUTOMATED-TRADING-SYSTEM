@@ -24,7 +24,7 @@ class TestTitanV10Checkpoints(unittest.TestCase):
         self.assertEqual(result.status, "REJECT_GATE")
         self.assertTrue(all(
             item.status == Status.UNAVAILABLE
-            for item in result.checkpoints if item.weight > 0
+            for item in result.checkpoints if item.max_score > 0
         ))
 
     def test_all_valid_passes_produce_paper_candidate_only(self):
