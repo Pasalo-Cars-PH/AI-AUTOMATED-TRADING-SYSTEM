@@ -855,20 +855,37 @@ def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36,
     return trades
 
 def summarize(trades):
+    """Summarize net-R results; breakevens are excluded from win-rate and loss averages."""
     n = len(trades)
     if n == 0:
-        return {"se": 0.0, "total": 0, "wins": 0, "losses": 0, "wr": 0, "net": 0.0, "exp": 0.0, "pf": 0, "be": None, "avg_sl": 0}
-    rs = [t['r'] for t in trades]
+        return {
+            "se": 0.0, "total": 0, "wins": 0, "losses": 0, "breakevens": 0,
+            "decisive": 0, "wr": 0, "net": 0.0, "exp": 0.0, "pf": 0,
+            "be": None, "avg_sl": 0,
+        }
+    rs = [float(t["r"]) for t in trades]
+    if not all(math.isfinite(x) for x in rs):
+        raise ValueError("trade R values must be finite")
     w = [x for x in rs if x > 0]
-    l = [-x for x in rs if x <= 0]
-    gw, gl = sum(w), sum(l)
-    be = round((gl / len(l)) / ((gw / len(w)) + (gl / len(l))) * 100, 1) if w and l else None
+    loss_r = [-x for x in rs if x < 0]
+    breakevens = sum(x == 0 for x in rs)
+    gw, gl = sum(w), sum(loss_r)
+    avg_win = gw / len(w) if w else 0.0
+    avg_loss = gl / len(loss_r) if loss_r else 0.0
+    be = round(avg_loss / (avg_win + avg_loss) * 100, 1) if w and loss_r else None
     mean = sum(rs) / n
     se = (sum((x - mean) ** 2 for x in rs) / (n - 1) / n) ** 0.5 if n > 1 else 0.0
-    return {"se": round(se, 2), "total": n, "wins": len(w), "losses": len(l), "wr": round(len(w) / n * 100, 1),
-            "net": round(sum(rs), 2), "exp": round(sum(rs) / n, 3),
-            "pf": round(gw / gl, 2) if gl > 0 else round(gw, 2), "be": be,
-            "avg_sl": (lambda v: round(v, 2) if v >= 1 else round(v, 5))(sum(t['sl_d'] for t in trades) / n)}
+    decisive = len(w) + len(loss_r)
+    avg_sl = sum(float(t["sl_d"]) for t in trades) / n
+    return {
+        "se": round(se, 2), "total": n, "wins": len(w), "losses": len(loss_r),
+        "breakevens": breakevens, "decisive": decisive,
+        "wr": round(len(w) / decisive * 100, 1) if decisive else 0,
+        "net": round(sum(rs), 2), "exp": round(mean, 3),
+        "pf": round(gw / gl, 2) if gl > 0 else round(gw, 2),
+        "be": be,
+        "avg_sl": round(avg_sl, 2) if avg_sl >= 1 else round(avg_sl, 5),
+    }
 
 def run_sim_tf(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36):
     """Compat wrapper: total,wins,losses,wr,net,exp,pf (R, after cost)."""
