@@ -20,7 +20,7 @@ def test_v9_m5_rows_are_sorted_deduplicated_and_closed_only():
 
 
 def test_v9_m5_rejects_invalid_ohlc_nonfinite_and_future_rows():
-    now = dt.datetime(2026, 11, 8, 12, 20, 0)
+    now = dt.datetime(2026, 11, 8, 12, 19, 59)
     rows = [
         {"datetime": "2026-11-08 12:00:00", "open": "100", "high": "98", "low": "99", "close": "101"},
         {"datetime": "2026-11-08 12:05:00", "open": "100", "high": "102", "low": "99", "close": "nan"},
