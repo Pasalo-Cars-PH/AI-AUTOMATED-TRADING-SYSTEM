@@ -1166,9 +1166,13 @@ def smc_prev_map(levels, min_bars=100):
             last_day = day
     return out
 
-def smc_signal(win, pdh, pdl, explain=False):
-    """win: oldest->newest (dict: open/high/low/close/datetime). Huling candle = signal candle (sarado na).
-    Returns (sig|None, checks). Entry sa signal ay c0 close (market)."""
+def smc_signal(win, pdh, pdl, explain=False, entry_price=None):
+    """Build an SMC signal from closed candles using an executable entry reference.
+
+    Live uses a fresh Twelve Data quote sampled after the signal candle closes.
+    Backtest uses the next candle open as the historical first-executable proxy.
+    If omitted, c0 close is retained only for diagnostic/funnel callers.
+    """
     checks = []
     def chk(name, ok, actual=""):
         if explain:
@@ -1209,11 +1213,17 @@ def smc_signal(win, pdh, pdl, explain=False):
     fvg_ok = dir_ok and body1 >= SMC_DISP * atr and gap >= SMC_GAP * atr
     if not chk("Displacement+FVG", fvg_ok, f"{side} body {body1/atr:.2f}xATR gap {gap/atr:.2f}xATR"):
         return None, checks
-    entry = c0['close']
+    entry = float(c0['close'] if entry_price is None else entry_price)
+    if not math.isfinite(entry) or entry <= 0:
+        chk("Execution entry", False, f"invalid executable price={entry!r}")
+        return None, checks
     ext = hi_ext if side == "SELL" else lo_ext
     sl = ext + SMC_SL_BUF * atr if side == "SELL" else ext - SMC_SL_BUF * atr
     risk = abs(sl - entry)
-    if not chk("Risk size", SMC_MIN_RISK * atr <= risk <= SMC_MAX_RISK * atr, f"risk ${risk:.2f} = {risk/atr:.2f}xATR"):
+    direction_ok = (entry > sl) if side == "SELL" else (entry < sl)
+    risk_ok = direction_ok and SMC_MIN_RISK * atr <= risk <= SMC_MAX_RISK * atr
+    if not chk("Risk size at executable entry", risk_ok,
+               f"entry={entry:.5f} SL={sl:.5f} risk=${risk:.2f} = {risk/atr:.2f}xATR"):
         return None, checks
     tp = entry - SMC_RR * risk if side == "SELL" else entry + SMC_RR * risk
     if side == "SELL":
@@ -1263,7 +1273,12 @@ def sim_smc(records, mode="market", rr=None, cost=SPREAD_COST):
         if not pl:
             i += 1
             continue
-        sig, _ = smc_signal(records[i-40:i], pl[0], pl[1])
+        # Signal uses candles only through i-1; next bar open is the first
+        # historical executable price, matching the live post-close quote convention.
+        execution_entry = float(records[i]["open"])
+        sig, _ = smc_signal(
+            records[i-40:i], pl[0], pl[1], entry_price=execution_entry
+        )
         if not sig:
             i += 1
             continue
@@ -1298,7 +1313,8 @@ def sim_smc(records, mode="market", rr=None, cost=SPREAD_COST):
                 continue
         tp = entry + rr * risk if buy else entry - rr * risk
         pnl, ej = _eval_trade(records, j0, buy, entry, sl, tp, SMC_MAX_HOLD, tp_on_first=(mode == "market"))
-        trades.append({"idx": i, "type": sig['type'], "hour": t0.hour, "sl_d": risk, "atr": sig['atr'],
+        trades.append({"idx": i, "type": sig['type'], "hour": t0.hour, "entry": entry,
+                       "sl": sl, "tp": tp, "sl_d": risk, "atr": sig['atr'],
                        "level": sig['level'], "r": (pnl - cost) / risk})
         i = ej + 1
     return trades
@@ -1618,6 +1634,32 @@ def fetch_m5_live(n=900):
 
 fetch_m5_live.last_source = "UNKNOWN"
 
+def fetch_smc_execution_price(symbol="XAU/USD"):
+    """Fetch a fresh executable-reference quote from Twelve Data; fail closed."""
+    if not TWELVE_DATA_API_KEY:
+        print("[SMC-ENTRY] result=NO_QUOTE reason=missing_api_key")
+        return None
+    try:
+        response = requests.get(
+            "https://api.twelvedata.com/price",
+            params={"symbol": symbol, "apikey": TWELVE_DATA_API_KEY},
+            timeout=8,
+        )
+        if response.status_code != 200:
+            print(f"[SMC-ENTRY] result=NO_QUOTE http={response.status_code}")
+            return None
+        payload = response.json()
+        price = float(payload.get("price"))
+        if not math.isfinite(price) or price <= 0:
+            print("[SMC-ENTRY] result=NO_QUOTE reason=invalid_price")
+            return None
+        print(f"[SMC-ENTRY] result=QUOTE_OK symbol={symbol} price={price:.5f} source=TWELVEDATA_PRICE")
+        return price
+    except (requests.RequestException, TypeError, ValueError, AttributeError) as exc:
+        print(f"[SMC-ENTRY] result=NO_QUOTE error={type(exc).__name__}")
+        return None
+
+
 def smc_live_signal(explain=False):
     market_open, market_reason = market_hours_status("XAU/USD", datetime.datetime.utcnow())
     if not market_open:
@@ -1643,7 +1685,13 @@ def smc_live_signal(explain=False):
     close_boundary = t0.to_pydatetime() + datetime.timedelta(minutes=5)
     delta_seconds = (datetime.datetime.utcnow() - close_boundary).total_seconds()
     print(f"[CANDLE-FRESHNESS] symbol=XAU/USD tf=M5 last_open_utc={t0.isoformat()} close_boundary_utc={close_boundary.isoformat()} now_utc={datetime.datetime.utcnow().isoformat()} delta_seconds={delta_seconds:.1f} closed={delta_seconds >= 0}")
-    sig, checks = smc_signal(recs[-40:], pdh, pdl, explain=explain)
+    execution_price = fetch_smc_execution_price("XAU/USD")
+    if execution_price is None:
+        return None, [{"name": "Execution quote", "pass": False,
+                       "actual": "Twelve Data price quote unavailable; no paper entry"}], recs
+    sig, checks = smc_signal(
+        recs[-40:], pdh, pdl, explain=explain, entry_price=execution_price
+    )
     return sig, checks, recs
 
 def risk_gate_and_log(sig, dedupe_key=None):
