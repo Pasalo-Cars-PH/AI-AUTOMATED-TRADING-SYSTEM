@@ -1511,6 +1511,35 @@ _smc_live_cache = {"recs": None, "time": None}
 _smc_used_live = set()
 _smc_used_live_lock = threading.Lock()
 
+def _validated_closed_m5_records(vals, now=None):
+    """Normalize provider rows to unique, finite, valid, closed M5 candles in UTC order."""
+    now = now or datetime.datetime.utcnow()
+    by_time = {}
+    for item in vals or []:
+        try:
+            stamp = pd.Timestamp(item["datetime"])
+            if stamp.tzinfo is not None:
+                stamp = stamp.tz_convert("UTC").tz_localize(None)
+            stamp = stamp.floor("s")
+            o = float(item["open"])
+            h = float(item["high"])
+            low = float(item["low"])
+            close = float(item["close"])
+            if not all(math.isfinite(x) and x > 0 for x in (o, h, low, close)):
+                continue
+            if h < max(o, low, close) or low > min(o, close) or h <= low:
+                continue
+            # Provider datetime is candle OPEN time. Reject forming and future bars.
+            if stamp.to_pydatetime() + datetime.timedelta(minutes=5) > now:
+                continue
+            by_time[stamp] = {
+                "datetime": stamp, "open": o, "high": h, "low": low, "close": close,
+            }
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return [by_time[key] for key in sorted(by_time)]
+
+
 def fetch_m5_live(n=900):
     now = datetime.datetime.utcnow()
     c = _smc_live_cache
@@ -1521,27 +1550,20 @@ def fetch_m5_live(n=900):
     if not vals or len(vals) < 200:
         fetch_m5_live.last_source = "NO_DATA"
         return None
-    recs = []
-    for v in reversed(vals):                   # newest-first -> oldest-first
-        try:
-            o, h, l, cl = float(v["open"]), float(v["high"]), float(v["low"]), float(v["close"])
-            if h > l and o > 0 and cl > 0:
-                recs.append({"datetime": pd.Timestamp(v["datetime"]), "open": o, "high": h, "low": l, "close": cl})
-        except: pass
-    if len(recs) < 200:
-        fetch_m5_live.last_source = "NO_DATA_INVALID_CANDLES"
-        return None
-    try:
-        if now < recs[-1]['datetime'].to_pydatetime() + datetime.timedelta(minutes=5):
-            recs = recs[:-1]                   # drop forming candle
-    except: pass
+    recs = _validated_closed_m5_records(vals, now=now)
     if len(recs) < 60:
-        fetch_m5_live.last_source = "NO_DATA_AFTER_CLOSED_BAR_FILTER"
+        fetch_m5_live.last_source = "NO_DATA_INVALID_OR_UNCLOSED_CANDLES"
+        return None
+    latest_close = recs[-1]["datetime"].to_pydatetime() + datetime.timedelta(minutes=5)
+    age_seconds = (now - latest_close).total_seconds()
+    if age_seconds < 0 or age_seconds > 15 * 60:
+        fetch_m5_live.last_source = "NO_DATA_STALE_OR_FUTURE"
         return None
     c["recs"] = recs
     c["time"] = now
     fetch_m5_live.last_source = "LIVE_TWELVEDATA_5min"
     return recs
+
 fetch_m5_live.last_source = "UNKNOWN"
 
 def smc_live_signal(explain=False):
