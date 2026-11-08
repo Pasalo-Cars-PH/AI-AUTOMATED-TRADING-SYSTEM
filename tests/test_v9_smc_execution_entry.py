@@ -26,7 +26,7 @@ def test_smc_signal_uses_supplied_post_close_execution_entry_for_levels():
             rows, pdh=100.8, pdl=95.0, entry_price=99.5, explain=True
         )
 
-    assert sig is not None
+    assert sig is not None, checks
     assert sig["type"] == "SELL"
     assert sig["entry"] == 99.5
     assert sig["tp"] == round(99.5 - SMC_RR * abs(sig["sl"] - 99.5), 5)
