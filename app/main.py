@@ -1220,7 +1220,7 @@ def smc_signal(win, pdh, pdl, explain=False, entry_price=None):
     ext = hi_ext if side == "SELL" else lo_ext
     sl = ext + SMC_SL_BUF * atr if side == "SELL" else ext - SMC_SL_BUF * atr
     risk = abs(sl - entry)
-    direction_ok = (entry > sl) if side == "SELL" else (entry < sl)
+    direction_ok = (entry < sl) if side == "SELL" else (entry > sl)
     risk_ok = direction_ok and SMC_MIN_RISK * atr <= risk <= SMC_MAX_RISK * atr
     if not chk("Risk size at executable entry", risk_ok,
                f"entry={entry:.5f} SL={sl:.5f} risk=${risk:.2f} = {risk/atr:.2f}xATR"):
