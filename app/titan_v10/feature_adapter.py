@@ -106,7 +106,12 @@ def build_features(
     bos = structure_break(xs)
     if bos.get("status") == "PASS":
         features["bos_choch"] = _feature("PASS", f"Confirmed {bos['event']}", bos["direction"], **{k: v for k, v in bos.items() if k not in {"status", "direction"}})
-        features["market_structure"] = _feature("PASS", "Latest close broke a confirmed swing", bos["direction"], **bos)
+        # Do not count the same BOS event twice. Market structure needs its own
+        # swing-sequence/trend-state calculator before it can contribute a score.
+        features["market_structure"] = _feature(
+            "UNAVAILABLE",
+            "Distinct swing-sequence market-structure calculator not implemented; BOS is scored separately",
+        )
     else:
         features["bos_choch"] = _feature(
             bos.get("status", "UNAVAILABLE"),
@@ -114,8 +119,8 @@ def build_features(
             **{k: v for k, v in bos.items() if k not in {"status", "reason", "direction"}},
         )
         features["market_structure"] = _feature(
-            "FAIL" if bos.get("status") == "FAIL" else "UNAVAILABLE",
-            "No confirmed directional structure break",
+            "UNAVAILABLE",
+            "Distinct swing-sequence market-structure calculator not implemented; BOS is scored separately",
         )
 
     return features
