@@ -591,11 +591,21 @@ def fetch_h1_supertrend_adx():
         for col in ['high', 'low', 'close']:
             df[col] = df[col].astype(float)
         df = df.sort_values('datetime')
-        try:
-            last_dt = pd.to_datetime(df['datetime'].iloc[-1])
-            if datetime.datetime.utcnow() < last_dt.to_pydatetime() + datetime.timedelta(hours=1):
-                df = df.iloc[:-1]   # drop forming H1 bar
-        except: pass
+        last_dt = pd.to_datetime(df['datetime'].iloc[-1])
+        if last_dt.tzinfo is not None:
+            last_dt = last_dt.tz_convert("UTC").tz_localize(None)
+        now = datetime.datetime.utcnow()
+        if now < last_dt.to_pydatetime() + datetime.timedelta(hours=1):
+            df = df.iloc[:-1]   # drop forming H1 bar
+        if df.empty:
+            return None
+        last_dt = pd.to_datetime(df['datetime'].iloc[-1])
+        if last_dt.tzinfo is not None:
+            last_dt = last_dt.tz_convert("UTC").tz_localize(None)
+        age_hours = (now - (last_dt.to_pydatetime() + datetime.timedelta(hours=1))).total_seconds() / 3600.0
+        if age_hours < 0 or age_hours > 3:
+            print(f"[H1-MTF] result=UNKNOWN reason=STALE_OR_FUTURE age_hours={age_hours:.2f}")
+            return None
         return compute_h1_trend(list(df['high']), list(df['low']), list(df['close']))
     except Exception as e:
         print(f"fetch_h1_supertrend_adx error: {e}")
@@ -1493,12 +1503,24 @@ def fetch_m15_trend():
     try:
         rows = []
         for v in reversed(vals):
-            rows.append({"datetime": pd.Timestamp(v["datetime"]), "close": float(v["close"])})
+            stamp = pd.Timestamp(v["datetime"])
+            if stamp.tzinfo is not None:
+                stamp = stamp.tz_convert("UTC").tz_localize(None)
+            close = float(v["close"])
+            if not math.isfinite(close) or close <= 0:
+                continue
+            rows.append({"datetime": stamp, "close": close})
         now = datetime.datetime.utcnow()
+        if not rows:
+            return "UNKNOWN", "NO_DATA"
         if now < rows[-1]["datetime"].to_pydatetime() + datetime.timedelta(minutes=15):
             rows = rows[:-1]
         if len(rows) < 50:
             return "UNKNOWN", "NO_DATA"
+        age_minutes = (now - (rows[-1]["datetime"].to_pydatetime() + datetime.timedelta(minutes=15))).total_seconds() / 60.0
+        if age_minutes < 0 or age_minutes > 45:
+            print(f"[M15-MTF] result=UNKNOWN reason=STALE_OR_FUTURE age_minutes={age_minutes:.1f}")
+            return "UNKNOWN", "STALE_OR_FUTURE"
         closes = [r["close"] for r in rows]
         e20 = calculate_ema(closes, 20)
         e50 = calculate_ema(closes, 50)
