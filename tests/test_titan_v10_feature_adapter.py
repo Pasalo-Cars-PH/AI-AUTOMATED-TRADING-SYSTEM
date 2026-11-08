@@ -39,6 +39,11 @@ class TestFeatureAdapter(unittest.TestCase):
         self.assertEqual(features["rsi"]["direction"], "BUY")
         self.assertIn(features["adx"]["status"], {"PASS", "FAIL"})
 
+    def test_market_structure_is_not_double_counted_as_bos(self):
+        features = build_features(trend_bars(), closed_candles_only=True, timeframe="M5")
+        self.assertEqual(features["market_structure"]["status"], "UNAVAILABLE")
+        self.assertIn("BOS is scored separately", features["market_structure"]["reason"])
+
     def test_missing_timeframe_is_not_silently_accepted(self):
         features = build_features(trend_bars(), closed_candles_only=True, timeframe="")
         self.assertEqual(features["ema_hybrid"]["status"], "UNAVAILABLE")
