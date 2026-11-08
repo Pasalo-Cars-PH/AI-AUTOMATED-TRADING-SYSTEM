@@ -230,13 +230,43 @@ def calculate_stats(trades):
 
 # ---------- TELEGRAM ----------
 def send_telegram_msg(msg, chat_id=None):
+    """Send a Telegram message and return an observable delivery result."""
     cid = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not cid:
+        print("[TELEGRAM] delivery=FAILED reason=missing_bot_token_or_chat_id")
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": cid, "text": msg, "parse_mode": "Markdown"}
     try:
-        r = requests.post(url, json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-        if r.status_code != 200:
-            requests.post(url, json={"chat_id": cid, "text": msg}, timeout=10)
-    except: pass
+        response = requests.post(url, json=payload, timeout=10)
+        try:
+            body = response.json()
+        except (ValueError, AttributeError):
+            body = {}
+        if response.status_code == 200 and body.get("ok") is True:
+            print("[TELEGRAM] delivery=SUCCESS parse_mode=Markdown")
+            return True
+        # Markdown formatting can be rejected for otherwise valid messages.
+        fallback = requests.post(
+            url, json={"chat_id": cid, "text": msg}, timeout=10
+        )
+        try:
+            fallback_body = fallback.json()
+        except (ValueError, AttributeError):
+            fallback_body = {}
+        if fallback.status_code == 200 and fallback_body.get("ok") is True:
+            print("[TELEGRAM] delivery=SUCCESS parse_mode=plain_fallback")
+            return True
+        print(
+            "[TELEGRAM] delivery=FAILED "
+            f"markdown_http={response.status_code} "
+            f"fallback_http={fallback.status_code} "
+            f"telegram_error={fallback_body.get('description', 'unknown')}"
+        )
+        return False
+    except requests.RequestException as exc:
+        print(f"[TELEGRAM] delivery=FAILED exception={type(exc).__name__}")
+        return False
 
 def send_telegram_photo(photo_path, caption, chat_id=None):
     if MASTER_LIVE_ENABLE:
@@ -561,11 +591,21 @@ def fetch_h1_supertrend_adx():
         for col in ['high', 'low', 'close']:
             df[col] = df[col].astype(float)
         df = df.sort_values('datetime')
-        try:
-            last_dt = pd.to_datetime(df['datetime'].iloc[-1])
-            if datetime.datetime.utcnow() < last_dt.to_pydatetime() + datetime.timedelta(hours=1):
-                df = df.iloc[:-1]   # drop forming H1 bar
-        except: pass
+        last_dt = pd.to_datetime(df['datetime'].iloc[-1])
+        if last_dt.tzinfo is not None:
+            last_dt = last_dt.tz_convert("UTC").tz_localize(None)
+        now = datetime.datetime.utcnow()
+        if now < last_dt.to_pydatetime() + datetime.timedelta(hours=1):
+            df = df.iloc[:-1]   # drop forming H1 bar
+        if df.empty:
+            return None
+        last_dt = pd.to_datetime(df['datetime'].iloc[-1])
+        if last_dt.tzinfo is not None:
+            last_dt = last_dt.tz_convert("UTC").tz_localize(None)
+        age_hours = (now - (last_dt.to_pydatetime() + datetime.timedelta(hours=1))).total_seconds() / 3600.0
+        if age_hours < 0 or age_hours > 3:
+            print(f"[H1-MTF] result=UNKNOWN reason=STALE_OR_FUTURE age_hours={age_hours:.2f}")
+            return None
         return compute_h1_trend(list(df['high']), list(df['low']), list(df['close']))
     except Exception as e:
         print(f"fetch_h1_supertrend_adx error: {e}")
@@ -855,20 +895,37 @@ def sim_trades(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36,
     return trades
 
 def summarize(trades):
+    """Summarize net-R results; breakevens are excluded from win-rate and loss averages."""
     n = len(trades)
     if n == 0:
-        return {"se": 0.0, "total": 0, "wins": 0, "losses": 0, "wr": 0, "net": 0.0, "exp": 0.0, "pf": 0, "be": None, "avg_sl": 0}
-    rs = [t['r'] for t in trades]
+        return {
+            "se": 0.0, "total": 0, "wins": 0, "losses": 0, "breakevens": 0,
+            "decisive": 0, "wr": 0, "net": 0.0, "exp": 0.0, "pf": 0,
+            "be": None, "avg_sl": 0,
+        }
+    rs = [float(t["r"]) for t in trades]
+    if not all(math.isfinite(x) for x in rs):
+        raise ValueError("trade R values must be finite")
     w = [x for x in rs if x > 0]
-    l = [-x for x in rs if x <= 0]
-    gw, gl = sum(w), sum(l)
-    be = round((gl / len(l)) / ((gw / len(w)) + (gl / len(l))) * 100, 1) if w and l else None
+    loss_r = [-x for x in rs if x < 0]
+    breakevens = sum(x == 0 for x in rs)
+    gw, gl = sum(w), sum(loss_r)
+    avg_win = gw / len(w) if w else 0.0
+    avg_loss = gl / len(loss_r) if loss_r else 0.0
+    be = round(avg_loss / (avg_win + avg_loss) * 100, 1) if w and loss_r else None
     mean = sum(rs) / n
     se = (sum((x - mean) ** 2 for x in rs) / (n - 1) / n) ** 0.5 if n > 1 else 0.0
-    return {"se": round(se, 2), "total": n, "wins": len(w), "losses": len(l), "wr": round(len(w) / n * 100, 1),
-            "net": round(sum(rs), 2), "exp": round(sum(rs) / n, 3),
-            "pf": round(gw / gl, 2) if gl > 0 else round(gw, 2), "be": be,
-            "avg_sl": (lambda v: round(v, 2) if v >= 1 else round(v, 5))(sum(t['sl_d'] for t in trades) / n)}
+    decisive = len(w) + len(loss_r)
+    avg_sl = sum(float(t["sl_d"]) for t in trades) / n
+    return {
+        "se": round(se, 2), "total": n, "wins": len(w), "losses": len(loss_r),
+        "breakevens": breakevens, "decisive": decisive,
+        "wr": round(len(w) / decisive * 100, 1) if decisive else 0,
+        "net": round(sum(rs), 2), "exp": round(mean, 3),
+        "pf": round(gw / gl, 2) if gl > 0 else round(gw, 2),
+        "be": be,
+        "avg_sl": round(avg_sl, 2) if avg_sl >= 1 else round(avg_sl, 5),
+    }
 
 def run_sim_tf(records, tf="M5", h1_records=None, cost=SPREAD_COST, max_hold=36):
     """Compat wrapper: total,wins,losses,wr,net,exp,pf (R, after cost)."""
@@ -1109,9 +1166,13 @@ def smc_prev_map(levels, min_bars=100):
             last_day = day
     return out
 
-def smc_signal(win, pdh, pdl, explain=False):
-    """win: oldest->newest (dict: open/high/low/close/datetime). Huling candle = signal candle (sarado na).
-    Returns (sig|None, checks). Entry sa signal ay c0 close (market)."""
+def smc_signal(win, pdh, pdl, explain=False, entry_price=None):
+    """Build an SMC signal from closed candles using an executable entry reference.
+
+    Live uses a fresh Twelve Data quote sampled after the signal candle closes.
+    Backtest uses the next candle open as the historical first-executable proxy.
+    If omitted, c0 close is retained only for diagnostic/funnel callers.
+    """
     checks = []
     def chk(name, ok, actual=""):
         if explain:
@@ -1152,11 +1213,17 @@ def smc_signal(win, pdh, pdl, explain=False):
     fvg_ok = dir_ok and body1 >= SMC_DISP * atr and gap >= SMC_GAP * atr
     if not chk("Displacement+FVG", fvg_ok, f"{side} body {body1/atr:.2f}xATR gap {gap/atr:.2f}xATR"):
         return None, checks
-    entry = c0['close']
+    entry = float(c0['close'] if entry_price is None else entry_price)
+    if not math.isfinite(entry) or entry <= 0:
+        chk("Execution entry", False, f"invalid executable price={entry!r}")
+        return None, checks
     ext = hi_ext if side == "SELL" else lo_ext
     sl = ext + SMC_SL_BUF * atr if side == "SELL" else ext - SMC_SL_BUF * atr
     risk = abs(sl - entry)
-    if not chk("Risk size", SMC_MIN_RISK * atr <= risk <= SMC_MAX_RISK * atr, f"risk ${risk:.2f} = {risk/atr:.2f}xATR"):
+    direction_ok = (entry < sl) if side == "SELL" else (entry > sl)
+    risk_ok = direction_ok and SMC_MIN_RISK * atr <= risk <= SMC_MAX_RISK * atr
+    if not chk("Risk size at executable entry", risk_ok,
+               f"entry={entry:.5f} SL={sl:.5f} risk=${risk:.2f} = {risk/atr:.2f}xATR"):
         return None, checks
     tp = entry - SMC_RR * risk if side == "SELL" else entry + SMC_RR * risk
     if side == "SELL":
@@ -1206,7 +1273,13 @@ def sim_smc(records, mode="market", rr=None, cost=SPREAD_COST):
         if not pl:
             i += 1
             continue
-        sig, _ = smc_signal(records[i-40:i], pl[0], pl[1])
+        # Signal uses candles only through i-1; next bar open is the first
+        # historical executable price, matching the live post-close quote convention.
+        execution_entry = float(records[i]["open"])
+        signal_entry_reference = execution_entry if mode == "market" else None
+        sig, _ = smc_signal(
+            records[i-40:i], pl[0], pl[1], entry_price=signal_entry_reference
+        )
         if not sig:
             i += 1
             continue
@@ -1241,7 +1314,8 @@ def sim_smc(records, mode="market", rr=None, cost=SPREAD_COST):
                 continue
         tp = entry + rr * risk if buy else entry - rr * risk
         pnl, ej = _eval_trade(records, j0, buy, entry, sl, tp, SMC_MAX_HOLD, tp_on_first=(mode == "market"))
-        trades.append({"idx": i, "type": sig['type'], "hour": t0.hour, "sl_d": risk, "atr": sig['atr'],
+        trades.append({"idx": i, "type": sig['type'], "hour": t0.hour, "entry": entry,
+                       "sl": sl, "tp": tp, "sl_d": risk, "atr": sig['atr'],
                        "level": sig['level'], "r": (pnl - cost) / risk})
         i = ej + 1
     return trades
@@ -1446,12 +1520,24 @@ def fetch_m15_trend():
     try:
         rows = []
         for v in reversed(vals):
-            rows.append({"datetime": pd.Timestamp(v["datetime"]), "close": float(v["close"])})
+            stamp = pd.Timestamp(v["datetime"])
+            if stamp.tzinfo is not None:
+                stamp = stamp.tz_convert("UTC").tz_localize(None)
+            close = float(v["close"])
+            if not math.isfinite(close) or close <= 0:
+                continue
+            rows.append({"datetime": stamp, "close": close})
         now = datetime.datetime.utcnow()
+        if not rows:
+            return "UNKNOWN", "NO_DATA"
         if now < rows[-1]["datetime"].to_pydatetime() + datetime.timedelta(minutes=15):
             rows = rows[:-1]
         if len(rows) < 50:
             return "UNKNOWN", "NO_DATA"
+        age_minutes = (now - (rows[-1]["datetime"].to_pydatetime() + datetime.timedelta(minutes=15))).total_seconds() / 60.0
+        if age_minutes < 0 or age_minutes > 45:
+            print(f"[M15-MTF] result=UNKNOWN reason=STALE_OR_FUTURE age_minutes={age_minutes:.1f}")
+            return "UNKNOWN", "STALE_OR_FUTURE"
         closes = [r["close"] for r in rows]
         e20 = calculate_ema(closes, 20)
         e50 = calculate_ema(closes, 50)
@@ -1494,6 +1580,35 @@ _smc_live_cache = {"recs": None, "time": None}
 _smc_used_live = set()
 _smc_used_live_lock = threading.Lock()
 
+def _validated_closed_m5_records(vals, now=None):
+    """Normalize provider rows to unique, finite, valid, closed M5 candles in UTC order."""
+    now = now or datetime.datetime.utcnow()
+    by_time = {}
+    for item in vals or []:
+        try:
+            stamp = pd.Timestamp(item["datetime"])
+            if stamp.tzinfo is not None:
+                stamp = stamp.tz_convert("UTC").tz_localize(None)
+            stamp = stamp.floor("s")
+            o = float(item["open"])
+            h = float(item["high"])
+            low = float(item["low"])
+            close = float(item["close"])
+            if not all(math.isfinite(x) and x > 0 for x in (o, h, low, close)):
+                continue
+            if h < max(o, low, close) or low > min(o, close) or h <= low:
+                continue
+            # Provider datetime is candle OPEN time. Reject forming and future bars.
+            if stamp.to_pydatetime() + datetime.timedelta(minutes=5) > now:
+                continue
+            by_time[stamp] = {
+                "datetime": stamp, "open": o, "high": h, "low": low, "close": close,
+            }
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return [by_time[key] for key in sorted(by_time)]
+
+
 def fetch_m5_live(n=900):
     now = datetime.datetime.utcnow()
     c = _smc_live_cache
@@ -1504,28 +1619,47 @@ def fetch_m5_live(n=900):
     if not vals or len(vals) < 200:
         fetch_m5_live.last_source = "NO_DATA"
         return None
-    recs = []
-    for v in reversed(vals):                   # newest-first -> oldest-first
-        try:
-            o, h, l, cl = float(v["open"]), float(v["high"]), float(v["low"]), float(v["close"])
-            if h > l and o > 0 and cl > 0:
-                recs.append({"datetime": pd.Timestamp(v["datetime"]), "open": o, "high": h, "low": l, "close": cl})
-        except: pass
-    if len(recs) < 200:
-        fetch_m5_live.last_source = "NO_DATA_INVALID_CANDLES"
-        return None
-    try:
-        if now < recs[-1]['datetime'].to_pydatetime() + datetime.timedelta(minutes=5):
-            recs = recs[:-1]                   # drop forming candle
-    except: pass
+    recs = _validated_closed_m5_records(vals, now=now)
     if len(recs) < 60:
-        fetch_m5_live.last_source = "NO_DATA_AFTER_CLOSED_BAR_FILTER"
+        fetch_m5_live.last_source = "NO_DATA_INVALID_OR_UNCLOSED_CANDLES"
+        return None
+    latest_close = recs[-1]["datetime"].to_pydatetime() + datetime.timedelta(minutes=5)
+    age_seconds = (now - latest_close).total_seconds()
+    if age_seconds < 0 or age_seconds > 15 * 60:
+        fetch_m5_live.last_source = "NO_DATA_STALE_OR_FUTURE"
         return None
     c["recs"] = recs
     c["time"] = now
     fetch_m5_live.last_source = "LIVE_TWELVEDATA_5min"
     return recs
+
 fetch_m5_live.last_source = "UNKNOWN"
+
+def fetch_smc_execution_price(symbol="XAU/USD"):
+    """Fetch a fresh executable-reference quote from Twelve Data; fail closed."""
+    if not TWELVE_DATA_API_KEY:
+        print("[SMC-ENTRY] result=NO_QUOTE reason=missing_api_key")
+        return None
+    try:
+        response = requests.get(
+            "https://api.twelvedata.com/price",
+            params={"symbol": symbol, "apikey": TWELVE_DATA_API_KEY},
+            timeout=8,
+        )
+        if response.status_code != 200:
+            print(f"[SMC-ENTRY] result=NO_QUOTE http={response.status_code}")
+            return None
+        payload = response.json()
+        price = float(payload.get("price"))
+        if not math.isfinite(price) or price <= 0:
+            print("[SMC-ENTRY] result=NO_QUOTE reason=invalid_price")
+            return None
+        print(f"[SMC-ENTRY] result=QUOTE_OK symbol={symbol} price={price:.5f} source=TWELVEDATA_PRICE")
+        return price
+    except (requests.RequestException, TypeError, ValueError, AttributeError) as exc:
+        print(f"[SMC-ENTRY] result=NO_QUOTE error={type(exc).__name__}")
+        return None
+
 
 def smc_live_signal(explain=False):
     market_open, market_reason = market_hours_status("XAU/USD", datetime.datetime.utcnow())
@@ -1552,7 +1686,13 @@ def smc_live_signal(explain=False):
     close_boundary = t0.to_pydatetime() + datetime.timedelta(minutes=5)
     delta_seconds = (datetime.datetime.utcnow() - close_boundary).total_seconds()
     print(f"[CANDLE-FRESHNESS] symbol=XAU/USD tf=M5 last_open_utc={t0.isoformat()} close_boundary_utc={close_boundary.isoformat()} now_utc={datetime.datetime.utcnow().isoformat()} delta_seconds={delta_seconds:.1f} closed={delta_seconds >= 0}")
-    sig, checks = smc_signal(recs[-40:], pdh, pdl, explain=explain)
+    execution_price = fetch_smc_execution_price("XAU/USD")
+    if execution_price is None:
+        return None, [{"name": "Execution quote", "pass": False,
+                       "actual": "Twelve Data price quote unavailable; no paper entry"}], recs
+    sig, checks = smc_signal(
+        recs[-40:], pdh, pdl, explain=explain, entry_price=execution_price
+    )
     return sig, checks, recs
 
 def risk_gate_and_log(sig, dedupe_key=None):
