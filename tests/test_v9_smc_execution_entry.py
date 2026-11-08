@@ -1,7 +1,7 @@
 import pandas as pd
 from unittest.mock import patch
 
-from app.main import smc_signal
+from app.main import SMC_RR, smc_signal
 
 
 def _execution_bars():
@@ -29,7 +29,7 @@ def test_smc_signal_uses_supplied_post_close_execution_entry_for_levels():
     assert sig is not None
     assert sig["type"] == "SELL"
     assert sig["entry"] == 99.5
-    assert sig["tp"] == round(99.5 - 1.5 * abs(sig["sl"] - 99.5), 5)
+    assert sig["tp"] == round(99.5 - SMC_RR * abs(sig["sl"] - 99.5), 5)
     risk_gate = next(x for x in checks if x["name"] == "Risk size at executable entry")
     assert risk_gate["pass"] is True
     assert "entry=99.50000" in risk_gate["actual"]
