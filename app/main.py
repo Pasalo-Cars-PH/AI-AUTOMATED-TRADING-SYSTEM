@@ -230,13 +230,43 @@ def calculate_stats(trades):
 
 # ---------- TELEGRAM ----------
 def send_telegram_msg(msg, chat_id=None):
+    """Send a Telegram message and return an observable delivery result."""
     cid = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not cid:
+        print("[TELEGRAM] delivery=FAILED reason=missing_bot_token_or_chat_id")
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": cid, "text": msg, "parse_mode": "Markdown"}
     try:
-        r = requests.post(url, json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-        if r.status_code != 200:
-            requests.post(url, json={"chat_id": cid, "text": msg}, timeout=10)
-    except: pass
+        response = requests.post(url, json=payload, timeout=10)
+        try:
+            body = response.json()
+        except (ValueError, AttributeError):
+            body = {}
+        if response.status_code == 200 and body.get("ok") is True:
+            print("[TELEGRAM] delivery=SUCCESS parse_mode=Markdown")
+            return True
+        # Markdown formatting can be rejected for otherwise valid messages.
+        fallback = requests.post(
+            url, json={"chat_id": cid, "text": msg}, timeout=10
+        )
+        try:
+            fallback_body = fallback.json()
+        except (ValueError, AttributeError):
+            fallback_body = {}
+        if fallback.status_code == 200 and fallback_body.get("ok") is True:
+            print("[TELEGRAM] delivery=SUCCESS parse_mode=plain_fallback")
+            return True
+        print(
+            "[TELEGRAM] delivery=FAILED "
+            f"markdown_http={response.status_code} "
+            f"fallback_http={fallback.status_code} "
+            f"telegram_error={fallback_body.get('description', 'unknown')}"
+        )
+        return False
+    except requests.RequestException as exc:
+        print(f"[TELEGRAM] delivery=FAILED exception={type(exc).__name__}")
+        return False
 
 def send_telegram_photo(photo_path, caption, chat_id=None):
     if MASTER_LIVE_ENABLE:
