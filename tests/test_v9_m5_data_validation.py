@@ -4,7 +4,7 @@ from app.main import _validated_closed_m5_records
 
 
 def test_v9_m5_rows_are_sorted_deduplicated_and_closed_only():
-    now = dt.datetime(2026, 11, 8, 12, 20, 0)
+    now = dt.datetime(2026, 11, 8, 12, 19, 59)
     rows = [
         {"datetime": "2026-11-08 12:10:00", "open": "100", "high": "102", "low": "99", "close": "101"},
         {"datetime": "2026-11-08 12:00:00", "open": "98", "high": "100", "low": "97", "close": "99"},
