@@ -1276,8 +1276,9 @@ def sim_smc(records, mode="market", rr=None, cost=SPREAD_COST):
         # Signal uses candles only through i-1; next bar open is the first
         # historical executable price, matching the live post-close quote convention.
         execution_entry = float(records[i]["open"])
+        signal_entry_reference = execution_entry if mode == "market" else None
         sig, _ = smc_signal(
-            records[i-40:i], pl[0], pl[1], entry_price=execution_entry
+            records[i-40:i], pl[0], pl[1], entry_price=signal_entry_reference
         )
         if not sig:
             i += 1
