@@ -1,0 +1,13 @@
+diff --git a/app/main.py b/app/main.py
+--- a/app/main.py
++++ b/app/main.py
+@@ -13,7 +13,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
+ import pytz
+ 
+-MASTER_LIVE_ENABLE = False
++# Explicit opt-in only. This flag does not create broker execution in this service.
++MASTER_LIVE_ENABLE = os.getenv("MASTER_LIVE_ENABLE", "false").strip().lower() == "true"
+ PAPER_SCAN_PAUSED = False
++
++# Render remains signal-only. Actual MT5 orders must be submitted by the separately
++# secured Windows executor after independent broker/risk gates pass.
